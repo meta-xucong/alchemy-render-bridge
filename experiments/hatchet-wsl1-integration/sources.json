@@ -7,5 +7,14 @@
   "package_manifest_sha256": "d3930f601ea875e3480c3383e4f5200572b749bf3a4340b81a95f14bb82ec7ea",
   "verification": "Pinned digest read from official Canonical HTTPS manifest; detached signature not independently verified",
   "engine_tested": false,
-  "postgres_tested": false
+  "postgres_tested": false,
+  "postgres_artifact": {
+    "packager": "Zonky",
+    "version": "18.3.0",
+    "url": "https://repo.maven.apache.org/maven2/io/zonky/test/postgres/embedded-postgres-binaries-linux-amd64/18.3.0/embedded-postgres-binaries-linux-amd64-18.3.0.jar",
+    "sha256": "1974c3a59c3ae010e9818e81637e425aad94eaac26e4ef533b42e081fe7ca345",
+    "inner_txz_sha256": "e09b13df10e9df257275d498b19b8c214a3e86d7a5d8cd263b0860e308e8b0b6",
+    "packaging_commit": "f3c31c8a290fe09fd4ae8c027697a046f3f656b7",
+    "verification": "Registry .sha256 matched actual JAR bytes; inner digest calculated from verified JAR; no signature verification claimed"
+  }
 }

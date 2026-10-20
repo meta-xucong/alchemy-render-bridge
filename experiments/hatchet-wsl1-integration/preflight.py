@@ -171,7 +171,81 @@ def cleanup(state_path: Path, base: Path) -> list[str]:
     return errors
 
 
-def preflight(state_path: Path, base: Path, report_path: Path) -> int:
+def postgres_gate(name: str, root: Path) -> dict:
+    from postgres_probe import JAR_SHA256
+    url = ('https://repo.maven.apache.org/maven2/io/zonky/test/postgres/'
+           'embedded-postgres-binaries-linux-amd64/18.3.0/'
+           'embedded-postgres-binaries-linux-amd64-18.3.0.jar')
+    archive = root / 'postgres.jar'
+    deadline = time.monotonic() + 60
+    with urllib.request.urlopen(url, timeout=15) as response, archive.open('wb') as target:
+        if response.url != url:
+            raise RuntimeError('Unexpected PostgreSQL artifact redirect')
+        size = 0
+        while chunk := response.read(1024 * 1024):
+            size += len(chunk)
+            if size > 25 * 1024 * 1024 or time.monotonic() > deadline:
+                raise RuntimeError('PostgreSQL download exceeded bound')
+            target.write(chunk)
+    with archive.open('rb') as stream:
+        if hashlib.file_digest(stream, 'sha256').hexdigest() != JAR_SHA256:
+            raise RuntimeError('PostgreSQL JAR digest mismatch; execution prohibited')
+    # All runner paths are data arguments, never interpolated into shell code.
+    def linux_path(path):
+        return run(['wsl.exe', '-d', name, '-u', 'nobody', '--exec', '/usr/bin/wslpath', '-u', str(path.resolve())])
+    script = linux_path(Path(__file__).with_name('postgres_probe.py'))
+    jar = linux_path(archive)
+    process = None
+    log_path = root / 'postgres-probe.jsonl'
+    try:
+        with log_path.open('wb') as log:
+            process = subprocess.Popen(['wsl.exe', '-d', name, '-u', 'nobody', '--exec',
+                                        '/usr/bin/python3', '-u', script, jar],
+                                       stdin=subprocess.PIPE, stdout=log, stderr=subprocess.DEVNULL)
+            deadline = time.monotonic() + 60
+            ready = None
+            while time.monotonic() < deadline:
+                lines = log_path.read_text(encoding='utf-8').splitlines()
+                if lines:
+                    ready = json.loads(lines[0])
+                    break
+                if process.poll() is not None:
+                    break
+                time.sleep(0.2)
+            if not ready or ready.get('event') != 'postgres_ready':
+                raise RuntimeError('PostgreSQL did not become ready: ' + json.dumps(ready))
+            port = ready['port']
+            observed = windows_listener(port)
+            listener = validate_listener(observed, port)
+            process.stdin.write(b'verified-loopback\n')
+            process.stdin.flush()
+            process.stdin.close()
+            if process.wait(timeout=45) != 0:
+                raise RuntimeError('PostgreSQL probe or shutdown failed: ' + log_path.read_text(encoding='utf-8')[-2500:])
+            lines = log_path.read_text(encoding='utf-8').splitlines()
+            completed = json.loads(lines[-1])
+            if (completed.get('event') != 'postgres_complete' or completed.get('status') != 'passed'
+                    or completed.get('pidfile_present_after_stop') is not False
+                    or completed.get('postmaster_process_gone') is not True
+                    or completed.get('temporary_directory_removed') is not True):
+                raise RuntimeError('PostgreSQL completion/cleanup evidence incomplete')
+            after = windows_listener(port)
+            if after != []:
+                raise RuntimeError('PostgreSQL port still has a native Windows listener after stop')
+            return {'status': 'passed', 'jar_sha256': JAR_SHA256, 'ready': ready,
+                    'windows_listener': listener, 'completion': completed, 'listeners_after_stop': after}
+    finally:
+        if process is not None:
+            if process.stdin and not process.stdin.closed:
+                process.stdin.close()
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+            # Outer finally always terminates/unregisters the owned distro, even
+            # when this process is interrupted before Linux cleanup completes.
+
+
+def preflight(state_path: Path, base: Path, report_path: Path, postgres: bool = False) -> int:
     result = {'status': 'blocked', 'stage': 'platform', 'engine_tested': False,
               'postgres_tested': False, 'rootfs_sha256': ROOTFS_SHA256,
               'image_os': os.environ.get('ImageOS'), 'image_version': os.environ.get('ImageVersion')}
@@ -229,6 +303,7 @@ def preflight(state_path: Path, base: Path, report_path: Path) -> int:
         result['canary'] = ready
         result['stage'] = 'windows_listener_verification'
         host_rows = windows_listener(ready['port'])
+        result['windows_listener_observed'] = host_rows
         result['windows_listener'] = validate_listener(host_rows, ready['port'])
         result['stage'] = 'windows_to_linux_exchange'
         with socket.create_connection(('127.0.0.1', ready['port']), timeout=5) as connection:
@@ -240,6 +315,13 @@ def preflight(state_path: Path, base: Path, report_path: Path) -> int:
         result['canary'] = ready
         result['status'] = 'passed'
         result['stage'] = 'preflight_complete_engine_and_postgres_not_tested'
+        if postgres:
+            result['status'] = 'blocked'
+            result['stage'] = 'postgres_compatibility'
+            result['postgres'] = postgres_gate(name, root)
+            result['postgres_tested'] = True
+            result['status'] = 'passed'
+            result['stage'] = 'postgres_complete_engine_not_tested'
     except Exception as exc:
         result['error'] = str(exc)
     finally:
@@ -270,6 +352,7 @@ def preflight(state_path: Path, base: Path, report_path: Path) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--cleanup', action='store_true')
+    parser.add_argument('--postgres', action='store_true')
     args = parser.parse_args()
     base = Path(os.environ.get('RUNNER_TEMP', tempfile.gettempdir())).resolve()
     state = base / 'bridge-wsl1-owned.json'
@@ -277,7 +360,7 @@ def main() -> int:
         errors = cleanup(state, base)
         print(json.dumps({'cleanup_errors': errors}))
         return bool(errors)
-    return preflight(state, base, Path('result.json'))
+    return preflight(state, base, Path('result.json'), postgres=args.postgres)
 
 
 if __name__ == '__main__':

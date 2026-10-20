@@ -24,8 +24,8 @@ jobs:
           python-version: '3.12'
       - name: Unit tests (no external services)
         run: python -m unittest discover -s tests -v
-      - name: Existing WSL1 and verified official Ubuntu loopback probe
-        run: python preflight.py
+      - name: WSL1 loopback and isolated PostgreSQL compatibility
+        run: python preflight.py --postgres
       - name: Always clean up only our temporary distro
         if: always()
         run: python preflight.py --cleanup
