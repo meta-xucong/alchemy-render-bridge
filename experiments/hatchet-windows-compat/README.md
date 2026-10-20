@@ -17,6 +17,11 @@ the dummy config string is intentionally invalid and has no authorization power.
 7. `python -m pip check`
 8. `python -m unittest discover -s tests -v`
 
+Set PYTHONUTF8=1 and PYTHONIOENCODING=utf-8 before these commands, including on
+Windows; the SDK emits emoji in normal logs. The workflow sets both explicitly,
+and tests assert UTF-8 stdout/stderr. This is a launch condition of this test
+harness, not a fix or proof for arbitrary legacy Windows console encodings.
+
 Use a fresh environment, not a production SDK install. ci-example.yml proposes
 this exact optional Linux/Windows matrix under experiments/hatchet-windows-compat.
 No wheel binary, upstream package tree, environment or runtime logs should be
@@ -51,7 +56,16 @@ as part of a signal compatibility patch.
 Linux Python 3.12: original construction control PASS; candidate 8 tests PASS,
 zero skips (34.154 seconds); strict manifest/RECORD validation PASS. A byte-identical
 rebuild and tampered-input rejection were checked. These are Linux results only.
-The real Windows CI result is still pending.
+The first real Windows CI run passed the actual spawned Worker and both listener
+lifecycle tests, but failed two simulated platform-branch fixtures. Those fixtures
+mutated global sys.platform, causing Windows multiprocessing to import a POSIX-only
+module. They now replace only the SDK module-local sys reference, with a regression
+asserting the interpreter platform remains unchanged. A separate UTF-8 launch test
+was added for SDK emoji logging. Final corrected Windows CI is still pending; the
+original failure is not counted as a complete pass. Corrected Linux suite: 10 tests
+passed, zero skips (18.256 seconds). The new global-platform regression was also
+verified to reject the old fixture with two expected subtest failures. SDK wheel
+bytes and its identity manifest are unchanged by this test-harness repair.
 
 Not accepted: real Windows engine connection, console Ctrl+C, network redelivery,
 active task draining, TLS, node permissions, sleep/resume, disk failure or the

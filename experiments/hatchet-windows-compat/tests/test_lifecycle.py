@@ -138,7 +138,7 @@ class LifecycleTests(unittest.TestCase):
         module=listener_module(legacy);ctx=multiprocessing.get_context('spawn');q=ctx.Queue();event=ctx.Event()
         loop=asyncio.new_event_loop();asyncio.set_event_loop(loop)
         try:
-            with patch.object(module.sys,'platform',platform), patch.object(module.signal,'signal') as sig, patch.object(loop,'add_signal_handler') as add:
+            with patch.object(module,'sys',SimpleNamespace(platform=platform)), patch.object(module.signal,'signal') as sig, patch.object(loop,'add_signal_handler') as add:
                 if fail:
                     (sig if platform=='win32' else add).side_effect=ValueError('register failed')
                     with self.assertRaisesRegex(ValueError,'register failed'):construct_listener(legacy,ctx,q,event)
@@ -148,6 +148,29 @@ class LifecycleTests(unittest.TestCase):
                     self.assertEqual(add.call_count,0 if platform=='win32' else 2)
                     for item in qs:item.close();item.join_thread()
         finally:q.close();q.join_thread();loop.close();asyncio.set_event_loop(None)
+
+    def test_branch_fixtures_preserve_global_sys_platform(self):
+        real_platform=sys.platform
+        original_constructor=construct_listener
+        for legacy in (False,True):
+            simulated_platform='linux' if real_platform=='win32' else 'win32'
+            def checked_constructor(*args,**kwargs):
+                self.assertEqual(sys.platform,real_platform)
+                self.assertIsNot(listener_module(legacy).sys,sys)
+                self.assertEqual(listener_module(legacy).sys.platform,simulated_platform)
+                return original_constructor(*args,**kwargs)
+            with self.subTest(legacy=legacy), patch(__name__+'.construct_listener',side_effect=checked_constructor) as checked:
+                self.check_listener_branch(legacy,simulated_platform)
+                checked.assert_called_once()
+            self.assertEqual(sys.platform,real_platform)
+
+    def test_utf8_logging_stream_launch_contract(self):
+        # The SDK emits emoji in its normal logger. CI and documented launches
+        # must use UTF-8 rather than silently dropping encoding errors.
+        import codecs
+        self.assertEqual(codecs.lookup(sys.stderr.encoding).name,'utf-8')
+        self.assertEqual(codecs.lookup(sys.stdout.encoding).name,'utf-8')
+        self.assertEqual('🪓'.encode(sys.stderr.encoding).decode('utf-8'),'🪓')
 
     def test_current_platform_branches_and_errors(self):
         for platform in ('win32','linux'):
