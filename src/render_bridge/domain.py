@@ -19,6 +19,7 @@ from pathlib import Path
 import re
 import sqlite3
 import stat
+import sys
 import tempfile
 import time
 import uuid
@@ -115,7 +116,13 @@ def _utc(timestamp):
 
 
 class BridgeStore:
-    """SQLite-backed isolated fixture store; separate instances may share a DB."""
+    """SQLite-backed isolated fixture store; separate instances may share a DB.
+
+    POSIX writes synchronize the file and its containing directory. Windows
+    supports this contract harness's file fsync and same-directory replacement,
+    but Python cannot fsync a directory there. Windows power-loss durability is
+    therefore NOT verified or promised by this experimental store.
+    """
 
     def __init__(self, db_path, artifact_root, *, clock=None):
         self.db_path = str(db_path)
@@ -306,6 +313,18 @@ class BridgeStore:
                 Image.DecompressionBombError, Image.DecompressionBombWarning):
             _fail("invalid_media", 422)
 
+    def _sync_artifact_directory(self):
+        # Windows' CRT os.open cannot open directory handles. Do not turn this
+        # specific platform limitation into a blanket ignore of I/O errors:
+        # on POSIX, open/fsync/close failures must still abort the transaction.
+        if sys.platform == "win32":
+            return
+        directory_fd = os.open(self.root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
     def _store_bytes(self, con, object_id, content):
         file_name = object_id + ".blob"
         target = self.root / file_name
@@ -320,6 +339,9 @@ class BridgeStore:
                 _fail("storage_integrity", 503)
             self._read_bytes(file_name, {"size": len(content),
                                         "original_sha256": hashlib.sha256(content).hexdigest()})
+            # A prior rename may have succeeded but directory fsync failed.
+            # Retrying the same bytes must not bypass the durability barrier.
+            self._sync_artifact_directory()
             return file_name
         used = con.execute("""SELECT
             COALESCE((SELECT SUM(size) FROM inputs WHERE file_name IS NOT NULL), 0) +
@@ -337,11 +359,7 @@ class BridgeStore:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temp_name, self.root / file_name)
-            directory_fd = os.open(self.root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            self._sync_artifact_directory()
         finally:
             if os.path.exists(temp_name):
                 os.unlink(temp_name)
@@ -351,10 +369,16 @@ class BridgeStore:
         if not re.fullmatch(r"(?:in|up)_[0-9a-f]{32}\.blob", file_name or ""):
             _fail("storage_unavailable", 503)
         try:
-            fd = os.open(self.root / file_name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            path = self.root / file_name
+            before = path.lstat()
+            if not stat.S_ISREG(before.st_mode):
+                _fail("storage_unavailable", 503)
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                         | getattr(os, "O_BINARY", 0))
             with os.fdopen(fd, "rb") as handle:
                 info = os.fstat(handle.fileno())
-                if not stat.S_ISREG(info.st_mode) or info.st_size != payload["size"]:
+                if (not stat.S_ISREG(info.st_mode) or info.st_size != payload["size"]
+                        or not os.path.samestat(before, info)):
                     _fail("storage_unavailable", 503)
                 content = handle.read(MAX_OUTPUT_BYTES + 1)
         except OSError:

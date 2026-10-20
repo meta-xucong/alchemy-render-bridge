@@ -25,3 +25,9 @@ TLS, node credentials, provisioning and revocation are outside this slice.
 An accepted artifact/ack is not an Alchemy integration test. The original Alchemy
 repository is not modified. Consult `ALCHEMY_READ_ONLY_PREFLIGHT.md` for the
 existing import boundary and unresolved integration work.
+
+## Windows 测试边界
+
+Windows 合同原型保留文件同步及同目录替换，但不提供 POSIX 目录 fsync。
+Windows 功能测试通过不等于断电持久性、ACL 隐私或 Windows Agent 验收。
+正式 Windows 节点需独立实现并验证其持久存储和恢复保证。

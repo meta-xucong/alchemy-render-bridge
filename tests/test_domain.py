@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import hashlib
 import io
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -404,6 +405,84 @@ class DomainTests(unittest.TestCase):
         target.unlink()
         target.symlink_to("/etc/hosts")
         self.assert_error("storage_integrity", self.store.put_input_content, self.scope, row["input_id"], data)
+
+    def test_directory_barrier_is_platform_specific_and_errors_propagate(self):
+        with patch("render_bridge.domain.sys.platform", "win32"):
+            with patch("render_bridge.domain.os.open") as opened:
+                self.store._sync_artifact_directory()
+                opened.assert_not_called()
+        with patch("render_bridge.domain.sys.platform", "linux"):
+            with patch("render_bridge.domain.os.open", return_value=123) as opened:
+                with patch("render_bridge.domain.os.fsync") as synced:
+                    with patch("render_bridge.domain.os.close") as closed:
+                        self.store._sync_artifact_directory()
+                        opened.assert_called_once()
+                        synced.assert_called_once_with(123)
+                        closed.assert_called_once_with(123)
+            with patch("render_bridge.domain.os.open", side_effect=PermissionError("open")):
+                with self.assertRaises(PermissionError):
+                    self.store._sync_artifact_directory()
+            with patch("render_bridge.domain.os.open", return_value=123):
+                with patch("render_bridge.domain.os.fsync", side_effect=OSError("fsync")):
+                    with patch("render_bridge.domain.os.close") as closed:
+                        with self.assertRaises(OSError):
+                            self.store._sync_artifact_directory()
+                        closed.assert_called_once_with(123)
+
+    def test_directory_sync_failure_rolls_back_and_retry_repeats_barrier(self):
+        data = self.png()
+        row = self.store.create_input(self.scope, {"input_key": "sync", **self.metadata(data)})
+        for _ in range(2):
+            with patch.object(self.store, "_sync_artifact_directory",
+                              side_effect=OSError("injected directory sync failure")) as synced:
+                with self.assertRaises(OSError):
+                    self.store.put_input_content(self.scope, row["input_id"], data)
+                synced.assert_called_once_with()
+            self.assertEqual("pending", self.store.get_input(self.scope, row["input_id"])["state"])
+            self.assertEqual([], list(self.store.root.glob(".pending-*")))
+        with patch.object(self.store, "_sync_artifact_directory",
+                          wraps=self.store._sync_artifact_directory) as synced:
+            ready = self.store.put_input_content(self.scope, row["input_id"], data)
+            synced.assert_called_once_with()
+        self.assertEqual("ready", ready["state"])
+        self.assertEqual(data, self.store._read_bytes(row["input_id"] + ".blob", self.metadata(data)))
+
+    def test_file_sync_and_rename_failures_abort_without_ready_input(self):
+        data = self.png()
+        for index, operation in enumerate(("os.fsync", "os.replace")):
+            row = self.store.create_input(
+                self.scope, {"input_key": f"failure-{index}", **self.metadata(data)})
+            with patch(f"render_bridge.domain.{operation}", side_effect=OSError(operation)):
+                with self.assertRaises(OSError):
+                    self.store.put_input_content(self.scope, row["input_id"], data)
+            self.assertEqual("pending", self.store.get_input(self.scope, row["input_id"])["state"])
+            self.assertEqual([], list(self.store.root.glob(".pending-*")))
+            self.assertFalse((self.store.root / (row["input_id"] + ".blob")).exists())
+
+    def test_read_rejects_symlink_to_identical_bytes_without_nofollow(self):
+        ready, data, _ = self.input()
+        target = self.store.root / (ready["input_id"] + ".blob")
+        other = self.root / "same.png"
+        other.write_bytes(data)
+        target.unlink()
+        target.symlink_to(other)
+        with patch("render_bridge.domain.os.O_NOFOLLOW", 0, create=True):
+            self.assert_error("storage_unavailable", self.store.get_input,
+                              self.scope, ready["input_id"])
+
+    def test_read_rejects_replaced_inode_between_lstat_and_open(self):
+        ready, data, _ = self.input()
+        target = self.store.root / (ready["input_id"] + ".blob")
+        replacement = self.root / "replacement.png"
+        replacement.write_bytes(data)
+        original_open = os.open
+        def swap_then_open(path, flags, *args, **kwargs):
+            if Path(path) == target:
+                os.replace(replacement, target)
+            return original_open(path, flags, *args, **kwargs)
+        with patch("render_bridge.domain.os.open", side_effect=swap_then_open):
+            self.assert_error("storage_unavailable", self.store.get_input,
+                              self.scope, ready["input_id"])
 
 
 if __name__ == "__main__":

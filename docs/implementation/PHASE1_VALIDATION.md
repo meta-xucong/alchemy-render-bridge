@@ -59,3 +59,26 @@ Hatchet运行/Windows、生产授权和真实业务导入不是此PASS的组成�
 - Codex、Midjourney、Discord真实调用、生成质量、付费/额度、原生业务审核/计费均未验证。
 
 PR应保持Draft。现阶段产物仅用于隔离开发与审查，不提供公网服务启动说明。
+
+## 2026-10-20 Windows CI 兼容性修复
+
+首次远端运行 [39374589251](https://github.com/meta-xucong/alchemy-render-bridge/actions/runs/39374589251)
+针对提交 `5c63d6c07b4ab2a9789a0a2292dcd6d02b5bb8bb`：Linux 通过；Windows
+运行 57 项测试，2 项失败、15 项错误。根因是 Windows CRT 不支持用
+`os.open` 打开目录再 `fsync`，不能把云端 Linux 通过解释为跨平台通过。
+
+修复保留文件 `fsync` 和同目录替换；POSIX 仍强制同步目录并传播失败。
+Windows 显式不调用不支持的目录同步。对已有孤儿对象的重试也重新执行
+POSIX 目录屏障，避免前一次屏障失败后仅凭文件已存在就返回成功。
+读取使用二进制标志，结合 `lstat`、`fstat` 和文件身份检查拒绝符号链接及
+读取前发生的文件替换，保留 hash 校验。
+
+增加 5 项回归，云端 Linux 完整 62 项通过、零跳过；独立复审同样 62 项通过、零跳过（5.896 秒），限定代码审计 PASS。真实 Windows CI
+必须在修复提交推送后重新验证，旧失败运行不可记为通过。
+
+**限制：Windows 仅作为隔离合同原型的功能测试目标。本实现不承诺 Windows
+断电后的目录项持久性；ACL 隐私、Windows Agent、Hatchet Worker 和真实设备
+崩溃恢复均未验收。未关闭或跳过功能测试，也未改变 Linux 的目录同步要求。**
+
+上文源码指纹只适用于首次提交，不能用于本修复的代码身份；新提交及其远端
+CI 为本修复的精确身份依据。
