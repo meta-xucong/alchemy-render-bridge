@@ -170,6 +170,17 @@ class CodexExecutor:
         self.root = Path(root)
         self.config = config or CodexConfig()
 
+    def preflight(self, request: ExecutionRequest) -> ExecutionResult | None:
+        """Check local acceptance and version only; never starts a thread or turn."""
+        config = self.config
+        if not (config.enabled and config.model and config.image_capability_verified
+                and config.tool_policy_verified):
+            return ExecutionResult('needs_attention', 'codex_local_acceptance_required')
+        probe = probe_codex(config.executable)
+        if not (probe.get('schema_version_matches') and probe.get('stdio_advertised')):
+            return ExecutionResult('needs_attention', 'codex_version_not_validated', details=probe)
+        return None
+
     def execute(self, request: ExecutionRequest) -> ExecutionResult:
         files = AttemptFiles(self.root, request, 'codex-cli')
         cached = files.cached()

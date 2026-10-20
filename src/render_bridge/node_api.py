@@ -11,7 +11,8 @@ from fastapi.responses import Response
 from pydantic import Field, StrictStr
 
 from .api import _APIError, _bounded_body, _json_request, _TOKEN
-from .domain import BridgeStore, SourceScope, MAX_OUTPUT_BYTES
+from .domain import BridgeStore, SourceScope
+from .profiles import MAX_PROFILE_OUTPUT_BYTES
 from .schemas import StrictRequest, Key, SHA256
 
 
@@ -39,7 +40,7 @@ class UploadMetadata(StrictRequest):
     attempt_id: Key
     slot_id: Literal['primary']
     original_sha256: SHA256
-    size: Annotated[int, Field(strict=True, ge=1, le=MAX_OUTPUT_BYTES)]
+    size: Annotated[int, Field(strict=True, ge=1, le=MAX_PROFILE_OUTPUT_BYTES)]
     mime_type: Literal['image/png', 'image/jpeg']
 
 
@@ -102,6 +103,12 @@ def install_node_routes(app, store: BridgeStore, node_tokens: Mapping[str, NodeS
         data = await claim_body(request)
         await check(identity, task_id, data['claim_id'])
         return await call_store(store.start_execution, identity.source_scope, task_id, data['claim_id'])
+
+    @app.post(prefix + '/tasks/{task_id}/manual-ready')
+    async def manual_ready(task_id: str, request: Request, identity: NodeScope = Depends(node)):
+        data = await claim_body(request)
+        await check(identity, task_id, data['claim_id'])
+        return await call_store(store.begin_manual, identity.source_scope, task_id, data['claim_id'])
 
     @app.post(prefix + '/tasks/{task_id}/unknown')
     async def unknown(task_id: str, request: Request, identity: NodeScope = Depends(node)):

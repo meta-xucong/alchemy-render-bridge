@@ -27,6 +27,8 @@ import warnings
 
 from PIL import Image, UnidentifiedImageError
 
+from .profiles import get_profile, enabled_profile_ids, MAX_PROFILE_OUTPUT_BYTES
+
 MAX_INPUT_BYTES = 1_048_576
 MAX_OUTPUT_BYTES = 1_048_576
 MAX_IMAGE_PIXELS = 1_048_576
@@ -124,7 +126,8 @@ class BridgeStore:
     therefore NOT verified or promised by this experimental store.
     """
 
-    def __init__(self, db_path, artifact_root, *, clock=None):
+    def __init__(self, db_path, artifact_root, *, clock=None, enabled_profiles=("fake-image",)):
+        self.enabled_profiles = enabled_profile_ids(enabled_profiles)
         self.db_path = str(db_path)
         if self.db_path == ":memory:":
             raise ValueError("Use a file-backed database for persistence tests")
@@ -257,6 +260,9 @@ class BridgeStore:
         return row, self._scoped(con, "tasks", row["task_id"], scope)
 
     def _check_claim(self, con, task, claim_id):
+        if (self._profile(task).execution_mode == "manual" and task["deadline"] <= self.clock()
+                and task["state"] not in _TERMINAL):
+            _fail("task_expired", 409)
         claim = con.execute("SELECT * FROM claims WHERE task_id=?", (task["id"],)).fetchone()
         if not claim or claim["id"] != claim_id:
             _fail("stale_claim", 409)
@@ -269,29 +275,33 @@ class BridgeStore:
         return {
             "schema_version": "1",
             "profiles": [{
-                "execution_profile_id": PROFILE_ID,
-                "execution_profile_revision": PROFILE_REVISION,
-                "operation": "image.generate", "execution_mode": "automatic",
-                "requires_human": False, "validation": "isolated_fake_only",
+                "execution_profile_id": profile.id,
+                "execution_profile_revision": profile.revision,
+                "operation": "image.generate", "execution_mode": profile.execution_mode,
+                "requires_human": profile.execution_mode == "manual",
+                "validation": "isolated_fake_only" if profile.id == "fake-image" else "local_validation_pending",
                 "production_verified": False,
-            }],
+                "limits": {"max_output_bytes": profile.max_output_bytes,
+                           "max_image_pixels": profile.max_pixels,
+                           "max_dimension": profile.max_dimension},
+            } for profile in map(get_profile, self.enabled_profiles)],
             "limits": {"max_input_bytes": MAX_INPUT_BYTES,
-                       "max_output_bytes": MAX_OUTPUT_BYTES,
-                       "max_image_pixels": MAX_IMAGE_PIXELS, "max_references": 8,
-                       "max_queued_tasks": 10},
+                       "max_output_bytes": max(get_profile(p).max_output_bytes for p in self.enabled_profiles),
+                       "max_image_pixels": max(get_profile(p).max_pixels for p in self.enabled_profiles), "max_references": 8,
+                       "max_queued_tasks": 10, "max_manual_pending": 3},
         }
 
     @staticmethod
-    def _media_metadata(payload, *, output=False):
+    def _media_metadata(payload, *, output=False, profile=None):
         _hash(payload["original_sha256"])
-        _integer(payload["size"], 1, MAX_OUTPUT_BYTES if output else MAX_INPUT_BYTES)
+        _integer(payload["size"], 1, (profile.max_output_bytes if profile else MAX_OUTPUT_BYTES) if output else MAX_INPUT_BYTES)
         if not isinstance(payload["mime_type"], str) or payload["mime_type"] not in _MIMES:
             _fail("unsupported_media_type", 415)
 
-    def _verify_media(self, content, payload):
+    def _verify_media(self, content, payload, *, profile=None):
         if not isinstance(content, bytes):
             _fail("invalid_content")
-        if len(content) > MAX_INPUT_BYTES:
+        if len(content) > (profile.max_output_bytes if profile else MAX_INPUT_BYTES):
             _fail("file_too_large", 413)
         if len(content) != payload["size"]:
             _fail("size_mismatch", 422)
@@ -302,7 +312,8 @@ class BridgeStore:
                 warnings.simplefilter("error", Image.DecompressionBombWarning)
                 with Image.open(io.BytesIO(content)) as img:
                     width, height = img.size
-                    if width < 1 or height < 1 or width * height > MAX_IMAGE_PIXELS:
+                    if (width < 1 or height < 1 or width * height > (profile.max_pixels if profile else MAX_IMAGE_PIXELS)
+                            or (profile and max(width, height) > profile.max_dimension)):
                         _fail("image_too_large", 413)
                     if img.format != _MIMES[payload["mime_type"]]:
                         _fail("mime_mismatch", 422)
@@ -355,7 +366,7 @@ class BridgeStore:
         # Include orphaned files from an interrupted transaction in the disk budget.
         disk_used = sum(info.st_size for path in self.root.iterdir()
                         if stat.S_ISREG((info := path.lstat()).st_mode))
-        if max(used, disk_used) + len(content) > MAX_STORAGE_BYTES:
+        if max(used, disk_used) + len(content) > (MAX_STORAGE_BYTES if self.enabled_profiles == ("fake-image",) else 16 * MAX_PROFILE_OUTPUT_BYTES):
             _fail("storage_capacity", 503)
         fd, temp_name = tempfile.mkstemp(prefix=".pending-", dir=self.root)
         try:
@@ -385,7 +396,7 @@ class BridgeStore:
                 if (not stat.S_ISREG(info.st_mode) or info.st_size != payload["size"]
                         or not os.path.samestat(before, info)):
                     _fail("storage_unavailable", 503)
-                content = handle.read(MAX_OUTPUT_BYTES + 1)
+                content = handle.read(MAX_PROFILE_OUTPUT_BYTES + 1)
         except OSError:
             _fail("storage_unavailable", 503)
         if len(content) != payload["size"] or hashlib.sha256(content).hexdigest() != payload["original_sha256"]:
@@ -463,17 +474,20 @@ class BridgeStore:
                          "execution_profile_id", "execution_profile_revision", "prompt",
                          "parameters", "references", "output_slot", "deadline", "routing"))
         if (payload["schema_version"] != "1" or payload["operation"] != "image.generate"
-                or payload["execution_profile_id"] != PROFILE_ID
+                or payload["execution_profile_id"] not in self.enabled_profiles
                 or payload["execution_profile_revision"] != PROFILE_REVISION
                 or payload["routing"] != "bridge_only"):
             _fail("unsupported_capability", 422)
+        profile = get_profile(payload["execution_profile_id"])
         _origin(payload["origin_key"])
         _text(payload["binding_id"], 256)
         _text(payload["prompt"], 16000, multiline=True)
         _object(payload["parameters"], (), ("width", "height", "seed"))
-        width = _integer(payload["parameters"].get("width", 32), 1, 1024)
-        height = _integer(payload["parameters"].get("height", 32), 1, 1024)
-        if width * height > MAX_IMAGE_PIXELS:
+        if profile.id != "fake-image" and not {"width", "height"} <= payload["parameters"].keys():
+            _fail("explicit_dimensions_required", 422)
+        width = _integer(payload["parameters"].get("width", 32), 1, profile.max_dimension)
+        height = _integer(payload["parameters"].get("height", 32), 1, profile.max_dimension)
+        if width * height > profile.max_pixels:
             _fail("image_too_large", 413)
         if "seed" in payload["parameters"]:
             _integer(payload["parameters"]["seed"], 0, 2**32 - 1)
@@ -518,10 +532,11 @@ class BridgeStore:
                 return self._task_view(con, old)
             if deadline <= self.clock() or deadline > self.clock() + 7 * 86400:
                 _fail("invalid_deadline", 422)
-            active = con.execute("""SELECT COUNT(*) FROM tasks t JOIN attempts a ON a.task_id=t.id
+            active = con.execute("""SELECT t.* FROM tasks t JOIN attempts a ON a.task_id=t.id
                 WHERE t.state NOT IN ('canceled','failed','expired','artifacts_ready')
-                AND (t.deadline>? OR a.start_grant_id IS NOT NULL)""", (self.clock(),)).fetchone()[0]
-            if active >= 10:
+                AND (t.deadline>? OR a.start_grant_id IS NOT NULL)""", (self.clock(),)).fetchall()
+            active_count = sum(self._profile(row).execution_mode != "manual" or row["deadline"] > self.clock() for row in active)
+            if active_count >= 10:
                 _fail("queue_capacity", 429)
             for ref in payload["references"]:
                 row = self._scoped(con, "inputs", ref["input_ref"], scope)
@@ -543,14 +558,19 @@ class BridgeStore:
                 con.execute("INSERT OR IGNORE INTO input_pins VALUES(?,?)", (task_id, ref["input_ref"]))
             return self._task_view(con, self._scoped(con, "tasks", task_id, scope))
 
+    @staticmethod
+    def _profile(task):
+        return get_profile(json.loads(task["payload"]).get("execution_profile_id", "fake-image"))
+
     def _task_view(self, con, row):
         state = row["state"]
         if state not in _TERMINAL and not row["cancel_requested"]:
             attempt = con.execute("SELECT * FROM attempts WHERE task_id=?", (row["id"],)).fetchone()
             claim = con.execute("SELECT * FROM claims WHERE task_id=?", (row["id"],)).fetchone()
-            if not attempt["start_grant_id"] and row["deadline"] <= self.clock():
+            if (not attempt["start_grant_id"] or self._profile(row).execution_mode == "manual") and row["deadline"] <= self.clock():
                 state = "expired"
-            elif attempt["start_grant_id"] and claim and claim["expires"] <= self.clock():
+            elif (self._profile(row).execution_mode == "automatic"
+                  and attempt["start_grant_id"] and claim and claim["expires"] <= self.clock()):
                 # Reading never turns expiry into a second start permit.
                 state = "execution_unknown"
         receipt = con.execute("SELECT * FROM receipts WHERE task_id=?", (row["id"],)).fetchone()
@@ -561,6 +581,7 @@ class BridgeStore:
         return {
             "remote_task_id": row["id"], "origin_key": row["origin_key"],
             "task_digest": row["digest"], "state": state,
+            "action_required": "import_original" if state == "awaiting_user" else None,
             "poll_after_ms": 1000, "attempt_id": row["attempt_id"],
             "request": json.loads(row["payload"]),
             "receipt_id": receipt["id"] if receipt else None,
@@ -590,7 +611,7 @@ class BridgeStore:
                 if not started and task["deadline"] <= self.clock():
                     con.execute("UPDATE tasks SET state='expired' WHERE id=?", (task_id,))
                 else:
-                    state = "cancel_requested" if started else "canceled"
+                    state = "cancel_requested" if started and self._profile(task).execution_mode == "automatic" else "canceled"
                     con.execute("UPDATE tasks SET state=?,cancel_requested=1 WHERE id=?", (state, task_id))
             return self._task_view(con, self._scoped(con, "tasks", task_id, scope))
 
@@ -608,7 +629,7 @@ class BridgeStore:
                 _fail("task_expired", 409)
             if task["state"] in _TERMINAL or task["cancel_requested"]:
                 _fail("task_not_executable", 409)
-            if not attempt["start_grant_id"] and task["deadline"] <= self.clock():
+            if (not attempt["start_grant_id"] or self._profile(task).execution_mode == "manual") and task["deadline"] <= self.clock():
                 _fail("task_expired", 409)
             if attempt["start_grant_id"] and mode == "execute":
                 _fail("execution_already_started", 409)
@@ -619,7 +640,7 @@ class BridgeStore:
                 if old["node"] != node_id or old["executor"] != executor_instance or old["mode"] != mode:
                     _fail("claim_busy", 409)
                 return self._claim_view(old, task["attempt_id"])
-            if attempt["start_grant_id"]:
+            if attempt["start_grant_id"] and self._profile(task).execution_mode == "automatic":
                 con.execute("UPDATE tasks SET state='execution_unknown' WHERE id=?", (task_id,))
             epoch = old["epoch"] + 1 if old else 1
             claim_id = _id("claim")
@@ -637,6 +658,8 @@ class BridgeStore:
     def start_execution(self, scope, task_id, claim_id):
         with self._transaction() as con:
             task = self._scoped(con, "tasks", task_id, scope)
+            if self._profile(task).execution_mode != "automatic":
+                _fail("manual_profile_requires_manual_ready", 409)
             claim = self._check_claim(con, task, claim_id)
             attempt = con.execute("SELECT * FROM attempts WHERE task_id=?", (task_id,)).fetchone()
             if attempt["start_grant_id"]:
@@ -648,11 +671,11 @@ class BridgeStore:
                 _fail("upload_only_claim", 409)
             if task["deadline"] <= self.clock():
                 _fail("task_expired", 409)
-            occupied = con.execute("""SELECT 1 FROM attempts a JOIN tasks t ON t.id=a.task_id
+            occupied = con.execute("""SELECT t.* FROM attempts a JOIN tasks t ON t.id=a.task_id
                 WHERE a.start_grant_id IS NOT NULL AND t.id!=?
-                AND t.state NOT IN ('artifacts_ready','canceled','failed','expired') LIMIT 1""",
-                                   (task_id,)).fetchone()
-            if occupied:
+                AND t.state NOT IN ('artifacts_ready','canceled','failed','expired')""",
+                                   (task_id,)).fetchall()
+            if any(self._profile(row).execution_mode == "automatic" for row in occupied):
                 _fail("physical_slot_busy", 409)
             grant = _id("grant")
             con.execute("""UPDATE attempts SET start_grant_id=?,original_node=?,original_executor=?,
@@ -661,9 +684,37 @@ class BridgeStore:
             con.execute("UPDATE tasks SET state='running' WHERE id=?", (task_id,))
             return {"start_grant_id": grant, "attempt_id": attempt["id"], "may_execute": True}
 
+    def begin_manual(self, scope, task_id, claim_id):
+        """Grant same-attempt upload eligibility, never an automatic execution permit."""
+        with self._transaction() as con:
+            task = self._scoped(con, "tasks", task_id, scope)
+            if self._profile(task).execution_mode != "manual":
+                _fail("automatic_profile_requires_start", 409)
+            claim = self._check_claim(con, task, claim_id)
+            if task["cancel_requested"] or task["state"] in _TERMINAL:
+                _fail("task_not_executable", 409)
+            attempt = con.execute("SELECT * FROM attempts WHERE task_id=?", (task_id,)).fetchone()
+            if not attempt["start_grant_id"]:
+                if claim["mode"] != "execute":
+                    _fail("upload_only_claim", 409)
+                if task["deadline"] <= self.clock():
+                    _fail("task_expired", 409)
+                pending = con.execute("""SELECT t.* FROM tasks t JOIN attempts a ON a.task_id=t.id
+                    WHERE a.start_grant_id IS NOT NULL
+                    AND t.state NOT IN ('artifacts_ready','canceled','failed','expired')""").fetchall()
+                if sum(self._profile(row).execution_mode == "manual" and row["deadline"] > self.clock() for row in pending) >= 3:
+                    _fail("manual_capacity", 429)
+                con.execute("""UPDATE attempts SET start_grant_id=?,original_node=?,original_executor=?,
+                    started=? WHERE id=?""", (_id("manual"), claim["node"], claim["executor"],
+                                               self.clock(), attempt["id"]))
+                con.execute("UPDATE tasks SET state='awaiting_user' WHERE id=?", (task_id,))
+            return {"attempt_id": attempt["id"], "state": "awaiting_user", "may_execute": False}
+
     def mark_execution_unknown(self, scope, task_id, claim_id):
         with self._transaction() as con:
             task = self._scoped(con, "tasks", task_id, scope)
+            if self._profile(task).execution_mode != "automatic":
+                _fail("manual_profile_requires_manual_ready", 409)
             self._check_claim(con, task, claim_id)
             attempt = con.execute("SELECT * FROM attempts WHERE task_id=?", (task_id,)).fetchone()
             if not attempt["start_grant_id"]:
@@ -674,9 +725,9 @@ class BridgeStore:
 
     def create_upload(self, scope, task_id, claim_id, payload):
         _object(payload, ("attempt_id", "slot_id", "original_sha256", "size", "mime_type"))
-        self._media_metadata(payload, output=True)
         with self._transaction() as con:
             task = self._scoped(con, "tasks", task_id, scope)
+            self._media_metadata(payload, output=True, profile=self._profile(task))
             self._check_claim(con, task, claim_id)
             if payload["attempt_id"] != task["attempt_id"] or payload["slot_id"] != "primary":
                 _fail("upload_binding_mismatch", 409)
@@ -707,7 +758,7 @@ class BridgeStore:
             row, task = self._upload_row(con, upload_id, scope)
             self._check_claim(con, task, claim_id)
             payload = json.loads(row["payload"])
-            dimensions = self._verify_media(content, payload)
+            dimensions = self._verify_media(content, payload, profile=self._profile(task))
             request = json.loads(task["payload"])
             parameters = request["parameters"]
             if dimensions != {"width": parameters.get("width", 32),
@@ -740,7 +791,7 @@ class BridgeStore:
             manifest = {
                 "receipt_id": receipt_id, "task_id": task["id"],
                 "attempt_id": task["attempt_id"], "slot_id": upload["slot_id"],
-                "execution_profile_id": PROFILE_ID, "execution_profile_revision": PROFILE_REVISION,
+                "execution_profile_id": self._profile(task).id, "execution_profile_revision": self._profile(task).revision,
                 "artifact_id": artifact_id, "original_sha256": payload["original_sha256"],
                 "size": payload["size"], "mime_type": payload["mime_type"],
                 "dimensions": json.loads(upload["dimensions"]), "accepted_at": _utc(self.clock()),

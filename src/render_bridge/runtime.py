@@ -10,6 +10,7 @@ from pathlib import Path
 from .api import create_app
 from .domain import BridgeStore, SourceScope
 from .node_api import NodeScope
+from .profiles import enabled_profile_ids
 
 
 def create_runtime_app(*, store, source_tokens, node_tokens, dispatch_tokens):
@@ -25,6 +26,7 @@ class RuntimeConfig:
     workspace_id: str
     node_id: str
     executor_instance: str
+    enabled_profiles: tuple[str, ...] = ("fake-image",)
     host: str = '127.0.0.1'
     port: int = 8787
     source_token_env: str = 'BRIDGE_SOURCE_TOKEN'
@@ -44,6 +46,7 @@ class RuntimeConfig:
         return config
 
     def validate(self):
+        enabled_profile_ids(self.enabled_profiles)
         for value in (self.source_id, self.workspace_id, self.node_id, self.executor_instance):
             if not isinstance(value, str) or not 1 <= len(value) <= 128 or any(ord(c) < 32 for c in value):
                 raise ValueError('Invalid configured identity')
@@ -70,7 +73,8 @@ class RuntimeConfig:
     def build_app(self, environ=None):
         self.validate()
         source, node, dispatcher = self.credentials(environ)
-        store = BridgeStore(self.data_dir / 'bridge.sqlite', self.data_dir / 'artifacts')
+        store = BridgeStore(self.data_dir / 'bridge.sqlite', self.data_dir / 'artifacts',
+                            enabled_profiles=self.enabled_profiles)
         scope = SourceScope(self.source_id, self.workspace_id)
         app = create_runtime_app(store=store, source_tokens={source: scope},
             node_tokens={node: NodeScope(self.source_id, self.workspace_id, self.node_id, self.executor_instance)},

@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 
 from .client import HttpNodeClient, validated_url
 from .runner import NodeAgent
-from render_bridge.executors.fake import FakeExecutor
+from .registry import ExecutorRegistry
 
 TASK_NAME = 'bridge-node-execute-v1'
 
@@ -99,7 +99,7 @@ def configured_hatchet(environ=None):
                    tls_config=tls, healthcheck=HealthcheckConfig(enabled=False)))
 
 
-def make_worker(hatchet, node, executor, name='bridge-node-one-slot'):
+def make_worker(hatchet, node, executor=None, name='bridge-node-one-slot'):
     Input = input_type()
     from hatchet_sdk import Context
     @hatchet.task(name=TASK_NAME, input_validator=Input, retries=2,
@@ -122,6 +122,7 @@ def main(argv=None):
     dispatch.add_argument('--interval', type=float, default=2)
     worker = sub.add_parser('worker')
     worker.add_argument('--state-dir', type=Path, required=True)
+    worker.add_argument('--config', type=Path)
     args = parser.parse_args(argv)
     client = None
     try:
@@ -151,9 +152,9 @@ def main(argv=None):
             if not token:
                 raise ValueError('BRIDGE_NODE_TOKEN is required')
             client = HttpNodeClient(args.url, token)
-            node = NodeAgent(client, args.state_dir)
-            executor = FakeExecutor(args.state_dir / 'executors')
-            make_worker(hatchet, node, executor).start()
+            registry = ExecutorRegistry.from_config(args.state_dir / 'executors', args.config)
+            node = NodeAgent(client, args.state_dir, registry=registry)
+            make_worker(hatchet, node).start()
     except KeyboardInterrupt:
         return 0
     except Exception as exc:

@@ -18,7 +18,7 @@ An optional API-based bridge between Alchemy applications and local rendering to
 - [Source HTTP 开发演示与运行方法](docs/implementation/SOURCE_HTTP_DEMO.md)：补齐来源侧实际 HTTP 调用，提供合成 PNG 和结果报告；仍非生产渲染服务。
 - [节点HTTP与任务账本的隔离闭环](docs/implementation/NODE_LEDGER_HTTP_TRIAL.md)已通过；该次试验的来源侧为领域模拟器，本次增量已补齐来源 HTTP，仍不是 Alchemy 联调。
 - Windows 合同测试不代表 Windows Agent 验收；该实验存储不承诺 Windows 断电目录持久性或 ACL 安全隔离。
-- 首批真实场景为本机已登录的Codex CLI与Midjourney（Discord API发任务消息、用户手动提交、原图导入）；已有离线适配组件，真实调用默认未启用。ComfyUI后置；没有真实模型、生产或正式Windows Agent验收。
+- 首批真实场景为本机已登录的Codex CLI与Midjourney（Discord API发任务消息、用户手动提交、原图导入）；已有可配置任务路由与适配组件，真实调用默认未启用。ComfyUI后置；没有真实模型、生产或正式Windows Agent验收。
 
 ## 架构边界
 

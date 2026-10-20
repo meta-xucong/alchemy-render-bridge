@@ -14,7 +14,7 @@ python -m pip install --no-deps -e .
 python scripts/run_configured_demo.py --output-dir demo-output
 ```
 
-输出目录必须不存在。该命令启动独立 Bridge 进程和 Agent 进程，完成实际 HTTP 创建、持久 outbox、显式模拟派发、一次 fake 执行、结果上传/下载、hash 校验及回执确认；再次启动 Agent 投递同任务不会再生成。退出清理临时服务/Agent数据，只保留测试 PNG 和 result.json。
+输出目录必须不存在。该命令启动独立 Bridge 进程和 Agent 进程，完成实际 HTTP 创建、持久 outbox、显式模拟派发、一次 fake 执行、结果上传/下载、hash 校验及回执确认；再次启动 Agent 投递同任务不会再生成。还会先导出一项人工待办，验证它不阻塞 fake 任务，再由重启后的 Agent 将测试 PNG 显式导入原任务并确认回执（不实际调用 Midjourney）。退出清理临时服务/Agent数据，只保留测试 PNG 和 result.json。
 
 这是 mock dispatcher 联合验收，不是启动真实 Hatchet 的命令，也不调用真实模型。测试图是合成线条图，不是 AI 生成结果。
 
@@ -34,7 +34,7 @@ python scripts/run_configured_demo.py --output-dir demo-output
 
 ## 仍需开发或配置的范围
 
-此版服务只开放 `fake-image` 任务 profile。真实执行器离线组件并不等于服务/Agent已开放其任务；真实 profile 路由、人工等待状态接线仍需后续实现与验收。
+默认服务和 Agent 只启用 `fake-image`。`codex-image` 与 `midjourney-manual` 的配置路由、执行前检查、人工等待及原图导入接线已经实现，必须在服务和 Agent 配置中分别显式启用。启用 Codex 还需要本地账号/model/工具策略验收标记；当前仅通过模拟子进程测试，不代表真实生图已验收。非 fake 请求必须显式提供目标宽高，回传原图严格核验尺寸，不自动缩放。
 
 SQLite 是单机开发后端，不等于设计中的 PostgreSQL 生产持久层。PostgreSQL迁移、生产节点管理/配对、Alchemy独立接入模块及双VPS部署均仍未完成。不要直接将本开发配置暴露公网，也不要宣称所有产品功能已完成。
 

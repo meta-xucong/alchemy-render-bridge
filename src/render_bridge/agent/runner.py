@@ -10,17 +10,20 @@ import shutil
 from .client import NodeHTTPError
 from .journal import AgentJournal, InstanceLock
 from render_bridge.executors.base import ExecutionRequest, inspect_image
+from render_bridge.profiles import get_profile
+from .registry import ExecutorRegistry
 
 _KEY = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$')
 
 
 class NodeAgent:
-    def __init__(self, client, state_dir: Path, *, profile='fake-image'):
+    def __init__(self, client, state_dir: Path, *, profile='fake-image', registry=None):
         self.client = client
         self.journal = AgentJournal(state_dir)
         self.profile = profile
+        self.registry = registry or ExecutorRegistry.from_config(self.journal.root / 'executors')
 
-    def execute_task(self, task_id, executor):
+    def execute_task(self, task_id, executor=None):
         if not isinstance(task_id, str) or not _KEY.fullmatch(task_id):
             raise ValueError('Invalid task identifier')
         with InstanceLock(self.journal.root / 'agent.lock'):
@@ -41,16 +44,25 @@ class NodeAgent:
             return {'outcome': 'already_committed', 'task_id': task_id, 'receipt_id': task['receipt_id']}
         if record and record['state'] == 'complete':
             return {'outcome': 'already_committed', 'task_id': task_id, 'receipt_id': record['receipt_id']}
+        if task['state'] in ('canceled', 'failed', 'expired'):
+            return {'outcome': 'not_executable', 'task_id': task_id}
         if record and record['state'] == 'artifact_ready':
             return self._upload(record)
         if record and record['state'] in ('start_requested', 'execution_unknown'):
             self._unknown(record)
             return {'outcome': 'execution_unknown', 'task_id': task_id}
-        if task['request']['execution_profile_id'] != self.profile or self.profile != 'fake-image':
-            # Real executors are developed offline first; local acceptance enables
-            # their matching server profiles in a later explicit change.
+        profile_id = task['request']['execution_profile_id']
+        profile = get_profile(profile_id)
+        # Legacy explicit injection is limited to the configured legacy profile.
+        executor = executor if executor is not None and profile_id == self.profile else self.registry.get(profile_id)
+        if executor is None:
             return {'outcome': 'needs_attention', 'code': 'profile_not_enabled', 'task_id': task_id}
-        if self.journal.occupied_by_other(task_id):
+        if record and record['state'] == 'manual_prepared' and task['state'] == 'awaiting_user':
+            record['state'] = 'awaiting_user'
+            self.journal.save(record)
+        if record and record['state'] == 'awaiting_user':
+            return {'outcome': 'awaiting_user', 'task_id': task_id, **record['manual_details']}
+        if profile.execution_mode == 'automatic' and self.journal.occupied_by_other(task_id):
             return {'outcome': 'physical_slot_busy', 'task_id': task_id}
         if task['state'] in ('running', 'execution_unknown', 'uploading') and not record:
             # Missing local evidence cannot authorize another physical execution.
@@ -75,8 +87,26 @@ class NodeAgent:
         request = ExecutionRequest(task_id, attempt_id, task['request']['prompt'],
                                    task['request']['parameters'], tuple(references))
         record['request_sha256'] = request.digest
-        if shutil.disk_usage(work).free < 4 * 1_048_576:
+        record['request'] = request.payload()
+        record['profile_id'] = profile_id
+        if shutil.disk_usage(work).free < max(4 * 1_048_576, 2 * profile.max_output_bytes):
             return {'outcome': 'needs_attention', 'code': 'insufficient_disk', 'task_id': task_id}
+        if hasattr(executor, 'preflight'):
+            blocked = executor.preflight(request)
+            if blocked is not None:
+                return {'outcome': blocked.status, 'code': blocked.code, 'task_id': task_id}
+        if profile.execution_mode == 'manual':
+            result = executor.execute(request)
+            if result.code != 'awaiting_user_submission':
+                return {'outcome': result.status, 'code': result.code, 'task_id': task_id}
+            record.update(state='manual_prepared', manual_details=result.details)
+            self.journal.save(record)
+            grant = self.client.manual_ready(task_id, claim['claim_id'])
+            if grant.get('attempt_id') != attempt_id or grant.get('state') != 'awaiting_user':
+                raise ValueError('Manual grant does not match attempt')
+            record.update(state='awaiting_user', manual_details=result.details)
+            self.journal.save(record)
+            return {'outcome': 'awaiting_user', 'task_id': task_id, **result.details}
         # Persist before crossing the execution boundary. An interrupted response
         # can never cause this attempt to automatically execute again.
         record['state'] = 'start_requested'
@@ -101,22 +131,57 @@ class NodeAgent:
             if result.status != 'ready' or result.artifact is None:
                 self._unknown(record)
                 return {'outcome': result.status, 'code': result.code, 'task_id': task_id}
-            artifact = result.artifact
-            content = Path(artifact.path).read_bytes()
-            if not 0 < len(content) <= 1_048_576 or hashlib.sha256(content).hexdigest() != artifact.sha256:
-                raise ValueError('Executor artifact hash or size does not match')
-            saved = work / 'result.original'
-            checked = inspect_image(content, provenance=artifact.provenance, path=saved)
-            if checked.mime_type != artifact.mime_type:
-                raise ValueError('Executor artifact media type does not match')
-            self._save_bytes(saved, content)
-            record.update(state='artifact_ready', artifact=str(saved.relative_to(self.journal.root)),
-                          sha256=checked.sha256, size=checked.size, mime_type=checked.mime_type)
-            self.journal.save(record)
+            self._save_artifact(record, result.artifact, profile)
         except Exception:
             self._unknown(record)
             return {'outcome': 'execution_unknown', 'task_id': task_id}
         return self._upload(record)
+
+    def _save_artifact(self, record, artifact, profile):
+        content = Path(artifact.path).read_bytes()
+        if not 0 < len(content) <= profile.max_output_bytes or hashlib.sha256(content).hexdigest() != artifact.sha256:
+            raise ValueError('Executor artifact hash or size does not match')
+        saved = self.journal.root / 'attempts' / record['task_id'] / record['attempt_id'] / 'result.original'
+        checked = inspect_image(content, provenance=artifact.provenance, path=saved)
+        if (checked.mime_type != artifact.mime_type or checked.width * checked.height > profile.max_pixels
+                or max(checked.width, checked.height) > profile.max_dimension):
+            raise ValueError('Executor artifact does not match profile limits')
+        self._save_bytes(saved, content)
+        record.update(state='artifact_ready', artifact=str(saved.relative_to(self.journal.root)),
+                      sha256=checked.sha256, size=checked.size, mime_type=checked.mime_type)
+        self.journal.save(record)
+
+    def manual_import(self, task_id, source, *, confirmed_request_sha256, confirmed_single_original):
+        if not isinstance(task_id, str) or not _KEY.fullmatch(task_id):
+            raise ValueError('Invalid task identifier')
+        with InstanceLock(self.journal.root / 'agent.lock'):
+            task = self.client.task(task_id)
+            record = self.journal.get(task_id)
+            if not record or record['attempt_id'] != task['attempt_id']:
+                raise ValueError('Matching exported local attempt required')
+            if task.get('receipt_id'):
+                return {'outcome': 'already_committed', 'task_id': task_id, 'receipt_id': task['receipt_id']}
+            if task['state'] in ('canceled', 'failed', 'expired'):
+                return {'outcome': 'not_executable', 'task_id': task_id}
+            if record.get('profile_id') != 'midjourney-manual':
+                raise ValueError('Task is not a manual profile')
+            if confirmed_request_sha256 != record['request_sha256'] or confirmed_single_original is not True:
+                raise ValueError('Explicit matching task and single-original confirmation required')
+            if record['state'] == 'artifact_ready':
+                return self._upload(record)
+            if record['state'] != 'awaiting_user':
+                raise ValueError('Task is not awaiting manual import')
+            executor = self.registry.get(record['profile_id'])
+            if executor is None:
+                return {'outcome': 'needs_attention', 'code': 'profile_not_enabled', 'task_id': task_id}
+            request = ExecutionRequest(**record['request'])
+            result = executor.import_original(request, Path(source),
+                confirmed_request_sha256=confirmed_request_sha256,
+                confirmed_single_original=confirmed_single_original)
+            if result.status != 'ready' or result.artifact is None:
+                return {'outcome': result.status, 'code': result.code, 'task_id': task_id}
+            self._save_artifact(record, result.artifact, get_profile(record['profile_id']))
+            return self._upload(record)
 
     @staticmethod
     def _save_bytes(path, content):
@@ -168,6 +233,10 @@ class NodeAgent:
             record.update(state='complete', receipt_id=receipt['receipt_id'])
             self.journal.save(record)
             return {'outcome': 'artifact_committed', 'task_id': record['task_id'], 'receipt_id': receipt['receipt_id']}
+        except NodeHTTPError as exc:
+            if exc.code in ('task_not_executable', 'task_not_accepting', 'task_expired', 'task_canceled', 'task_cancelled'):
+                return {'outcome': 'not_executable', 'code': exc.code, 'task_id': record['task_id']}
+            return {'outcome': 'upload_pending', 'code': exc.code, 'task_id': record['task_id']}
         except Exception:
             # Known bytes are retained; subsequent delivery retries only upload.
             return {'outcome': 'upload_pending', 'task_id': record['task_id']}

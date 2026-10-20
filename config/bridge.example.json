@@ -4,6 +4,7 @@
   "workspace_id": "local-workspace",
   "node_id": "local-node",
   "executor_instance": "local-executor-1",
+  "enabled_profiles": ["fake-image"],
   "host": "127.0.0.1",
   "port": 8787,
   "source_token_env": "BRIDGE_SOURCE_TOKEN",

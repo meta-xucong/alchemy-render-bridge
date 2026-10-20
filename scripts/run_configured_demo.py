@@ -38,9 +38,12 @@ def run_demo(output_dir: Path):
                    BRIDGE_DISPATCH_TOKEN=secrets.token_urlsafe(32))
         config = {'data_dir': str(root / 'server'), 'source_id': 'demo-source',
                   'workspace_id': 'demo-workspace', 'node_id': 'demo-node',
-                  'executor_instance': 'demo-executor', 'host': '127.0.0.1', 'port': port}
+                  'executor_instance': 'demo-executor', 'host': '127.0.0.1', 'port': port,
+                  'enabled_profiles': ['fake-image', 'midjourney-manual']}
         path = root / 'server.json'
         path.write_text(json.dumps(config), encoding='utf-8')
+        agent_config = root / 'agent.json'
+        agent_config.write_text(json.dumps({'enabled_profiles': ['fake-image', 'midjourney-manual']}), encoding='utf-8')
         process = subprocess.Popen([sys.executable, '-m', 'render_bridge.runtime', '--config', str(path)],
                                    cwd=root, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
@@ -64,6 +67,20 @@ def run_demo(output_dir: Path):
                            'parameters': {'width': 48, 'height': 32, 'seed': 0}, 'references': [],
                            'output_slot': {'slot_id': 'primary', 'count': 1}, 'routing': 'bridge_only',
                            'deadline': (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()}
+                agent_command = [sys.executable, '-m', 'render_bridge.agent', '--url', url,
+                                 '--state-dir', str(root / 'agent'), '--config', str(agent_config)]
+                manual_request = dict(request, origin_key='manual-demo', execution_profile_id='midjourney-manual')
+                response = source.post('/bridge/v1/tasks', json=manual_request)
+                response.raise_for_status()
+                manual_task = response.json()['remote_task_id']
+                exported = subprocess.run(agent_command + ['run-task', manual_task], cwd=root,
+                                          env=env, capture_output=True, timeout=30)
+                if exported.returncode:
+                    raise RuntimeError('Manual task export command failed')
+                manual_export = json.loads(exported.stdout)
+                if manual_export['outcome'] != 'awaiting_user':
+                    raise RuntimeError('Manual task did not enter waiting state')
+                # An awaiting manual task must not occupy the automatic slot.
                 def create():
                     response = source.post('/bridge/v1/tasks', json=request)
                     response.raise_for_status()
@@ -78,8 +95,7 @@ def run_demo(output_dir: Path):
                 if len(pending) != 1 or pending[0]['task_id'] != task_id:
                     raise RuntimeError('Dynamic outbox did not contain the task')
                 # Explicit mock-engine delivery. This is not a second scheduler.
-                command = [sys.executable, '-m', 'render_bridge.agent', '--url', url,
-                           '--state-dir', str(root / 'agent'), 'run-task', task_id]
+                command = agent_command + ['run-task', task_id]
                 first = subprocess.run(command, cwd=root, env=env, capture_output=True, timeout=30)
                 if first.returncode:
                     raise RuntimeError('Agent command failed')
@@ -117,13 +133,32 @@ def run_demo(output_dir: Path):
                 if response.json()['items']:
                     raise RuntimeError('Outbox acknowledgement was not persisted')
                 (output_dir / 'synthetic.png').write_bytes(content)
+                imported = subprocess.run(agent_command + ['manual-import', manual_task,
+                    str(output_dir / 'synthetic.png'), '--request-sha256', manual_export['request_sha256'],
+                    '--confirm-single-original'], cwd=root, env=env, capture_output=True, timeout=30)
+                if imported.returncode or json.loads(imported.stdout)['outcome'] != 'artifact_committed':
+                    raise RuntimeError('Manual import command failed')
+                response = source.get('/bridge/v1/tasks/' + manual_task)
+                response.raise_for_status()
+                manual_receipt_id = response.json()['receipt_id']
+                response = source.get('/bridge/v1/receipts/' + manual_receipt_id)
+                response.raise_for_status()
+                manual_receipt = response.json()
+                if manual_receipt['original_sha256'] != digest or manual_receipt['execution_profile_id'] != 'midjourney-manual':
+                    raise RuntimeError('Manual receipt identity mismatch')
+                response = source.post('/bridge/v1/receipts/' + manual_receipt_id + '/ack', json={
+                    'client_receipt_id': 'manual-demo-ack', 'decision': 'accepted',
+                    'reason_code': 'synthetic_manual_demo_verified', 'original_hash': digest})
+                response.raise_for_status()
                 result = {'status': 'passed', 'mode': 'configured_processes_mock_dispatcher',
                           'source_transport': 'http', 'node_transport': 'http',
                           'server_process': True, 'agent_process': True,
                           'dynamic_outbox': True, 'same_origin_replay': True,
                           'agent_restart_replay': replay['outcome'], 'fake_render_starts': len(starts),
                           'artifact_sha256': digest, 'artifact_bytes': len(content),
-                          'receipt_ack': 'accepted', 'real_hatchet': False, 'real_provider': False}
+                          'receipt_ack': 'accepted', 'manual_import_after_restart': True,
+                          'manual_wait_does_not_block_automatic': True, 'manual_receipt_ack': 'accepted',
+                          'real_hatchet': False, 'real_provider': False}
         finally:
             if process and process.poll() is None:
                 process.terminate()

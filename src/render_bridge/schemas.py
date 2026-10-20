@@ -1,6 +1,6 @@
 """Strict, versioned request shapes for the experimental source API.
 
-Only the FakeRenderer image contract is enabled. These are wire schemas, not
+Profiles are admitted by explicit server configuration; fake is the default. These are wire schemas, not
 Alchemy business objects, node commands, or a production capability catalog.
 The domain validates the same invariants for non-HTTP fixture callers.
 """
@@ -11,6 +11,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, model_validator
 from pydantic.json_schema import SkipJsonSchema
+from .profiles import get_profile
 
 
 Key = Annotated[StrictStr, Field(min_length=1, max_length=128)]
@@ -19,7 +20,7 @@ OriginKey = Annotated[
 ]
 OpaqueReference = Annotated[StrictStr, Field(min_length=1, max_length=256)]
 SHA256 = Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{64}$")]
-ImageDimension = Annotated[StrictInt, Field(ge=1, le=1024)]
+ImageDimension = Annotated[StrictInt, Field(ge=1, le=40_000_000)]
 ImageSeed = Annotated[StrictInt, Field(ge=0, le=2**32 - 1)]
 
 
@@ -59,7 +60,7 @@ class TaskCreate(StrictRequest):
     origin_key: OriginKey
     binding_id: OpaqueReference
     operation: Literal["image.generate"]
-    execution_profile_id: Literal["fake-image"]
+    execution_profile_id: Literal["fake-image", "codex-image", "midjourney-manual"]
     execution_profile_revision: Literal["1"]
     prompt: Annotated[StrictStr, Field(min_length=1, max_length=16_000)]
     parameters: ImageParameters
@@ -68,6 +69,23 @@ class TaskCreate(StrictRequest):
     # Keep the exact frozen wire value; the domain checks UTC and the time bound.
     deadline: Annotated[StrictStr, Field(min_length=20, max_length=40)]
     routing: Literal["bridge_only"]
+
+    @model_validator(mode="before")
+    @classmethod
+    def explicit_real_dimensions(cls, value):
+        if isinstance(value, dict) and value.get("execution_profile_id") != "fake-image":
+            parameters = value.get("parameters")
+            if not isinstance(parameters, dict) or not {"width", "height"} <= parameters.keys():
+                raise ValueError("Real profiles require explicit width and height")
+        return value
+
+    @model_validator(mode="after")
+    def enforce_profile_dimensions(self):
+        profile = get_profile(self.execution_profile_id)
+        if (max(self.parameters.width, self.parameters.height) > profile.max_dimension
+                or self.parameters.width * self.parameters.height > profile.max_pixels):
+            raise ValueError("Dimensions exceed execution profile limits")
+        return self
 
 
 class ReceiptAck(StrictRequest):

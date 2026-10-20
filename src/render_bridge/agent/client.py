@@ -63,6 +63,10 @@ class HttpNodeClient:
     def claim(self, task_id, mode='execute'):
         return self.request('POST', f'/tasks/{self.key(task_id)}/claim', json={'mode': mode}).json()
 
+    def manual_ready(self, task_id, claim_id):
+        return self.request('POST', '/tasks/' + self.key(task_id) + '/manual-ready',
+                            json={'claim_id': claim_id}).json()
+
     def start(self, task_id, claim_id):
         return self.request('POST', f'/tasks/{self.key(task_id)}/start', json={'claim_id': claim_id}).json()
 

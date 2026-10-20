@@ -1,6 +1,6 @@
 # 可配置 Node Agent 与 Hatchet 交接侧车
 
-本版接受动态任务 ID，经 Node HTTP 获取冻结请求；仍只启用 `fake-image`。它不是固定 fixture，也不调用真实 Codex、Midjourney 或用户电脑。与 [Bridge 服务配置](CONFIGURED_BRIDGE_RUNTIME.md) 配套。
+本版接受动态任务 ID，经 Node HTTP 获取冻结请求；默认只启用 `fake-image`，可通过显式本地配置选择其他固定 profile。它不是固定 fixture，也不调用真实 Codex、Midjourney 或用户电脑。与 [Bridge 服务配置](CONFIGURED_BRIDGE_RUNTIME.md) 配套。
 
 ## 进程与配置
 
@@ -31,7 +31,7 @@ worker 只有一个 slot。SDK 回调只收到 `task_id`，Agent 再经 HTTP 读
 python -m render_bridge.agent --state-dir ./local-agent-state run-task TASK_ID
 ```
 
-需要 `BRIDGE_NODE_TOKEN`，可加前置 `--url`。这是开发入口，不是 Hatchet 验收，不会扫描 pending 或自行挑任务。成功提交/重放成功退出 0，其他已返回结果退出 2。不同进程不得同时使用同一状态目录执行任务。
+需要 `BRIDGE_NODE_TOKEN`，可加前置 `--url`。这是开发入口，不是 Hatchet 验收，不会扫描 pending 或自行挑任务。成功提交/重放成功或已建立人工待办退出 0，其他已返回结果退出 2。不同进程不得同时使用同一状态目录执行任务。
 
 ## 恢复语义
 
@@ -42,10 +42,29 @@ python -m render_bridge.agent --state-dir ./local-agent-state run-task TASK_ID
 - 产物检查后保存在本地并记录 `artifact_ready`，再上传。上传失败保留同一 attempt 和原始字节；claim 过期则申请 `upload_only`，只重传、不重新执行。提交成功但回包丢失时，通过服务端 receipt 恢复。
 - 已完成任务再次投递直接返回原 receipt。保留状态和产物目录；本版没有自动清理或 unknown 强制重置命令。不要删除 journal 来“解锁”。
 
-这些是针对关键故障窗口的保守恢复，不代表所有磁盘/断电/网络故障均已验收。当前服务媒体上限 1 MiB，真实工具适配器更大文件的离线能力不改变此上限。
+这些是针对关键故障窗口的保守恢复，不代表所有磁盘/断电/网络故障均已验收。输出限制由共享 profile registry 决定：Fake 为 1 MiB / 单边 1024；Codex 与人工 MJ 为 16 MiB / 40 MP。输入参考图仍最多 1 MiB，顺序和 hash 不变。
 
 ## 验证与未验收项
 
 `python -m unittest discover -s tests -p 'test_agent_*.py' -v` 覆盖动态 fake 完成/重启重放、上传失败和过期 claim 恢复、提交回包丢失、start 回包丢失不再生成、参考图顺序、单实例锁及 outbox 提交/确认。SDK 调用形状按固定官方 wheel 源码核对；sidecar mock 测试不等于新的真实引擎或远程 TLS 验收。
 
-真实 Codex 默认 `needs_attention`，其本地配置/能力验证和 Midjourney 人工导入见 [离线执行器](OFFLINE_EXECUTORS.md)。本 Agent 和服务尚未启用这些 profile，不能把离线 adapter 或 mock 测试称为真实生成成功。用户本地登录、真实生成、生产数据库、双 VPS 部署及远程恢复仍需后续验收。
+真实 Codex 默认 `needs_attention`，其本地配置/能力验证和 Midjourney 人工导入见 [离线执行器](OFFLINE_EXECUTORS.md)。Agent 和服务现在都支持显式启用这些 profile，但默认仍只有 Fake；不能把路由和 mock 测试称为真实生成成功。用户本地登录、真实生成、生产数据库、双 VPS 部署及远程恢复仍需后续验收。
+
+## 显式 profile 配置与人工闭环
+
+复制 `config/agent.example.json` 到本地私有配置，tokens 仍只用环境变量。Agent 的 `enabled_profiles` 与 Bridge 的配置需一致；任务不能自行指定 CLI 路径、模型或 acceptance flags。
+
+```sh
+python -m render_bridge.agent --state-dir ./local-agent-state --config ./agent.local.json run-task TASK_ID
+python -m render_bridge.agent.hatchet_sidecar worker --state-dir ./local-agent-state --config ./agent.local.json
+```
+
+- 默认配置不启用 Codex 或人工 MJ。加入 `codex-image` 后，还必须在本地完成真实能力验证并显式配置 `codex.enabled`、`model`、`image_capability_verified`、`tool_policy_verified`。Agent 在 server start 前只做版本/help preflight；不通过返回 needs_attention，不占物理执行槽。真正 thread/turn 生命周期仍受本地配置控制，本轮仅 mock 验证。
+- 加入 `midjourney-manual` 后，任务导出 prompt.txt/task.json，服务通过 manual-ready 建立同 attempt 的 awaiting_user。返回 request_sha256 与导出文件路径，Hatchet 回调即结束，人工等待不占自动物理槽。不发送 Discord 或调用 /imagine。人工参考图流程尚未验证，带参考图的人工任务返回 needs_attention。
+- 每个真实 profile 请求必须显式给 width/height；原图需与冻结尺寸一致。用户自行在 Midjourney 生成，并明确选定一张原图，不是网格截图。使用导出时返回的 request_sha256：
+
+```sh
+python -m render_bridge.agent --state-dir ./local-agent-state --config ./agent.local.json manual-import TASK_ID /path/to/original.png --request-sha256 HASH --confirm-single-original
+```
+
+重启必须复用 state-dir 与配置，journal 恢复同 attempt，不能新建执行。导入先检查服务状态和 attempt；取消/过期拒绝，已有 receipt 返回原 receipt。上传失败仅重传原始字节，claim 过期可用 upload_only。并发取消导致服务拒绝 commit 时返回 not_executable，不把本地导入误报为交付成功。人工来源仅为用户声明，并非自动证明来自 Midjourney。

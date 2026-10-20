@@ -44,3 +44,48 @@
 这是可配置的单机开发后端，SQLite 并未替代设计中的 PostgreSQL 生产路线。仍未完成 PostgreSQL 迁移、持续节点管理/配对、完整故障恢复、真实 Codex/Midjourney 生成、Alchemy 接入和双 VPS 部署验收。固定内存 token 映射是最小受信环境配置，不是完整凭据管理服务。
 
 本次验收聚焦动态 fake 任务主流程及必要身份/重放行为。真实工具登录及图片能力留到本地迁移后，不作为继续编写其他模块的前置条件。
+
+## Explicit execution profiles (revision 1)
+
+`enabled_profiles` in `config/bridge.example.json` defaults to `["fake-image"]`.
+To admit the other implemented routes, explicitly list `codex-image` and/or
+`midjourney-manual`. This changes admission, not tool login or proof of real
+execution. Codex and Midjourney remain pending local real-tool validation.
+The node must independently configure the matching executor. The shared frozen
+`render_bridge.profiles` registry supplies modes and limits; a request cannot
+choose its own execution mode.
+
+- `fake-image`: automatic; output at most 1 MiB, each dimension at most 1024,
+  total at most 1,048,576 pixels. Existing omitted dimensions default to 32.
+- `codex-image`: automatic; output at most 16 MiB and 40,000,000 pixels.
+- `midjourney-manual`: manual; output at most 16 MiB and 40,000,000 pixels.
+- Both non-fake profiles require explicit integer `parameters.width` and
+  `parameters.height`. Returned originals must match those dimensions exactly;
+  Bridge never silently resizes a real original. PNG/JPEG, one image only.
+- Input uploads still have the existing 1 MiB / 1,048,576-pixel ceiling.
+  Enabling an output profile does not increase input limits or imply that its
+  reference-image workflow has been validated.
+- Capabilities advertise each enabled profile's limits. Global output limits
+  are maxima across enabled profiles, not permission to exceed a chosen profile.
+- Local object storage is bounded at 16 MiB for the default fake-only store,
+  and 256 MiB when non-fake profiles are configured. This remains a development
+  SQLite/filesystem service, not a production PostgreSQL deployment.
+
+Manual flow: claim the task, then POST
+`/bridge/node/v1/tasks/{task_id}/manual-ready` with `{"claim_id":"..."}`.
+The idempotent response is `{"attempt_id":"...","state":"awaiting_user",
+"may_execute":false}`. The task view exposes `action_required: "import_original"`.
+This grants upload eligibility for the same attempt, never an automatic start
+permit. The existing attempt grant column stores this manual eligibility; its
+meaning is determined by the frozen profile, so no database migration is needed
+for existing fake tasks. Automatic `/start` rejects manual tasks, while
+`/manual-ready` rejects automatic tasks. Manual pending capacity is three;
+manual work does not reserve the automatic physical slot.
+
+Claim expiry leaves a manual task awaiting the user, not execution-unknown.
+An `upload_only` claim can recover the same attempt after lease expiry.
+Task deadline expiry is different: it blocks late imports/commits and releases
+manual pending capacity. Cancellation also blocks commit. The receipt records
+the frozen request's actual profile, including after a configuration change.
+The node may export an offline task package and explicitly import a confirmed
+single original; this is not automatic Discord or Midjourney execution.

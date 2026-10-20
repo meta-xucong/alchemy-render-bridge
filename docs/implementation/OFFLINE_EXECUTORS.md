@@ -120,8 +120,8 @@ Concrete remaining local acceptance gaps:
 
 These are capability/configuration acceptance requirements, not missing lifecycle
 code. The full enabled path is tested using a fixed Python stdio subprocess only;
-no real app-server turn was started in the cloud. The server still publishes only
-its fake profile until separate real local end-to-end acceptance.
+no real app-server turn was started in the cloud. The server defaults to the fake profile; explicit profile routing is implemented,
+while real local end-to-end capability acceptance remains required.
 
 ## Verification and stopping point
 
