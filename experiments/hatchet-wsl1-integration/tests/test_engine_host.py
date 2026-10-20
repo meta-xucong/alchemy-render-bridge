@@ -161,7 +161,7 @@ class NodeAdapterBoundaryTests(unittest.TestCase):
     def evidence(self):
         return {'status': 'passed', 'start_grants': {'happy': 1, 'unknown': 1, 'blocked': 0},
                 'artifact_sha256': 'a' * 64, 'artifact_bytes': 100, 'receipt_ack': 'accepted',
-                'unknown_retains_slot': True, 'source_transport': 'domain_simulator',
+                'unknown_retains_slot': True, 'source_transport': 'loopback_http',
                 'node_transport': 'test_only_loopback_http'}
 
     def test_exact_three_loopback_listener_delta(self):

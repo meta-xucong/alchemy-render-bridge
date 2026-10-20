@@ -196,7 +196,7 @@ def validate_node_evidence(value):
             or not re.fullmatch(r'[0-9a-f]{64}', value['artifact_sha256'])
             or type(value.get('artifact_bytes')) is not int or not 0 < value['artifact_bytes'] <= 16384
             or value.get('receipt_ack') != 'accepted' or value.get('unknown_retains_slot') is not True
-            or value.get('source_transport') != 'domain_simulator'
+            or value.get('source_transport') != 'loopback_http'
             or value.get('node_transport') != 'test_only_loopback_http'):
         raise PublicFailure('Node adapter ledger evidence incomplete')
     # Only validated safe fields reach result.json; never the private token.
@@ -260,16 +260,23 @@ def engine_gate(name, root, run, windows_listener, validate_listener):
         if not bridge_python.is_file() or bridge_python.resolve() == Path(sys.executable).resolve():
             raise PublicFailure('Dedicated Bridge-lock interpreter is required')
         node_temp.mkdir()
-        node = subprocess.Popen([str(bridge_python), '-u', str(Path(__file__).with_name('node_trial_server.py'))],
+        node = subprocess.Popen([str(bridge_python), '-u', str(Path(__file__).with_name('node_trial_server.py')),
+                                 '--artifact-output', str(Path(__file__).with_name('demo-artifact.png'))],
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                 env={**os.environ, 'TEMP': str(node_temp), 'TMP': str(node_temp),
                                      'PYTHONUTF8': '1', 'PYTHONIOENCODING': 'utf-8'})
         node_control = PrivatePipe(node.stdout)
         send(node, 'start')
-        node_config = validate_node_config(node_control.event('node_ready', 30))
+        node_ready = node_control.event('node_ready', 30)
+        source_port = node_ready.get('source_port')
+        if type(source_port) is not int or not 1 <= source_port <= 65535:
+            raise PublicFailure('Invalid source HTTP port')
+        result['source_listener'] = validate_listener(windows_listener(source_port), source_port)
+        node_config = validate_node_config(node_ready)
+        node_ready = None
         node_port = node_config['port']
         result['node_listener'] = validate_listener(windows_listener(node_port), node_port)
-        result['node_listener_delta'] = validate_delta(baseline, listener_inventory(run), [pg_port, grpc_port, node_port])
+        result['node_listener_delta'] = validate_delta(baseline, listener_inventory(run), [pg_port, grpc_port, node_port, source_port])
         result['stage'] = 'native_windows_worker'
         worker_temp.mkdir()
         worker = subprocess.Popen([sys.executable, '-u', str(Path(__file__).with_name('windows_worker.py'))],
@@ -283,7 +290,7 @@ def engine_gate(name, root, run, windows_listener, validate_listener):
         first = control.event('worker_registered_task_completed', 75)
         if first.get('native_pid') != worker.pid:
             raise PublicFailure('Worker evidence did not come from native worker process')
-        result['worker_listener_delta'] = validate_delta(baseline, listener_inventory(run), [pg_port, grpc_port, node_port])
+        result['worker_listener_delta'] = validate_delta(baseline, listener_inventory(run), [pg_port, grpc_port, node_port, source_port])
         send(worker, 'worker-listeners-verified')
         completed = control.event('worker_complete', 150)
         if worker.wait(timeout=10) != 0:
@@ -303,7 +310,7 @@ def engine_gate(name, root, run, windows_listener, validate_listener):
         validate_node_stop(stopped)
         if node.wait(timeout=10) != 0:
             raise PublicFailure('Node adapter did not exit successfully')
-        if windows_listener(node_port) != [] or any(node_temp.iterdir()):
+        if windows_listener(node_port) != [] or windows_listener(source_port) != [] or any(node_temp.iterdir()):
             raise PublicFailure('Node adapter listener or temporary files survived stop')
         result['node_cleanup'] = {'status': 'passed', 'process_exit_code': 0,
                                   'temporary_directory_removed': True, 'listeners_after_stop': []}

@@ -2,9 +2,10 @@
 
 A dedicated server subprocess owns this adapter, ledger and blobs. Fixed pre-created claims are
 mapped to opaque fixture keys. No scope, claim, upload ID or filesystem path can
-be selected by the node. Source receipt acceptance is a server-side domain
-simulator, explicitly not additional source HTTP acceptance.
+be selected by the node. Source receipt acceptance uses a loopback
+HTTP client using the existing source API, not an Alchemy integration.
 """
+import argparse
 from datetime import datetime, timedelta, timezone
 import hashlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -18,6 +19,7 @@ import threading
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src'))
 from render_bridge.domain import BridgeStore, DomainError, SourceScope
+from source_http import SourceServer
 
 PREFIX = '/test-only/node/v1/'
 FROZEN_PROMPT = '合成图片\nSynthetic fixture only'
@@ -28,10 +30,12 @@ class NodeTrial:
     def __init__(self):
         self.temp = tempfile.TemporaryDirectory(prefix='bridge-node-trial-')
         self.root = Path(self.temp.name)
+        self.source = None
         try:
             self.store = BridgeStore(self.root / 'ledger.db', self.root / 'objects')
             self.scope = SourceScope('synthetic-source', 'synthetic-workspace')
             self.token = secrets.token_urlsafe(32)
+            self.source = SourceServer(self.store, self.scope)
             self.bindings = {}
             self.uploads = {}
             self.receipts = {}
@@ -39,7 +43,7 @@ class NodeTrial:
             self.server = self.thread = None
             self.thread_started = False
             for key in self.grants:
-                task = self.store.create_task(self.scope, {
+                task = self.source.client.create({
                     'schema_version': '1', 'origin_key': key, 'binding_id': 'synthetic-binding',
                     'operation': 'image.generate', 'execution_profile_id': 'fake-image',
                     'execution_profile_revision': '1', 'prompt': FROZEN_PROMPT,
@@ -52,6 +56,8 @@ class NodeTrial:
                 self.bindings[key] = (task_id, claim)
         except Exception:
             try:
+                if self.source:
+                    self.source.close()
                 if hasattr(self, "store"):
                     self.store.close()
             finally:
@@ -141,24 +147,17 @@ class NodeTrial:
         return {'port': self.port, 'token': self.token}
 
     def verify(self):
-        """Source simulator verifies immutable bytes and acknowledges receipt."""
-        receipt = self.receipts['happy']
-        content, mime = self.store.get_artifact_content(self.scope, receipt['artifact_id'])
-        digest = hashlib.sha256(content).hexdigest()
-        if digest != receipt['original_sha256'] or mime != 'image/png':
-            raise RuntimeError('Artifact verification failed')
-        ack = {'client_receipt_id': 'fixture-receipt', 'decision': 'accepted',
-               'reason_code': 'fixture_verified', 'original_hash': digest}
-        self.store.ack_receipt(self.scope, receipt['receipt_id'], ack)
-        view = self.store.get_receipt(self.scope, receipt['receipt_id'])
-        unknown = self.store.get_task(self.scope, self.bindings['unknown'][0])
+        """Verify downloaded bytes and acknowledge through real source HTTP."""
+        content, digest = self.source.client.download_and_ack(self.bindings['happy'][0])
+        self.artifact_content = content
+        unknown = self.source.client.task(self.bindings['unknown'][0])
         if (self.grants != {'happy': 1, 'unknown': 1, 'blocked': 0}
-                or view['delivery_ack'] != 'accepted' or unknown['state'] != 'execution_unknown'
+                or unknown['state'] != 'execution_unknown'
                 or set(self.receipts) != {'happy'}):
             raise RuntimeError('Ledger gate failed')
         return {'status': 'passed', 'start_grants': dict(self.grants), 'artifact_sha256': digest,
                 'artifact_bytes': len(content), 'receipt_ack': 'accepted',
-                'unknown_retains_slot': True, 'source_transport': 'domain_simulator',
+                'unknown_retains_slot': True, 'source_transport': 'loopback_http',
                 'node_transport': 'test_only_loopback_http'}
 
     def close(self):
@@ -175,6 +174,11 @@ class NodeTrial:
             if self.thread_started and self.thread.is_alive():
                 errors.append('server_thread_alive')
         try:
+            if self.source:
+                self.source.close()
+        except Exception:
+            errors.append('source_cleanup_failed')
+        try:
             self.store.close()
         except Exception:
             errors.append('store_cleanup_failed')
@@ -190,6 +194,9 @@ class NodeTrial:
 
 def main():
     """Private controller protocol. Never publish raw child stdout."""
+    parser = argparse.ArgumentParser(description='Private temporary Bridge HTTP fixture')
+    parser.add_argument('--artifact-output', type=Path)
+    args = parser.parse_args()
     trial = None
     status = 'blocked'
     try:
@@ -197,10 +204,13 @@ def main():
             raise RuntimeError('Missing startup command')
         trial = NodeTrial()
         config = trial.start()
-        print(json.dumps({'event': 'node_ready', **config}), flush=True)
+        print(json.dumps({'event': 'node_ready', **config, 'source_port': trial.source.port}), flush=True)
         if sys.stdin.readline().strip() != 'verify':
             raise RuntimeError('Missing verification command')
         evidence = trial.verify()
+        if args.artifact_output:
+            with args.artifact_output.open('xb') as output:
+                output.write(trial.artifact_content)
         print(json.dumps({'event': 'node_verified', **evidence}), flush=True)
         if sys.stdin.readline().strip() != 'stop':
             raise RuntimeError('Missing stop command')

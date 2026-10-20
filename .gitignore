@@ -30,3 +30,7 @@ build/
 dist/
 .coverage
 htmlcov/
+
+# Explicit synthetic HTTP demo outputs
+/demo-output/
+/experiments/hatchet-wsl1-integration/demo-artifact.png

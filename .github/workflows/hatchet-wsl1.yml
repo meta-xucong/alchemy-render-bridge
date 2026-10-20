@@ -33,6 +33,8 @@ jobs:
       - name: Install hash-locked Bridge dependencies separately
         working-directory: .
         run: '& $env:BRIDGE_TRIAL_PYTHON -m pip install --require-hashes -r requirements-test.txt'
+      - name: Install hash-locked source HTTP server into Bridge interpreter
+        run: '& $env:BRIDGE_TRIAL_PYTHON -m pip install --require-hashes -r requirements-source-server.txt'
       - name: Verify Bridge dependency consistency
         run: '& $env:BRIDGE_TRIAL_PYTHON -m pip check'
       - name: Unit tests in Bridge interpreter (no external services)
@@ -71,6 +73,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wsl1-preflight-result
-          path: experiments/hatchet-wsl1-integration/result.json
+          path: |
+            experiments/hatchet-wsl1-integration/result.json
+            experiments/hatchet-wsl1-integration/demo-artifact.png
           if-no-files-found: warn
           retention-days: 7

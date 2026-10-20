@@ -42,6 +42,8 @@ class NodeTrialTests(unittest.TestCase):
         self.assertEqual(result['artifact_sha256'], hashlib.sha256(fixture_png()).hexdigest())
         self.assertEqual(self.node.journal.read_text(), 'happy\n')
         self.assertEqual(result['receipt_ack'], 'accepted')
+        self.assertEqual(result['source_transport'], 'loopback_http')
+        self.assertEqual(self.trial.artifact_content, fixture_png())
         self.assertEqual(self.node.prompt_digest,
                          'cfdc2217a30328caae330b9120feb5a53791022bff5e343ba5e9e774d5ff2351')
 
@@ -141,6 +143,21 @@ class NodeTrialTests(unittest.TestCase):
 
 
 class NodeCleanupTests(unittest.TestCase):
+    def test_quick_demo_retains_verified_png_and_report(self):
+        script = Path(__file__).resolve().parents[1] / 'demo_source_http.py'
+        with tempfile.TemporaryDirectory() as root:
+            output = Path(root) / 'demo'
+            completed = subprocess.run([sys.executable, str(script), '--output-dir', str(output)],
+                                       capture_output=True, text=True, timeout=30)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            report = json.loads((output / 'result.json').read_text())
+            content = (output / 'synthetic.png').read_bytes()
+            self.assertEqual(report['artifact_sha256'], hashlib.sha256(content).hexdigest())
+            self.assertEqual(report['source_transport'], 'loopback_http')
+            self.assertEqual(report['fake_render_starts'], 1)
+            self.assertTrue(report['temporary_runtime_removed'])
+            self.assertEqual(set(output.iterdir()), {output / 'synthetic.png', output / 'result.json'})
+
     def test_separate_server_process_protocol_and_cleanup(self):
         script = Path(__file__).resolve().parents[1] / 'node_trial_server.py'
         process = subprocess.Popen([sys.executable, '-u', str(script)], stdin=subprocess.PIPE,
@@ -160,6 +177,7 @@ class NodeCleanupTests(unittest.TestCase):
         process.stdin.flush()
         ready = json.loads(process.stdout.readline())
         self.assertEqual(ready.pop('event'), 'node_ready')
+        self.assertIsInstance(ready.pop('source_port'), int)
         with tempfile.TemporaryDirectory() as root:
             node = NodeClient(ready, Path(root) / 'starts')
             for key in ('happy', 'happy', 'unknown', 'unknown', 'blocked'):
