@@ -90,3 +90,17 @@ CI 为本修复的精确身份依据。
 已完成且成功：Linux 62 项通过（2.349 秒）；Windows 62 项通过（14.255 秒）。
 两平台 compileall 和 diff 检查通过。该结果只覆盖合同测试，不扩大上述存储、
 Windows Agent 或 Hatchet 验收范围。
+
+
+## 当前增量结论
+
+- 通用合同原型：Linux与Windows各62项功能测试通过。
+- Linux Hatchet：3任务冒烟及100次人工重复投递/unknown锁存的限定集成试验通过。
+- SDK兼容候选：固定版本补丁、独立审计及双平台10项生命周期测试通过，未成为生产依赖。
+- 全阶段未验收：真实跨环境Windows–Linux引擎连接、TLS、节点权限/撤销、真实故障恢复及Alchemy接入仍缺。
+
+最终实现提交 `1dd7deed2c8f319cc79855b14aaa3f3371c83719`，对应合同CI
+[39377307345](https://github.com/meta-xucong/alchemy-render-bridge/actions/runs/39377307345)
+及生命周期CI
+[39377307371](https://github.com/meta-xucong/alchemy-render-bridge/actions/runs/39377307371)
+均成功。后续纯文档提交不应改变该实现身份。

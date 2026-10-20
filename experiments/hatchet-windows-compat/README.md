@@ -76,3 +76,15 @@ whole RB-01/Phase 1 gate. A patched lifecycle test pass is not production adopti
 Official source: https://github.com/hatchet-dev/hatchet/tree/19a3474b7963139124151e7a3b1357b1971c2eb8/sdks/python
 License: https://github.com/hatchet-dev/hatchet/blob/19a3474b7963139124151e7a3b1357b1971c2eb8/LICENSE
 Wheel: https://pypi.org/project/hatchet-sdk/1.42.1/
+
+
+## Verified GitHub platform result
+
+Commit `1dd7deed2c8f319cc79855b14aaa3f3371c83719` passed both Linux and Windows
+in [run 39377307371](https://github.com/meta-xucong/alchemy-render-bridge/actions/runs/39377307371).
+Windows ran all 10 tests, zero skips, in 8.231 seconds; the original SDK failure
+control also passed. The same commit's Bridge contract matrix passed in
+[run 39377307345](https://github.com/meta-xucong/alchemy-render-bridge/actions/runs/39377307345).
+
+This supersedes the earlier pending Windows lifecycle status, but not the excluded
+real-engine, console, TLS, authorization, drain, or complete Phase 1 gates above.

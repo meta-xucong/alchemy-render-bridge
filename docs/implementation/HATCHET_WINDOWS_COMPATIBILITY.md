@@ -48,3 +48,19 @@
 原版Linux构造对照、依赖一致性、确定性重建、404项RECORD和篡改输入拒绝通过。
 实际Windows安装与生命周期测试须等待本提交的独立CI任务，未提前标为通过。
 未发布wheel二进制、没有有效测试凭据，不连接引擎或真实生成服务。
+
+
+## 真实双平台CI结果
+
+提交 `1dd7deed2c8f319cc79855b14aaa3f3371c83719` 在
+[39377307371](https://github.com/meta-xucong/alchemy-render-bridge/actions/runs/39377307371)
+中Linux、Windows生命周期测试均通过。Windows原版故障对照通过，候选10项测试
+全部通过、零跳过（8.231秒），使用明确的UTF-8启动条件。
+
+首轮Windows两项失败是测试夹具修改全局sys.platform，污染multiprocessing的
+平台判断；已改为模块局部测试替身并增加反例回归。SDK候选wheel未改变。
+日志cp1252编码问题通过明确UTF-8启动配置验证，不表示默认非UTF-8控制台已验收。
+
+本结果只关闭受测的平台构造/spawn/Queue/Event/停止生命周期门禁。
+Windows Worker连接真实Linux引擎、Ctrl+C、网络重投、在途退出/TLS/权限/完整第一阶段
+仍未验收。不能把受控mock transport测试称为真实引擎集成。
