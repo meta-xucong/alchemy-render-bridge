@@ -64,3 +64,10 @@
 本结果只关闭受测的平台构造/spawn/Queue/Event/停止生命周期门禁。
 Windows Worker连接真实Linux引擎、Ctrl+C、网络重投、在途退出/TLS/权限/完整第一阶段
 仍未验收。不能把受控mock transport测试称为真实引擎集成。
+
+
+## 真实引擎后续结果
+
+原生 Windows Worker 已在固定 GitHub Windows2025 + WSL1 Linux 环境完成三任务真实引擎
+连接与正常退出，见[限定验收记录](WSL_NATIVE_ENGINE_VALIDATION.md)。此前“真实引擎未测试”
+表述为历史状态；远端网络、TLS、在途故障恢复及其他Windows环境仍未验收。

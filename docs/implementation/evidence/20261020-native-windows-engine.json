@@ -1,0 +1,146 @@
+{
+  "source": "GitHub Actions job stdout; structured result copied without credential data",
+  "commit": "18d85eee87da5a5d7d8cce9c9ccc521f2ecd7d59",
+  "run_id": 39381959728,
+  "job_id": 118492859821,
+  "url": "https://github.com/meta-xucong/alchemy-render-bridge/actions/runs/39381959728",
+  "result": {
+    "status": "passed",
+    "stage": "real_engine_smoke_complete_not_full_phase_acceptance",
+    "engine_tested": true,
+    "postgres_tested": true,
+    "rootfs_sha256": "2a790896740b14d637dbdc583cce1ba081ac53b9e9cdb46dc09a2f73abbd9934",
+    "image_os": "win25-vs2026",
+    "image_version": "20261007.264.1",
+    "wsl_status": "Default Version: 2",
+    "inventory_before": "Windows Subsystem for Linux has no installed distributions.\r\nYou can resolve this by installing a distribution with the instructions below:\r\n\r\nUse 'wsl.exe --list --online' to list available distributions\r\nand 'wsl.exe --install <Distro>' to install.",
+    "inventory_imported": "NAME                                            STATE           VERSION\r\n* bridge-wsl1-23f4d06885fb408d9e81831e369b610e    Stopped         1",
+    "linux_kernel": "Linux runnervm0xl3a 4.4.0-26100-Microsoft #33438-Microsoft Fri Jan 01 08:00:00 PST 2016 x86_64 x86_64 x86_64 GNU/Linux",
+    "canary": {
+      "port": 55465,
+      "bind": "127.0.0.1",
+      "linux_getsockname_verified": true,
+      "linux_proc_matching_port": []
+    },
+    "windows_listener_observed": [
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 55465,
+        "State": "Listen"
+      }
+    ],
+    "windows_listener": {
+      "LocalAddress": "127.0.0.1",
+      "LocalPort": 55465,
+      "State": "Listen"
+    },
+    "postgres": {
+      "status": "passed",
+      "jar_sha256": "1974c3a59c3ae010e9818e81637e425aad94eaac26e4ef533b42e081fe7ca345",
+      "ready": {
+        "event": "postgres_ready",
+        "port": 55469,
+        "version": "postgres (PostgreSQL) 18.3",
+        "uid": 65534,
+        "account": "nobody"
+      },
+      "windows_listener": {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 55469,
+        "State": "Listen"
+      },
+      "completion": {
+        "event": "postgres_complete",
+        "status": "passed",
+        "engine_tested": false,
+        "synthetic_sql": 42,
+        "version": "postgres (PostgreSQL) 18.3",
+        "postmaster_process_gone": true,
+        "pidfile_present_after_stop": false,
+        "temporary_directory_removed": true
+      },
+      "listeners_after_stop": []
+    },
+    "engine": {
+      "status": "passed",
+      "stage": "real_engine_smoke_complete",
+      "engine_sha256": "18ddacae0005042bd982328bcb8d370cca6907352a1ab2a3c8406001d31e7dee",
+      "candidate_wheel_sha256": "f8fbe9ed1944a1c1718b1655b17dddd55ba5e79920d99beabf68c98ad9d8af92",
+      "baseline_listener_count": 40,
+      "grpc_listener": {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 55480,
+        "State": "Listen"
+      },
+      "engine_listener_delta": [
+        {
+          "LocalAddress": "127.0.0.1",
+          "LocalPort": 55479
+        },
+        {
+          "LocalAddress": "127.0.0.1",
+          "LocalPort": 55480
+        }
+      ],
+      "worker_listener_delta": [
+        {
+          "LocalAddress": "127.0.0.1",
+          "LocalPort": 55479
+        },
+        {
+          "LocalAddress": "127.0.0.1",
+          "LocalPort": 55480
+        }
+      ],
+      "worker": {
+        "status": "passed",
+        "platform": "win32",
+        "tasks": [
+          {
+            "marker": "bridge-native-0",
+            "renderer": "fake",
+            "platform": "win32",
+            "pid": 6396
+          },
+          {
+            "marker": "bridge-native-1",
+            "renderer": "fake",
+            "platform": "win32",
+            "pid": 6396
+          },
+          {
+            "marker": "bridge-native-2",
+            "renderer": "fake",
+            "platform": "win32",
+            "pid": 6396
+          }
+        ],
+        "task_count": 3,
+        "sdk_version": "1.42.1+bridgewin1",
+        "graceful_stop_requested": true,
+        "graceful_stop_completed": true,
+        "worker_start_zero_exit": true,
+        "active_children_after_stop": [],
+        "observed_listener_exits": [
+          {
+            "pid": 8712,
+            "exitcode": 0
+          }
+        ]
+      },
+      "engine_completion": {
+        "status": "passed",
+        "engine_orderly_stop": true,
+        "engine_process_gone": true,
+        "postgres_process_gone": true,
+        "postgres_pidfile_absent": true,
+        "temporary_directory_removed": true,
+        "engine_exit_code": 0
+      },
+      "owned_listeners_after_stop": [],
+      "post_shutdown_listener_delta": [],
+      "cleanup_errors": []
+    },
+    "cleanup_errors": []
+  }
+}

@@ -104,3 +104,11 @@ Windows Agent 或 Hatchet 验收范围。
 及生命周期CI
 [39377307371](https://github.com/meta-xucong/alchemy-render-bridge/actions/runs/39377307371)
 均成功。后续纯文档提交不应改变该实现身份。
+
+
+## 原生 Windows 与真实引擎的后续验证
+
+提交 `18d85eee87da5a5d7d8cce9c9ccc521f2ecd7d59` 已完成真实原生 Windows Worker
+连接 WSL1 Linux Hatchet 的三合成任务试验与正常退出，见
+[完整限定验收](WSL_NATIVE_ENGINE_VALIDATION.md)。这关闭此前“从未进行原生Windows真实引擎连接”
+的缺口，但不关闭远端网络/TLS、权限、故障恢复或完整Bridge/Alchemy接入门禁。
