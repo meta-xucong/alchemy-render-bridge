@@ -212,5 +212,24 @@ class NodeAdapterBoundaryTests(unittest.TestCase):
                 p.validate_node_stop(value)
 
 
+class WorkflowWiringTests(unittest.TestCase):
+    def test_bridge_interpreter_is_derived_on_runner_not_in_job_env(self):
+        workflow = (Path(__file__).parents[3] / '.github/workflows/hatchet-wsl1.yml').read_text()
+        # GitHub context availability: jobs.<job_id>.env cannot use runner.
+        job_env = workflow.split('    env:\n', 1)[1].split('    defaults:', 1)[0]
+        self.assertNotIn('${{', job_env)
+        self.assertNotIn('BRIDGE_TRIAL_PYTHON', job_env)
+        create = workflow.split('- name: Create isolated Bridge interpreter', 1)[1].split('      - name:', 1)[0]
+        cleanup = workflow.split('- name: Remove owned Bridge interpreter', 1)[1].split('      - name:', 1)[0]
+        derivation = "$venv = Join-Path $env:RUNNER_TEMP 'bridge-node-venv-${{ github.run_id }}-${{ github.run_attempt }}'"
+        self.assertIn(derivation, create)
+        self.assertIn(derivation, cleanup)
+        self.assertIn('python -m venv "$venv"', create)
+        self.assertIn('if ($LASTEXITCODE -ne 0)', create)
+        self.assertIn('"BRIDGE_TRIAL_PYTHON=$interpreter" | Out-File -FilePath "$env:GITHUB_ENV" -Encoding utf8 -Append', create)
+        self.assertIn('if: always()', cleanup)
+        self.assertNotIn('$env:BRIDGE_TRIAL_PYTHON', cleanup)
+
+
 if __name__ == '__main__':
     unittest.main()
