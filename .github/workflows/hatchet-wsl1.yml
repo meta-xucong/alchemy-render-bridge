@@ -14,6 +14,7 @@ jobs:
     env:
       PYTHONUTF8: '1'
       PYTHONIOENCODING: 'utf-8'
+      BRIDGE_TRIAL_PYTHON: ${{ runner.temp }}\bridge-node-venv-${{ github.run_id }}-${{ github.run_attempt }}\Scripts\python.exe
     defaults:
       run:
         working-directory: experiments/hatchet-wsl1-integration
@@ -22,11 +23,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Unit tests (no external services)
-        run: python -m unittest discover -s tests -v
+      - name: Create isolated Bridge interpreter
+        run: |
+          $venv = Split-Path (Split-Path $env:BRIDGE_TRIAL_PYTHON)
+          if (Test-Path $venv) { throw 'Unexpected existing Bridge trial venv' }
+          python -m venv $venv
+      - name: Install hash-locked Bridge dependencies separately
+        working-directory: .
+        run: '& $env:BRIDGE_TRIAL_PYTHON -m pip install --require-hashes -r requirements-test.txt'
+      - name: Verify Bridge dependency consistency
+        run: '& $env:BRIDGE_TRIAL_PYTHON -m pip check'
+      - name: Unit tests in Bridge interpreter (no external services)
+        run: '& $env:BRIDGE_TRIAL_PYTHON -m unittest discover -s tests -v'
       - name: Install hash-locked SDK dependencies
         working-directory: experiments/hatchet-windows-compat
         run: python -m pip install --require-hashes -r requirements-upstream.txt
+      - name: Install only the pinned synthetic PNG dependency into SDK interpreter
+        run: python -m pip install --require-hashes -r requirements-node-worker.txt
       - name: Download exact upstream SDK wheel
         working-directory: experiments/hatchet-windows-compat
         run: python -m pip download --no-deps --dest .cache hatchet-sdk==1.42.1
@@ -46,6 +59,11 @@ jobs:
       - name: Always clean up only our temporary distro
         if: always()
         run: python preflight.py --cleanup
+      - name: Remove owned Bridge interpreter after all child processes stopped
+        if: always()
+        run: |
+          $venv = Join-Path $env:RUNNER_TEMP 'bridge-node-venv-${{ github.run_id }}-${{ github.run_attempt }}'
+          if (Test-Path $venv) { Remove-Item -LiteralPath $venv -Recurse -Force -ErrorAction Stop }
       - name: Upload non-secret capability result
         if: always()
         uses: actions/upload-artifact@v4

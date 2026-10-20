@@ -97,16 +97,22 @@ class SecretBoundaryTests(unittest.TestCase):
 class CompletionTests(unittest.TestCase):
     def worker(self):
         return {'status': 'passed', 'platform': 'win32', 'sdk_version': '1.42.1+bridgewin1',
-                'task_count': 3, 'graceful_stop_requested': True, 'graceful_stop_completed': True,
+                'task_count': 5, 'fake_render_starts': 1, 'node_journal_removed': True,
+                'frozen_prompt_sha256': 'cfdc2217a30328caae330b9120feb5a53791022bff5e343ba5e9e774d5ff2351',
+                'reference_count': 0, 'graceful_stop_requested': True, 'graceful_stop_completed': True,
                 'worker_start_zero_exit': True, 'active_children_after_stop': [],
                 'observed_listener_exits': [{'pid': 124, 'exitcode': 0}],
-                'tasks': [{'marker': f'bridge-native-{i}', 'renderer': 'fake', 'platform': 'win32', 'pid': 123} for i in range(3)]}
+                'tasks': [{'marker': marker, 'renderer': 'fake', 'platform': 'win32', 'pid': 123, 'outcome': outcome}
+                          for marker, outcome in [('happy', 'artifact_committed'), ('happy', 'duplicate_suppressed'),
+                                                  ('unknown', 'execution_unknown'), ('unknown', 'duplicate_suppressed'),
+                                                  ('blocked', 'physical_slot_busy')]]}
 
     def test_missing_graceful_evidence_or_crashed_child_blocks(self):
         p.validate_worker_completion(self.worker(), 123)
         for changes in ({'graceful_stop_completed': False}, {'observed_listener_exits': []},
                         {'observed_listener_exits': [{'pid': 124, 'exitcode': 1}]},
-                        {'task_count': 2}, {'active_children_after_stop': [124]}):
+                        {'task_count': 2}, {'fake_render_starts': 2}, {'node_journal_removed': False},
+                        {'frozen_prompt_sha256': 'wrong'}, {'reference_count': 1}, {'active_children_after_stop': [124]}):
             with self.subTest(changes=changes), self.assertRaises(RuntimeError):
                 p.validate_worker_completion({**self.worker(), **changes}, 123)
 
@@ -149,6 +155,61 @@ class CompletionTests(unittest.TestCase):
             self.assertTrue(evidence['graceful_stop_completed'])
         finally:
             loop.close()
+
+
+class NodeAdapterBoundaryTests(unittest.TestCase):
+    def evidence(self):
+        return {'status': 'passed', 'start_grants': {'happy': 1, 'unknown': 1, 'blocked': 0},
+                'artifact_sha256': 'a' * 64, 'artifact_bytes': 100, 'receipt_ack': 'accepted',
+                'unknown_retains_slot': True, 'source_transport': 'domain_simulator',
+                'node_transport': 'test_only_loopback_http'}
+
+    def test_exact_three_loopback_listener_delta(self):
+        ports = [43210, 43211, 43212]
+        self.assertEqual(len(p.validate_delta([], [row('127.0.0.1', port) for port in ports], ports)), 3)
+
+    def test_node_config_is_fixed_loopback_port_and_opaque_token(self):
+        self.assertEqual(p.validate_node_config({'port': 43212, 'token': 'a' * 43}), {'port': 43212, 'token': 'a' * 43})
+        for config in ({'port': True, 'token': 'a' * 43}, {'port': 0, 'token': 'a' * 43},
+                       {'port': 43212, 'token': 'secret invalid!'}, {'port': 43212, 'token': 'a' * 44}):
+            with self.assertRaises(RuntimeError):
+                p.validate_node_config(config)
+
+    def test_node_evidence_never_copies_private_token(self):
+        self.assertEqual(p.validate_node_evidence({**self.evidence(), 'token': 'do-not-log'}), self.evidence())
+
+    def test_node_ledger_claims_are_fail_closed(self):
+        for change in ({'start_grants': {'happy': 2, 'unknown': 1, 'blocked': 0}},
+                       {'unknown_retains_slot': False}, {'receipt_ack': 'pending'},
+                       {'artifact_sha256': 'secret'}, {'artifact_bytes': True},
+                       {'source_transport': 'real_http'}):
+            with self.subTest(change=change), self.assertRaises(RuntimeError):
+                p.validate_node_evidence({**self.evidence(), **change})
+
+    def test_temp_root_cleanup_even_when_popen_failed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'node-runtime'
+            root.mkdir()
+            (root / 'fixture').write_text('synthetic')
+            self.assertTrue(p.cleanup_owned_runtime(None, root))
+            self.assertFalse(root.exists())
+
+    def test_temp_root_not_deleted_under_live_adapter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'node-runtime'
+            root.mkdir()
+            node = MagicMock()
+            node.poll.return_value = None
+            with self.assertRaises(RuntimeError):
+                p.cleanup_owned_runtime(node, root)
+            self.assertTrue(root.exists())
+
+    def test_node_cleanup_cannot_be_skipped_or_failed(self):
+        p.validate_node_stop({'status': 'passed', 'temporary_directory_removed': True})
+        for value in ({}, {'status': 'passed', 'temporary_directory_removed': False},
+                      {'status': 'blocked', 'temporary_directory_removed': True}):
+            with self.assertRaises(RuntimeError):
+                p.validate_node_stop(value)
 
 
 if __name__ == '__main__':

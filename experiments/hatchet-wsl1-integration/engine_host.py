@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -150,7 +151,11 @@ def validate_worker_completion(value, pid):
     tasks = value.get('tasks')
     if (value.get('status') != 'passed' or value.get('platform') != 'win32'
             or value.get('sdk_version') != '1.42.1+bridgewin1'
-            or value.get('task_count') != 3 or not isinstance(tasks, list) or len(tasks) != 3
+            or value.get('task_count') != 5 or not isinstance(tasks, list) or len(tasks) != 5
+            or type(value.get('fake_render_starts')) is not int or value['fake_render_starts'] != 1
+            or value.get('node_journal_removed') is not True
+            or value.get('frozen_prompt_sha256') != 'cfdc2217a30328caae330b9120feb5a53791022bff5e343ba5e9e774d5ff2351'
+            or type(value.get('reference_count')) is not int or value['reference_count'] != 0
             or value.get('graceful_stop_requested') is not True
             or value.get('graceful_stop_completed') is not True
             or not (value.get('worker_start_returned') is True or value.get('worker_start_zero_exit') is True)
@@ -160,8 +165,11 @@ def validate_worker_completion(value, pid):
                    for child in value['observed_listener_exits'])
             or any(value.get(key) for key in ('task_error_type', 'shutdown_error_type', 'error_type'))):
         raise PublicFailure('Native worker task or orderly shutdown gate failed')
-    for number, task in enumerate(tasks):
-        if task != {'marker': f'bridge-native-{number}', 'renderer': 'fake', 'platform': 'win32', 'pid': pid}:
+    sequence = [('happy', 'artifact_committed'), ('happy', 'duplicate_suppressed'),
+                ('unknown', 'execution_unknown'), ('unknown', 'duplicate_suppressed'),
+                ('blocked', 'physical_slot_busy')]
+    for task, (marker, outcome) in zip(tasks, sequence):
+        if task != {'marker': marker, 'renderer': 'fake', 'platform': 'win32', 'pid': pid, 'outcome': outcome}:
             raise PublicFailure('Native worker task result identity mismatch')
 
 
@@ -173,10 +181,48 @@ def validate_engine_completion(value):
         raise PublicFailure('Engine orderly stop or cleanup evidence incomplete')
 
 
+def validate_node_config(value):
+    port, token = value.get('port'), value.get('token')
+    if (type(port) is not int or not 1 <= port <= 65535 or not isinstance(token, str)
+            or not re.fullmatch(r'[A-Za-z0-9_-]{43}', token)):
+        raise PublicFailure('Invalid private node adapter configuration')
+    return {'port': port, 'token': token}
+
+
+def validate_node_evidence(value):
+    if (value.get('status') != 'passed' or value.get('start_grants') != {'happy': 1, 'unknown': 1, 'blocked': 0}
+            or any(type(count) is not int for count in value['start_grants'].values())
+            or not isinstance(value.get('artifact_sha256'), str)
+            or not re.fullmatch(r'[0-9a-f]{64}', value['artifact_sha256'])
+            or type(value.get('artifact_bytes')) is not int or not 0 < value['artifact_bytes'] <= 16384
+            or value.get('receipt_ack') != 'accepted' or value.get('unknown_retains_slot') is not True
+            or value.get('source_transport') != 'domain_simulator'
+            or value.get('node_transport') != 'test_only_loopback_http'):
+        raise PublicFailure('Node adapter ledger evidence incomplete')
+    # Only validated safe fields reach result.json; never the private token.
+    return {key: value[key] for key in ('status', 'start_grants', 'artifact_sha256', 'artifact_bytes',
+            'receipt_ack', 'unknown_retains_slot', 'source_transport', 'node_transport')}
+
+
+def validate_node_stop(value):
+    if value.get('status') != 'passed' or value.get('temporary_directory_removed') is not True:
+        raise PublicFailure('Node adapter orderly cleanup incomplete')
+
+
+def cleanup_owned_runtime(process, path):
+    if process is not None and process.poll() is None:
+        raise PublicFailure('Owned process is still running; temporary runtime retained')
+    if path.exists():
+        shutil.rmtree(path)
+    return not path.exists()
+
+
 def engine_gate(name, root, run, windows_listener, validate_listener):
     result = {'status': 'blocked', 'stage': 'verify_candidate', 'engine_sha256': ENGINE_SHA256,
               'candidate_wheel_sha256': CANDIDATE_SHA256}
-    linux = worker = None
+    linux = worker = node = None
+    node_temp = root / 'node-runtime'
+    worker_temp = root / 'worker-runtime'
     try:
         candidate = Path(__file__).parent.parent / 'hatchet-windows-compat/dist/hatchet_sdk-1.42.1+bridgewin1-py3-none-any.whl'
         with candidate.open('rb') as stream:
@@ -209,26 +255,59 @@ def engine_gate(name, root, run, windows_listener, validate_listener):
             raise PublicFailure('Invalid private engine handshake')
         result['grpc_listener'] = validate_listener(windows_listener(grpc_port), grpc_port)
         result['engine_listener_delta'] = validate_delta(baseline, listener_inventory(run), [pg_port, grpc_port])
+        result['stage'] = 'node_adapter_start'
+        bridge_python = Path(os.environ.get('BRIDGE_TRIAL_PYTHON', ''))
+        if not bridge_python.is_file() or bridge_python.resolve() == Path(sys.executable).resolve():
+            raise PublicFailure('Dedicated Bridge-lock interpreter is required')
+        node_temp.mkdir()
+        node = subprocess.Popen([str(bridge_python), '-u', str(Path(__file__).with_name('node_trial_server.py'))],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                env={**os.environ, 'TEMP': str(node_temp), 'TMP': str(node_temp),
+                                     'PYTHONUTF8': '1', 'PYTHONIOENCODING': 'utf-8'})
+        node_control = PrivatePipe(node.stdout)
+        send(node, 'start')
+        node_config = validate_node_config(node_control.event('node_ready', 30))
+        node_port = node_config['port']
+        result['node_listener'] = validate_listener(windows_listener(node_port), node_port)
+        result['node_listener_delta'] = validate_delta(baseline, listener_inventory(run), [pg_port, grpc_port, node_port])
         result['stage'] = 'native_windows_worker'
+        worker_temp.mkdir()
         worker = subprocess.Popen([sys.executable, '-u', str(Path(__file__).with_name('windows_worker.py'))],
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                  env={**os.environ, 'PYTHONUTF8': '1', 'PYTHONIOENCODING': 'utf-8', 'OTEL_SDK_DISABLED': 'true'})
+                                  env={**os.environ, 'TEMP': str(worker_temp), 'TMP': str(worker_temp),
+                                       'PYTHONUTF8': '1', 'PYTHONIOENCODING': 'utf-8', 'OTEL_SDK_DISABLED': 'true'})
         control = PrivatePipe(worker.stdout)
-        send(worker, json.dumps({'grpc_port': grpc_port, 'tenant_id': handshake['tenant_id'], 'token': handshake['token']}))
+        send(worker, json.dumps({'grpc_port': grpc_port, 'tenant_id': handshake['tenant_id'], 'token': handshake['token'], 'node': node_config}))
+        node_config = None
         handshake = None
         first = control.event('worker_registered_task_completed', 75)
         if first.get('native_pid') != worker.pid:
             raise PublicFailure('Worker evidence did not come from native worker process')
-        result['worker_listener_delta'] = validate_delta(baseline, listener_inventory(run), [pg_port, grpc_port])
+        result['worker_listener_delta'] = validate_delta(baseline, listener_inventory(run), [pg_port, grpc_port, node_port])
         send(worker, 'worker-listeners-verified')
         completed = control.event('worker_complete', 150)
         if worker.wait(timeout=10) != 0:
             raise PublicFailure('Native worker did not exit successfully')
+        if any(worker_temp.iterdir()):
+            raise PublicFailure('Native worker temporary files survived orderly exit')
         validate_worker_completion(completed, worker.pid)
         result['worker'] = {key: completed[key] for key in (
             'status', 'platform', 'tasks', 'task_count', 'sdk_version', 'graceful_stop_requested',
             'graceful_stop_completed', 'worker_start_returned', 'worker_start_zero_exit',
-            'active_children_after_stop', 'observed_listener_exits', 'task_error_type', 'shutdown_error_type', 'error_type') if key in completed}
+            'active_children_after_stop', 'observed_listener_exits', 'fake_render_starts', 'node_journal_removed', 'frozen_prompt_sha256', 'reference_count', 'task_error_type', 'shutdown_error_type', 'error_type') if key in completed}
+        result['stage'] = 'node_adapter_verification'
+        send(node, 'verify')
+        result['ledger'] = validate_node_evidence(node_control.event('node_verified', 30))
+        send(node, 'stop')
+        stopped = node_control.event('node_stopped', 30)
+        validate_node_stop(stopped)
+        if node.wait(timeout=10) != 0:
+            raise PublicFailure('Node adapter did not exit successfully')
+        if windows_listener(node_port) != [] or any(node_temp.iterdir()):
+            raise PublicFailure('Node adapter listener or temporary files survived stop')
+        result['node_cleanup'] = {'status': 'passed', 'process_exit_code': 0,
+                                  'temporary_directory_removed': True, 'listeners_after_stop': []}
+        validate_delta(baseline, listener_inventory(run), [pg_port, grpc_port])
         result['stage'] = 'engine_orderly_shutdown'
         send(linux, 'worker-completed-stop-engine')
         completion = private.event('engine_complete', 80)
@@ -239,7 +318,7 @@ def engine_gate(name, root, run, windows_listener, validate_listener):
         if windows_listener(pg_port) != [] or windows_listener(grpc_port) != []:
             raise PublicFailure('Owned engine/database listener survived shutdown')
         validate_delta(baseline, listener_inventory(run), [])
-        result.update(status='passed', stage='real_engine_smoke_complete', owned_listeners_after_stop=[],
+        result.update(status='passed', stage='real_engine_ledger_http_complete', owned_listeners_after_stop=[],
                       post_shutdown_listener_delta=[])
     except Exception as exc:
         result.update(public_error(exc))
@@ -255,6 +334,35 @@ def engine_gate(name, root, run, windows_listener, validate_listener):
                     worker.stdin.close()
             except Exception as exc:
                 cleanup_errors.append('native_worker:' + type(exc).__name__)
+        result['worker_runtime_removed'] = False
+        try:
+            result['worker_runtime_removed'] = cleanup_owned_runtime(worker, worker_temp)
+            if not result['worker_runtime_removed']:
+                cleanup_errors.append('native_worker:temporary_runtime_survived')
+        except Exception as exc:
+            cleanup_errors.append('worker_runtime:' + type(exc).__name__)
+        if node is not None:
+            try:
+                if node.stdin and not node.stdin.closed:
+                    node.stdin.close()  # EOF triggers the adapter's finally cleanup.
+                if node.poll() is None:
+                    try:
+                        node.wait(timeout=20)
+                    except subprocess.TimeoutExpired:
+                        result.update(status='blocked', forced_node_cleanup=True)
+                        run(['taskkill.exe', '/PID', str(node.pid), '/T', '/F'], timeout=15, check=False)
+                        node.wait(timeout=5)
+                if node.stdout:
+                    node.stdout.close()
+            except Exception as exc:
+                cleanup_errors.append('node_adapter:' + type(exc).__name__)
+        result['node_runtime_removed'] = False
+        try:
+            result['node_runtime_removed'] = cleanup_owned_runtime(node, node_temp)
+            if not result['node_runtime_removed']:
+                cleanup_errors.append('node_adapter:temporary_runtime_survived')
+        except Exception as exc:
+            cleanup_errors.append('node_runtime:' + type(exc).__name__)
         if linux is not None:
             try:
                 if linux.stdin and not linux.stdin.closed:

@@ -5,6 +5,8 @@ import json
 import multiprocessing
 import os
 import sys
+import tempfile
+from pathlib import Path
 from datetime import timedelta
 
 # SDK and spawned listener output is intentionally discarded, never artifacted.
@@ -26,6 +28,7 @@ def main():
     tasks = []
     observed_children = []
     loop = None
+    node_temp = None
     try:
         if sys.platform != 'win32' or importlib.metadata.version('hatchet-sdk') != '1.42.1+bridgewin1':
             raise RuntimeError('Require native Windows and exact SDK candidate')
@@ -37,6 +40,9 @@ def main():
                          host_port=f'127.0.0.1:{port}', server_url='http://127.0.0.1:1',
                          tls_config=ClientTLSConfig(strategy='none'),
                          healthcheck=HealthcheckConfig(enabled=False)))
+        from node_trial_client import NodeClient
+        node_temp = tempfile.TemporaryDirectory(prefix="bridge-node-journal-")
+        node = NodeClient(private["node"], Path(node_temp.name) / "starts.log")
         private = None
         class Input(EmptyModel):
             marker: str
@@ -44,15 +50,18 @@ def main():
         @client.task(name='bridge-wsl1-native-synthetic', input_validator=Input, retries=0,
                      execution_timeout=timedelta(seconds=20), schedule_timeout=timedelta(seconds=40))
         def synthetic(input: Input, ctx: Context) -> dict:
-            return {'marker': input.marker, 'renderer': 'fake', 'platform': sys.platform, 'pid': os.getpid()}
+            return {'marker': input.marker, 'renderer': 'fake', 'platform': sys.platform, 'pid': os.getpid(), **node.run(input.marker)}
 
         async def drive():
             try:
-                for number in range(3):
-                    marker = f'bridge-native-{number}'
+                sequence = [('happy', 'artifact_committed'), ('happy', 'duplicate_suppressed'),
+                            ('unknown', 'execution_unknown'), ('unknown', 'duplicate_suppressed'),
+                            ('blocked', 'physical_slot_busy')]
+                for number, (marker, outcome) in enumerate(sequence):
                     value = await asyncio.wait_for(asyncio.to_thread(synthetic.run, Input(marker=marker)), timeout=50)
                     if (value.get('marker') != marker or value.get('renderer') != 'fake'
-                            or value.get('platform') != 'win32' or value.get('pid') != os.getpid()):
+                            or value.get('platform') != 'win32' or value.get('pid') != os.getpid()
+                            or value.get('outcome') != outcome):
                         raise RuntimeError('Unexpected real-engine task result')
                     tasks.append(value)
                     if number == 0:
@@ -61,6 +70,11 @@ def main():
                         if approval.strip() != 'worker-listeners-verified':
                             raise RuntimeError('Missing worker listener verification')
                 result['tasks'] = tasks
+                if node.journal.read_text(encoding='utf-8').splitlines() != ['happy']:
+                    raise RuntimeError('FakeRenderer executed more than once')
+                result['fake_render_starts'] = 1
+                result['frozen_prompt_sha256'] = node.prompt_digest
+                result['reference_count'] = 0
             except Exception as exc:
                 result['task_error_type'] = type(exc).__name__
             finally:
@@ -97,7 +111,7 @@ def main():
         result['active_children_after_stop'] = [child.pid for child in multiprocessing.active_children()]
         result['task_count'] = len(tasks)
         result['sdk_version'] = importlib.metadata.version('hatchet-sdk')
-        if (len(tasks) == 3 and result.get('graceful_stop_completed') is True
+        if (len(tasks) == 5 and result.get('graceful_stop_completed') is True
                 and observed_children and all(child.exitcode == 0 for child in observed_children)
                 and not result['active_children_after_stop'] and not result.get('task_error_type')):
             result['status'] = 'passed'
@@ -105,7 +119,19 @@ def main():
         result['error_type'] = type(exc).__name__
     finally:
         if loop is not None and not loop.is_running():
-            loop.close()
+            try:
+                loop.close()
+            except Exception:
+                result['status'] = 'blocked'
+                result['loop_cleanup_failed'] = True
+        if node_temp is not None:
+            try:
+                node_temp.cleanup()
+                result['node_journal_removed'] = not Path(node_temp.name).exists()
+                if not result['node_journal_removed']:
+                    result['status'] = 'blocked'
+            except Exception:
+                result['status'] = 'blocked'
         emit(result)
     return 0 if result['status'] == 'passed' else 1
 
