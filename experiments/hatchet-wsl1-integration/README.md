@@ -47,8 +47,15 @@ rootfs. Download and import do not make the rootfs part of this repository.
    the named distro reports version 1. No default-version command is issued.
 4. Execute `/bin/uname` and the image's `/usr/bin/python3` without installing
    dependencies. Python binds exactly `127.0.0.1` on an OS-selected port and
-   verifies its listening address in `/proc/net/tcp` before reporting ready.
-5. Native Windows Python connects to that exact loopback port, sends the fixed
+   reports its actual `getsockname()` address. Matching-port Linux `/proc/net/tcp`
+   and `/proc/net/tcp6` address/state entries are diagnostic only, not the
+   authoritative listener oracle on WSL1. No unrelated sockets are reported.
+5. Before any connection, Windows `Get-NetTCPConnection -State Listen` must
+   independently expose exactly one listener at that ephemeral port, with address
+   exactly `127.0.0.1`, integer matching port and state `Listen`. Empty visibility,
+   command failure, unexpected/duplicate rows, IPv6 or wildcard/non-loopback
+   addresses block the test; there is no fallback that drops this requirement.
+   Only then native Windows Python connects to that exact loopback port, sends the fixed
    synthetic probe, receives the fixed reply, and checks the Linux process exits
    successfully. The listener accepts only one loopback connection and has a
    40-second timeout. It serves no files and carries no user data or credential.
@@ -83,7 +90,13 @@ On the GitHub Windows runner, in this directory:
     python preflight.py
     python preflight.py --cleanup
 
-No runtime result is claimed at implementation time. If this first gate passes,
+The first CI attempt (run `39378823974`, job `118482969614`, image
+`20261007.264.1`) verified the rootfs/import as WSL1 and executed Linux
+`4.4.0-26100-Microsoft`. It remained **blocked** because the original Linux
+`/proc/net/tcp` assertion saw no matching listener; cleanup reported no errors.
+This is not evidence that localhost connectivity or WSL1 is unsupported, and the
+first attempt is not retroactively a pass. The revised Windows listener oracle
+requires a fresh actual CI run; its result is not yet claimed. If this gate passes,
 a separately reviewed extension must verify temporary PostgreSQL startup and
 shutdown before any real Hatchet engine/Windows worker trial. That later trial
 must pin its binary/dependency inputs and preserve loopback-only endpoints,

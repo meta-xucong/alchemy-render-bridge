@@ -52,7 +52,7 @@ class PreflightSafetyTests(unittest.TestCase):
 
 
 class OrchestrationTests(unittest.TestCase):
-    def exercise(self, *, disabled=False, import_failure=False, cleanup_errors=None):
+    def exercise(self, *, disabled=False, import_failure=False, cleanup_errors=None, listener_rows=None):
         import contextlib
         import json
         import os
@@ -69,7 +69,7 @@ class OrchestrationTests(unittest.TestCase):
                     return json.loads(state.read_text())['distro'] + ' Stopped 1'
                 return ''
             def fake_process(args, stdout, **kwargs):
-                stdout.write(b'{"port": 43210, "bind": "127.0.0.1", "linux_listener_verified": true}\n')
+                stdout.write(b'{"port": 43210, "bind": "127.0.0.1", "linux_getsockname_verified": true}\n')
                 stdout.flush()
                 process = MagicMock()
                 process.poll.return_value = 0
@@ -80,14 +80,18 @@ class OrchestrationTests(unittest.TestCase):
             stack.enter_context(patch.object(p, 'run', side_effect=fake_run))
             stack.enter_context(patch.object(p, 'names', return_value=set()))
             stack.enter_context(patch.object(p, 'download'))
+            stack.enter_context(patch.object(p, 'windows_listener', return_value=([{
+                'LocalAddress': '127.0.0.1', 'LocalPort': 43210, 'State': 'Listen'}] if listener_rows is None else listener_rows)))
             stack.enter_context(patch.object(p.subprocess, 'Popen', side_effect=fake_process))
             connection = MagicMock()
             connection.__enter__.return_value.recv.return_value = b'bridge-wsl1-ok\n'
-            stack.enter_context(patch.object(p.socket, 'create_connection', return_value=connection))
+            connect = stack.enter_context(patch.object(p.socket, 'create_connection', return_value=connection))
             clean = stack.enter_context(patch.object(p, 'cleanup', return_value=cleanup_errors or []))
             stack.enter_context(patch('builtins.print'))
             code = p.preflight(state, base, report)
             result = json.loads(report.read_text())
+            if listener_rows == []:
+                connect.assert_not_called()
             clean.assert_called_once_with(state, base)
             return code, result
 
@@ -109,6 +113,12 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(result['status'], 'passed')
         self.assertFalse(result['engine_tested'])
         self.assertFalse(result['postgres_tested'])
+
+    def test_invisible_windows_listener_blocks_before_connect(self):
+        code, result = self.exercise(listener_rows=[])
+        self.assertEqual(code, 1)
+        self.assertEqual(result['stage'], 'windows_listener_verification')
+        self.assertEqual(result['status'], 'blocked')
 
     def test_cleanup_failure_overrides_success(self):
         code, result = self.exercise(cleanup_errors=['unregister failed'])
@@ -142,6 +152,38 @@ class OrchestrationTests(unittest.TestCase):
     def test_empty_inventory_is_valid(self):
         with patch.object(p, 'run', return_value='[]'):
             self.assertEqual(p.names(), set())
+
+
+class WindowsListenerTests(unittest.TestCase):
+    def row(self, **changes):
+        return dict({'LocalAddress': '127.0.0.1', 'LocalPort': 43210, 'State': 'Listen'}, **changes)
+
+    def test_exact_loopback_passes(self):
+        self.assertEqual(p.validate_listener([self.row()], 43210), self.row())
+
+    def test_unsafe_or_unverifiable_rows_block(self):
+        cases = [[], None, {}, 'unexpected', [None], [self.row(), self.row()],
+                 [self.row(LocalAddress='0.0.0.0')], [self.row(LocalAddress='::')],
+                 [self.row(LocalAddress='::1')], [self.row(LocalAddress='192.0.2.1')],
+                 [self.row(LocalPort=43211)], [self.row(LocalPort='43210')],
+                 [self.row(State='Established')], [{}]]
+        for rows in cases:
+            with self.subTest(rows=rows), self.assertRaises(RuntimeError):
+                p.validate_listener(rows, 43210)
+
+    def test_invalid_port_blocks_before_shell(self):
+        for port in (0, 65536, True, '43210; whoami'):
+            with self.subTest(port=port), patch.object(p, 'run') as run:
+                with self.assertRaises(RuntimeError):
+                    p.windows_listener(port)
+                run.assert_not_called()
+
+    def test_windows_query_returns_only_selected_fields(self):
+        with patch.object(p, 'run', return_value='[]') as run:
+            self.assertEqual(p.windows_listener(43210), [])
+            self.assertIn('Get-NetTCPConnection -State Listen', run.call_args.args[0][-1])
+            self.assertIn('$_.LocalPort -eq 43210', run.call_args.args[0][-1])
+            self.assertEqual(run.call_args.kwargs['timeout'], 15)
 
 
 if __name__ == '__main__':

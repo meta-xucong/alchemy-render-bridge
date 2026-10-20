@@ -27,11 +27,21 @@ s = socket.socket()
 s.settimeout(40)
 s.bind(('127.0.0.1', 0))
 s.listen(1)
-port = s.getsockname()[1]
-rows = [line.split() for line in open('/proc/net/tcp') if ':' in line]
-owned = [row for row in rows if row[1].endswith(':%04X' % port) and row[3] == '0A']
-assert len(owned) == 1 and owned[0][1] == '0100007F:%04X' % port, owned
-print(json.dumps({'port': port, 'bind': '127.0.0.1', 'linux_listener_verified': True}), flush=True)
+address, port = s.getsockname()
+assert address == '127.0.0.1'
+# WSL1 /proc socket tables may not expose its host-backed listener. Capture only
+# matching-port address/state diagnostics; Windows validates the real listener.
+proc_matches = []
+for table in ('/proc/net/tcp', '/proc/net/tcp6'):
+    try:
+        for line in open(table):
+            row = line.split()
+            if len(row) >= 4 and row[1].endswith(':%04X' % port):
+                proc_matches.append({'table': table, 'local': row[1], 'state': row[3]})
+    except OSError:
+        pass
+print(json.dumps({'port': port, 'bind': address, 'linux_getsockname_verified': True,
+                  'linux_proc_matching_port': proc_matches[:16]}), flush=True)
 try:
     c, address = s.accept()
     with c:
@@ -71,6 +81,34 @@ $a = @(); if (Test-Path $p) {
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         raise RuntimeError('Unverifiable WSL registration inventory')
     return set(value)
+
+
+def validate_listener(rows: object, port: int) -> dict:
+    """Fail closed unless Windows sees exactly one loopback-only listener."""
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise RuntimeError('Invalid canary port')
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        raise RuntimeError('Windows must report exactly one canary-port listener')
+    row = rows[0]
+    if (row.get('LocalAddress') != '127.0.0.1'
+            or type(row.get('LocalPort')) is not int or row['LocalPort'] != port
+            or row.get('State') != 'Listen'):
+        raise RuntimeError('Windows listener is not the expected IPv4 loopback endpoint')
+    return {'LocalAddress': row['LocalAddress'], 'LocalPort': row['LocalPort'], 'State': row['State']}
+
+
+def windows_listener(port: int) -> list:
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise RuntimeError('Invalid canary port')
+    # Never connect before this independently observed Windows-side check passes.
+    # Query failures/timeouts and empty visibility remain blocking, not a skip.
+    script = ("$ErrorActionPreference = 'Stop'; "
+              "$a = @(Get-NetTCPConnection -State Listen -ErrorAction Stop | "
+              f"Where-Object {{ $_.LocalPort -eq {port} }} | "
+              "ForEach-Object { [pscustomobject]@{ LocalAddress = [string]$_.LocalAddress; "
+              "LocalPort = [int]$_.LocalPort; State = [string]$_.State } }); "
+              "ConvertTo-Json -InputObject @($a) -Compress")
+    return json.loads(run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script], timeout=15))
 
 
 def verify_digest(path: Path) -> None:
@@ -186,8 +224,13 @@ def preflight(state_path: Path, base: Path, report_path: Path) -> int:
             if process.poll() is not None:
                 raise RuntimeError('Linux canary exited before ready')
             time.sleep(0.2)
-        if not ready or ready.get('bind') != '127.0.0.1' or ready.get('linux_listener_verified') is not True:
+        if not ready or ready.get('bind') != '127.0.0.1' or ready.get('linux_getsockname_verified') is not True:
             raise RuntimeError('No verified loopback-only Linux canary listener')
+        result['canary'] = ready
+        result['stage'] = 'windows_listener_verification'
+        host_rows = windows_listener(ready['port'])
+        result['windows_listener'] = validate_listener(host_rows, ready['port'])
+        result['stage'] = 'windows_to_linux_exchange'
         with socket.create_connection(('127.0.0.1', ready['port']), timeout=5) as connection:
             connection.sendall(b'bridge-wsl1-probe\n')
             if connection.recv(64) != b'bridge-wsl1-ok\n':
