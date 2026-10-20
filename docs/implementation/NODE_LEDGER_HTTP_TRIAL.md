@@ -86,3 +86,50 @@ Still unverified: TLS, production node/source authorization, Linux-hosted Bridge
 reference-image propagation (this fixture has references=[]), remote network
 partitions, actual Hatchet redelivery, active-renderer crash/lease
 recovery, persistent operational deployment, real providers and real Alchemy.
+
+## Verified runtime result — 2026-10-20
+
+**Bounded trial PASS; none of the outstanding production gates above are waived.**
+
+Implementation: `f5fda5e2b8f350db9bee8b03977fadf5515f038d`.
+[Run 39385273426](https://github.com/meta-xucong/alchemy-render-bridge/actions/runs/39385273426),
+job `118503502523`, completed successfully on GitHub Windows2025 image
+`20261007.264.1`. All 72 experiment tests passed in the Bridge interpreter
+(13.206 seconds); both isolated dependency checks passed.
+
+The real native Windows SDK worker PID 8692 returned these five results:
+
+1. artifact_committed
+2. duplicate_suppressed
+3. execution_unknown
+4. duplicate_suppressed
+5. physical_slot_busy
+
+The node-owned execution journal recorded exactly one FakeRenderer start and was
+removed. Frozen UTF-8 prompt digest:
+`cfdc2217a30328caae330b9120feb5a53791022bff5e343ba5e9e774d5ff2351`;
+reference count remained zero. Ledger grants were happy=1, unknown=1, blocked=0.
+The source domain simulator read and verified the 290-byte artifact with SHA256
+`5833a7f298963d0ce0e91b6aade58ba3fbbd1aff90d2160358939e76b61202d2`,
+and recorded accepted receipt acknowledgement.
+
+Only three new listeners appeared, all IPv4 localhost: PostgreSQL 63371,
+Hatchet gRPC 63373 and test HTTP 63409. Listener child 8772 exited 0; worker had no
+remaining children. The HTTP server, engine and database stopped normally;
+owned runtime directories, journal and WSL distro were removed. Final listener
+delta and cleanup error lists were empty. No forced cleanup was counted as pass.
+
+Independent evidence review confirmed the exact commit, outcomes, hash/ack,
+listener checks and cleanup. [Durable sanitized JSON](evidence/20261020-node-ledger-http.json)
+was parsed from this job's stdout; it is not the original artifact ZIP bytes.
+
+The same implementation's [Bridge contract matrix](https://github.com/meta-xucong/alchemy-render-bridge/actions/runs/39385273500)
+and [SDK lifecycle matrix](https://github.com/meta-xucong/alchemy-render-bridge/actions/runs/39385273458)
+also passed on Linux and Windows. These remain separate scopes.
+
+An earlier run 39384885266 at dee017e failed workflow validation before creating
+any job, not in the node runtime. The job-level env incorrectly used runner.temp;
+GitHub's documented context availability excludes runner there. The corrected
+workflow derives the path at step runtime from RUNNER_TEMP and persists it through
+GITHUB_ENV. No exact annotation from that failed run was obtained; the source
+restriction and corrected successful execution are the recorded evidence.

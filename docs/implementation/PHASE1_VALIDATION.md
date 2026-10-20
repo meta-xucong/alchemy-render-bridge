@@ -112,3 +112,14 @@ Windows Agent 或 Hatchet 验收范围。
 连接 WSL1 Linux Hatchet 的三合成任务试验与正常退出，见
 [完整限定验收](WSL_NATIVE_ENGINE_VALIDATION.md)。这关闭此前“从未进行原生Windows真实引擎连接”
 的缺口，但不关闭远端网络/TLS、权限、故障恢复或完整Bridge/Alchemy接入门禁。
+
+
+## 节点HTTP与账本后续闭环
+
+实现提交 `f5fda5e2b8f350db9bee8b03977fadf5515f038d` 的真实运行已通过，见
+[限定验收及证据](NODE_LEDGER_HTTP_TRIAL.md)。原生Windows节点通过测试专用HTTP获得冻结
+prompt、上传并提交模拟图片；来源端领域模拟器校验和确认收据。五次独立提交产生一次
+模拟渲染，重复启动受抑制，注入unknown后另一任务被拦截。全部清理检查通过。
+
+此为同一Windows主机上的跨进程节点HTTP验证，Hatchet引擎在WSL1中。不是生产Linux
+Bridge部署、真实来源HTTP/Alchemy、参考图、网络重投、实际渲染器崩溃或TLS验收。
