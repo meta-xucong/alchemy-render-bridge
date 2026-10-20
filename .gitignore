@@ -24,3 +24,9 @@ logs/
 # OS files
 .DS_Store
 Thumbs.db
+# Local contract tests / packaging
+*.egg-info/
+build/
+dist/
+.coverage
+htmlcov/

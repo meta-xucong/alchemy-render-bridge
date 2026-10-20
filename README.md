@@ -6,9 +6,11 @@ An optional API-based bridge between Alchemy applications and local rendering to
 
 ## 当前状态
 
-**设计与开发准备阶段。仓库目前只有设计文档，没有可安装或可运行的渲染服务。**
+**第一阶段：隔离API合同原型。已有可运行的本地测试代码，尚无可部署的渲染服务、真实任务引擎或Windows Agent。**
 
 - 文档基线：分端开发方案 v1.2，2026-10-20。
+- 实现范围：[第一阶段范围](docs/implementation/PHASE1_SCOPE.md)、[运行隔离测试](docs/implementation/RUN_CONTRACT_TESTS.md)。
+- 引擎与业务接缝：[Hatchet门禁](docs/implementation/HATCHET_POC_GATE.md)、[Alchemy只读预检](docs/implementation/ALCHEMY_READ_ONLY_PREFLIGHT.md)。
 - 首阶段：隔离环境、一个受信工作区、一个本地节点、FakeRenderer。
 - Hatchet 是待验证的任务引擎候选，不是已确定可上线的依赖。
 - 首批真实场景为本机已登录的Codex CLI与Midjourney（Discord API发任务消息、用户手动提交、原图导入）；均尚未实现。ComfyUI后置；没有真实模型、生产或Windows运行验收。

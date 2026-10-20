@@ -1,0 +1,163 @@
+{
+  "$defs": {
+    "ImageParameters": {
+      "additionalProperties": false,
+      "properties": {
+        "width": {
+          "default": 32,
+          "maximum": 1024,
+          "minimum": 1,
+          "title": "Width",
+          "type": "integer"
+        },
+        "height": {
+          "default": 32,
+          "maximum": 1024,
+          "minimum": 1,
+          "title": "Height",
+          "type": "integer"
+        },
+        "seed": {
+          "default": 0,
+          "maximum": 4294967295,
+          "minimum": 0,
+          "title": "Seed",
+          "type": "integer"
+        }
+      },
+      "title": "ImageParameters",
+      "type": "object"
+    },
+    "InputReference": {
+      "additionalProperties": false,
+      "properties": {
+        "input_ref": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Input Ref",
+          "type": "string"
+        },
+        "role": {
+          "const": "reference",
+          "title": "Role",
+          "type": "string"
+        },
+        "hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Hash",
+          "type": "string"
+        }
+      },
+      "required": [
+        "input_ref",
+        "role",
+        "hash"
+      ],
+      "title": "InputReference",
+      "type": "object"
+    },
+    "OutputSlot": {
+      "additionalProperties": false,
+      "properties": {
+        "slot_id": {
+          "const": "primary",
+          "title": "Slot Id",
+          "type": "string"
+        },
+        "count": {
+          "maximum": 1,
+          "minimum": 1,
+          "title": "Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "slot_id",
+        "count"
+      ],
+      "title": "OutputSlot",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "origin_key": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+      "title": "Origin Key",
+      "type": "string"
+    },
+    "binding_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Binding Id",
+      "type": "string"
+    },
+    "operation": {
+      "const": "image.generate",
+      "title": "Operation",
+      "type": "string"
+    },
+    "execution_profile_id": {
+      "const": "fake-image",
+      "title": "Execution Profile Id",
+      "type": "string"
+    },
+    "execution_profile_revision": {
+      "const": "1",
+      "title": "Execution Profile Revision",
+      "type": "string"
+    },
+    "prompt": {
+      "maxLength": 16000,
+      "minLength": 1,
+      "title": "Prompt",
+      "type": "string"
+    },
+    "parameters": {
+      "$ref": "#/$defs/ImageParameters"
+    },
+    "references": {
+      "items": {
+        "$ref": "#/$defs/InputReference"
+      },
+      "maxItems": 8,
+      "title": "References",
+      "type": "array"
+    },
+    "output_slot": {
+      "$ref": "#/$defs/OutputSlot"
+    },
+    "deadline": {
+      "maxLength": 40,
+      "minLength": 20,
+      "title": "Deadline",
+      "type": "string"
+    },
+    "routing": {
+      "const": "bridge_only",
+      "title": "Routing",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "origin_key",
+    "binding_id",
+    "operation",
+    "execution_profile_id",
+    "execution_profile_revision",
+    "prompt",
+    "parameters",
+    "references",
+    "output_slot",
+    "deadline",
+    "routing"
+  ],
+  "title": "TaskCreate",
+  "type": "object"
+}

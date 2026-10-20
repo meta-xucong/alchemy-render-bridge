@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alchemy-render-bridge"
+version = "0.1.0a1"
+description = "Experimental API contract harness for the standalone Alchemy Render Bridge"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi==0.141.1",
+  "anyio==4.15.1",
+  "pydantic==2.13.4",
+  "Pillow==12.3.0",
+]
+
+[project.optional-dependencies]
+test = ["httpx==0.28.1"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
