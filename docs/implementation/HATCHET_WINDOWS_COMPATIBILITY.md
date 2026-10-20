@@ -36,3 +36,15 @@
 - [固定listener源码](https://github.com/hatchet-dev/hatchet/blob/19a3474b7963139124151e7a3b1357b1971c2eb8/sdks/python/hatchet_sdk/worker/action_listener_process.py#L132-L136)
 - [Python Windows asyncio限制](https://docs.python.org/3.12/library/asyncio-platforms.html#windows)
 - [Windows os.kill行为](https://docs.python.org/3.12/library/os.html#os.kill)
+
+
+## 隔离候选实现（后续更新）
+
+上述候选已作为独立实验目录实现：[源码与重现步骤](../../experiments/hatchet-windows-compat/README.md)。
+固定官方输入，三处补丁，版本1.42.1+bridgewin1，未加入Bridge运行依赖。
+候选wheel SHA-256：`f8fbe9ed1944a1c1718b1655b17dddd55ba5e79920d99beabf68c98ad9d8af92`。
+
+限定代码审计通过；独立Linux8项测试全部通过、零跳过（45.175秒）。
+原版Linux构造对照、依赖一致性、确定性重建、404项RECORD和篡改输入拒绝通过。
+实际Windows安装与生命周期测试须等待本提交的独立CI任务，未提前标为通过。
+未发布wheel二进制、没有有效测试凭据，不连接引擎或真实生成服务。

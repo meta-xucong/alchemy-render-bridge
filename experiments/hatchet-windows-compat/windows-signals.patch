@@ -1,0 +1,70 @@
+--- a/hatchet_sdk/worker/worker.py
++++ b/hatchet_sdk/worker/worker.py
+@@ -723,7 +723,8 @@
+                 else self._handle_exit_signal
+             ),
+         )
+-        signal.signal(signal.SIGQUIT, self._handle_force_quit_signal)
++        if hasattr(signal, "SIGQUIT"):
++            signal.signal(signal.SIGQUIT, self._handle_force_quit_signal)
+ 
+     def _handle_exit_signal(self, signum: int, frame: FrameType | None) -> None:
+         sig_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
+--- a/hatchet_sdk/worker/action_listener_process.py
++++ b/hatchet_sdk/worker/action_listener_process.py
+@@ -3,6 +3,7 @@
+ import logging
+ import multiprocessing.synchronize
+ import signal
++import sys
+ import time
+ import warnings
+ from dataclasses import dataclass
+@@ -131,9 +132,15 @@
+ 
+         # explicit no-op on SIGINT and SIGTERM because shutdown is completely controlled
+         # by the parent worker process
+-        loop = asyncio.get_event_loop()
+-        loop.add_signal_handler(signal.SIGINT, lambda: None)
+-        loop.add_signal_handler(signal.SIGTERM, lambda: None)
++        if sys.platform == "win32":
++            # Windows asyncio has no add_signal_handler. The parent
++            # still controls shutdown with Event and STOP_LOOP.
++            signal.signal(signal.SIGINT, lambda *_: None)
++            signal.signal(signal.SIGTERM, lambda *_: None)
++        else:
++            loop = asyncio.get_event_loop()
++            loop.add_signal_handler(signal.SIGINT, lambda: None)
++            loop.add_signal_handler(signal.SIGTERM, lambda: None)
+ 
+         if self.config.healthcheck.enabled:
+             self._listener_health_gauge = Gauge(
+--- a/hatchet_sdk/deprecated/action_listener_process.py
++++ b/hatchet_sdk/deprecated/action_listener_process.py
+@@ -5,6 +5,7 @@
+ import logging
+ import multiprocessing.synchronize
+ import signal
++import sys
+ import time
+ from datetime import timedelta
+ from multiprocessing import Queue
+@@ -96,9 +97,15 @@
+ 
+         self.client = Client(config=self.config, debug=self.debug)
+ 
+-        loop = asyncio.get_event_loop()
+-        loop.add_signal_handler(signal.SIGINT, lambda: None)
+-        loop.add_signal_handler(signal.SIGTERM, lambda: None)
++        if sys.platform == "win32":
++            # Windows asyncio has no add_signal_handler. The parent
++            # still controls shutdown with Event and STOP_LOOP.
++            signal.signal(signal.SIGINT, lambda *_: None)
++            signal.signal(signal.SIGTERM, lambda *_: None)
++        else:
++            loop = asyncio.get_event_loop()
++            loop.add_signal_handler(signal.SIGINT, lambda: None)
++            loop.add_signal_handler(signal.SIGTERM, lambda: None)
+ 
+         if self.config.healthcheck.enabled:
+             self._listener_health_gauge = Gauge(

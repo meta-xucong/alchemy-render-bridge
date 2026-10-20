@@ -1,0 +1,21 @@
+{
+  "upstream_version": "1.42.1",
+  "upstream_source_sha": "19a3474b7963139124151e7a3b1357b1971c2eb8",
+  "upstream_wheel_sha256": "da9b111aac64fb678f371b92862f48f475631994ba2340ebea28c94de21a61fd",
+  "candidate_version": "1.42.1+bridgewin1",
+  "candidate_wheel_sha256": "f8fbe9ed1944a1c1718b1655b17dddd55ba5e79920d99beabf68c98ad9d8af92",
+  "changed_sources": {
+    "hatchet_sdk/worker/worker.py": {
+      "before_sha256": "127d6f5ae3c8b51c6d013b75a2112c17dcab83d6f077764d30b93ed065dfd614",
+      "after_sha256": "0babfbacb115136026fb77cf7050fcf181634a411b3c3d19f0bd0dbd9391df26"
+    },
+    "hatchet_sdk/worker/action_listener_process.py": {
+      "before_sha256": "270c6eb4ab036103eac69237c150f9521f98a6ed3018e98630440b47bf77a0a0",
+      "after_sha256": "61d771e44536e5f41cb3233d9fdef9d1dc19cda9e8d7da1221e1ece0afa7592b"
+    },
+    "hatchet_sdk/deprecated/action_listener_process.py": {
+      "before_sha256": "5c17d59d467739b9e04b1978abbec59225d1703a8b12dfd4678e195b52aaba9a",
+      "after_sha256": "b3b7162861c32c8f1ad798ec03e14e542505a0c5d16e5f442b91e2d705c964ce"
+    }
+  }
+}
