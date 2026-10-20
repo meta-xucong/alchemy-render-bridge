@@ -17,6 +17,8 @@ class CodexLifecycleTests(unittest.TestCase):
             root = Path(directory)
             script = root / 'mock.py'
             script.write_text('''import sys,json,pathlib,base64
+sys.stdin.reconfigure(encoding='utf-8')
+sys.stdout.reconfigure(encoding='utf-8')
 stage=0
 def emit(value): print(json.dumps(value),flush=True)
 for line in sys.stdin:
@@ -46,7 +48,7 @@ for line in sys.stdin:
   emit({'method':'turn/completed','params':{'threadId':'thread-fixture','turn':{'id':'turn-fixture','status':'completed','items':[item]}}})
  else: raise AssertionError('duplicate operation')
  stage+=1
-'''.replace('if IMAGE:', 'if ' + repr(image) + ':').replace('base64.b64decode(PNG)', 'base64.b64decode(' + repr(base64.b64encode(fixture_png()).decode()) + ')'))
+'''.replace('if IMAGE:', 'if ' + repr(image) + ':').replace('base64.b64decode(PNG)', 'base64.b64decode(' + repr(base64.b64encode(fixture_png()).decode()) + ')'), encoding='utf-8')
             request = ExecutionRequest('task', 'attempt', '原始完整 prompt')
             config = CodexConfig(enabled=True, model='local-accepted-model',
                                  image_capability_verified=True, tool_policy_verified=True, timeout=3)
