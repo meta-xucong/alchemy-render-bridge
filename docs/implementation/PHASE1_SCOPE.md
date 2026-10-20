@@ -25,3 +25,8 @@ SQLite仅为云端隔离合同/事务故障试验提供可持久化测试底座�
 ## 放行口径
 
 可交付“第一阶段合同原型及测试证据”，不能写“完整Render Bridge可上线”。Hatchet、Windows、真实Alchemy结果导入或安全授权未验收，必须单独列为未完成。代码通过隔离测试也不自动解除下一阶段门禁。
+
+## 后续隔离验证更新
+
+此前启动权限阻塞已解除，Linux Hatchet 冒烟测试已执行，详见
+[实际运行验证](HATCHET_RUNTIME_VALIDATION.md)。这不解除 Windows、TLS、权限与故障门禁。

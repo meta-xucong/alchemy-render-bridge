@@ -49,7 +49,7 @@ Hatchet运行/Windows、生产授权和真实业务导入不是此PASS的组成�
 - schemas.py：043cc313cc0d004ce93ea304a5d7580efe9905a3468b52955360def7c77c7c72
 - fake.py：4c5144a1992caf16ab74514f65cd664e4c73ccf161ca87fa5dd5a9e6b266d71f
 
-## 尚未通过的门禁
+## 首轮未通过的门禁（后续状态见下方更新）
 
 - Hatchet embedded真实启动：需要本地临时授权状态创建许可，未执行；不是没有Docker就否决产品。
 - Hatchet SDK 1.42.1 Windows信号处理：存在源码/隔离方法复现的SIGQUIT兼容问题，不能以下载Windows轮子代替运行验收。
@@ -82,3 +82,11 @@ POSIX 目录屏障，避免前一次屏障失败后仅凭文件已存在就返�
 
 上文源码指纹只适用于首次提交，不能用于本修复的代码身份；新提交及其远端
 CI 为本修复的精确身份依据。
+
+### 修复后的真实双平台 CI
+
+提交 `5d2629b8d832816f848f4e2be18e8c820dd35482` 的运行
+[39374964684](https://github.com/meta-xucong/alchemy-render-bridge/actions/runs/39374964684)
+已完成且成功：Linux 62 项通过（2.349 秒）；Windows 62 项通过（14.255 秒）。
+两平台 compileall 和 diff 检查通过。该结果只覆盖合同测试，不扩大上述存储、
+Windows Agent 或 Hatchet 验收范围。
