@@ -1,6 +1,6 @@
-"""Bounded, isolated phase-one contract proof. This is not a task engine.
+"""Bounded single-workspace development ledger. This is not a task engine.
 
-Node methods are test-harness hooks, deliberately absent from the source API.
+Node methods are absent from the source API and only exposed by configured node routes.
 All mutable decisions are serialized by SQLite transactions. Files are private,
 server-named, immutable after validation, and small enough for bounded reads.
 """
@@ -178,12 +178,17 @@ class BridgeStore:
                     id TEXT PRIMARY KEY, task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id),
                     upload_id TEXT NOT NULL UNIQUE REFERENCES uploads(id),
                     artifact_id TEXT NOT NULL UNIQUE, manifest TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS dispatch_outbox (
+                    dispatch_key TEXT PRIMARY KEY, task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id),
+                    engine_run_id TEXT, acknowledged REAL);
                 CREATE TABLE IF NOT EXISTS acknowledgements (
                     receipt_id TEXT PRIMARY KEY REFERENCES receipts(id),
                     source TEXT NOT NULL, workspace TEXT NOT NULL,
                     client_receipt_id TEXT NOT NULL, digest TEXT NOT NULL, payload TEXT NOT NULL,
                     UNIQUE(source, workspace, client_receipt_id));
             """)
+            con.execute("""INSERT OR IGNORE INTO dispatch_outbox(dispatch_key,task_id)
+                SELECT 'dispatch_' || id, id FROM tasks WHERE state='queued'""")
         os.chmod(self.db_path, 0o600)
 
     def close(self):
@@ -532,6 +537,8 @@ class BridgeStore:
                         (task_id, source, workspace, payload["origin_key"], digest,
                          _canonical(payload), "queued", attempt_id, 0, self.clock(), deadline))
             con.execute("INSERT INTO attempts(id,task_id) VALUES(?,?)", (attempt_id, task_id))
+            con.execute("INSERT INTO dispatch_outbox(dispatch_key,task_id) VALUES(?,?)",
+                        (_id("dispatch"), task_id))
             for ref in payload["references"]:
                 con.execute("INSERT OR IGNORE INTO input_pins VALUES(?,?)", (task_id, ref["input_ref"]))
             return self._task_view(con, self._scoped(con, "tasks", task_id, scope))
@@ -588,7 +595,7 @@ class BridgeStore:
             return self._task_view(con, self._scoped(con, "tasks", task_id, scope))
 
     def claim_task(self, scope, task_id, *, node_id, executor_instance, mode="execute", lease_seconds=60):
-        """Test-only acquisition. No scheduler or network worker is installed."""
+        """Acquire a ledger claim; the configured runtime separately owns Node HTTP."""
         _text(node_id)
         _text(executor_instance)
         if not isinstance(mode, str) or mode not in {"execute", "upload_only"}:
@@ -794,3 +801,62 @@ class BridgeStore:
                             (receipt_id, source, workspace, payload["client_receipt_id"],
                              digest, _canonical(payload)))
             return self._receipt_view(con, row)
+
+
+    def pending_dispatches(self, scope, limit=10):
+        """Read handoff records, not an execution/claim queue."""
+        source, workspace = self._scope(scope)
+        _integer(limit, 1, 10)
+        with self._read_transaction() as con:
+            rows = con.execute("""SELECT d.dispatch_key, d.task_id FROM dispatch_outbox d
+                JOIN tasks t ON t.id=d.task_id JOIN attempts a ON a.task_id=t.id
+                WHERE t.source=? AND t.workspace=? AND d.engine_run_id IS NULL
+                AND t.state='queued' AND t.cancel_requested=0 AND t.deadline>?
+                AND a.start_grant_id IS NULL ORDER BY t.created LIMIT ?""",
+                (source, workspace, self.clock(), limit)).fetchall()
+            return {"items": [dict(row) for row in rows]}
+
+    def ack_dispatch(self, scope, dispatch_key, engine_run_id):
+        _text(dispatch_key)
+        _text(engine_run_id, 256)
+        with self._transaction() as con:
+            row = con.execute("SELECT * FROM dispatch_outbox WHERE dispatch_key=?", (dispatch_key,)).fetchone()
+            if not row:
+                _fail("not_found", 404)
+            self._scoped(con, "tasks", row["task_id"], scope)
+            # A lost submit response may yield more than one engine run. The first
+            # acknowledged handoff is canonical; execution remains start-latched.
+            if row["engine_run_id"] is None:
+                con.execute("UPDATE dispatch_outbox SET engine_run_id=?,acknowledged=? WHERE dispatch_key=?",
+                            (engine_run_id, self.clock(), dispatch_key))
+            return {"dispatch_key": dispatch_key, "task_id": row["task_id"],
+                    "engine_run_id": row["engine_run_id"] or engine_run_id, "acknowledged": True}
+
+    def authorize_node_claim(self, scope, task_id, claim_id, node_id, executor_instance):
+        with self._read_transaction() as con:
+            task = self._scoped(con, "tasks", task_id, scope)
+            claim = self._check_claim(con, task, claim_id)
+            if claim["node"] != node_id or claim["executor"] != executor_instance:
+                _fail("claim_identity_mismatch", 403)
+            return self._claim_view(claim, task["attempt_id"])
+
+    def authorize_node_upload(self, scope, upload_id, claim_id, node_id, executor_instance):
+        with self._read_transaction() as con:
+            row, task = self._upload_row(con, upload_id, scope)
+            claim = self._check_claim(con, task, claim_id)
+            if claim["node"] != node_id or claim["executor"] != executor_instance:
+                _fail("claim_identity_mismatch", 403)
+            return self._upload_view(row)
+
+    def get_node_input_content(self, scope, task_id, input_id, claim_id, node_id, executor_instance):
+        with self._read_transaction() as con:
+            task = self._scoped(con, "tasks", task_id, scope)
+            claim = self._check_claim(con, task, claim_id)
+            if claim["node"] != node_id or claim["executor"] != executor_instance:
+                _fail("claim_identity_mismatch", 403)
+            pin = con.execute("SELECT 1 FROM input_pins WHERE task_id=? AND input_id=?", (task_id, input_id)).fetchone()
+            if not pin:
+                _fail("not_found", 404)
+            row = self._scoped(con, "inputs", input_id, scope)
+            payload = json.loads(row["payload"])
+            return self._read_bytes(row["file_name"], payload), payload["mime_type"]

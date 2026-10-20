@@ -6,9 +6,10 @@ An optional API-based bridge between Alchemy applications and local rendering to
 
 ## 当前状态
 
-**第一阶段：隔离API合同原型与任务引擎可行性试验。已有可运行测试代码及真实引擎实验，尚无可部署的渲染服务或正式Windows Agent。**
+**当前：可配置 Bridge / 通用 Agent 开发版与离线执行器。模拟链路可运行；真实工具登录、生图与生产部署尚未验收。**
 
 - 文档基线：分端开发方案 v1.2，2026-10-20。
+- 新增：[可配置服务与 Node API](docs/implementation/CONFIGURED_BRIDGE_RUNTIME.md)、[离线执行器](docs/implementation/OFFLINE_EXECUTORS.md)、[云端开发与本地迁移说明](docs/implementation/LOCAL_MIGRATION.md)。
 - 实现范围：[第一阶段范围](docs/implementation/PHASE1_SCOPE.md)、[运行隔离测试](docs/implementation/RUN_CONTRACT_TESTS.md)。
 - 引擎与业务接缝：[Hatchet门禁](docs/implementation/HATCHET_POC_GATE.md)、[Alchemy只读预检](docs/implementation/ALCHEMY_READ_ONLY_PREFLIGHT.md)。
 - 首阶段：隔离环境、一个受信工作区、一个本地节点、FakeRenderer。
@@ -17,7 +18,7 @@ An optional API-based bridge between Alchemy applications and local rendering to
 - [Source HTTP 开发演示与运行方法](docs/implementation/SOURCE_HTTP_DEMO.md)：补齐来源侧实际 HTTP 调用，提供合成 PNG 和结果报告；仍非生产渲染服务。
 - [节点HTTP与任务账本的隔离闭环](docs/implementation/NODE_LEDGER_HTTP_TRIAL.md)已通过；该次试验的来源侧为领域模拟器，本次增量已补齐来源 HTTP，仍不是 Alchemy 联调。
 - Windows 合同测试不代表 Windows Agent 验收；该实验存储不承诺 Windows 断电目录持久性或 ACL 安全隔离。
-- 首批真实场景为本机已登录的Codex CLI与Midjourney（Discord API发任务消息、用户手动提交、原图导入）；均尚未实现。ComfyUI后置；没有真实模型、生产或正式Windows Agent验收。
+- 首批真实场景为本机已登录的Codex CLI与Midjourney（Discord API发任务消息、用户手动提交、原图导入）；已有离线适配组件，真实调用默认未启用。ComfyUI后置；没有真实模型、生产或正式Windows Agent验收。
 
 ## 架构边界
 
@@ -39,7 +40,7 @@ Alchemy与Render Bridge分别部署在不同VPS，严格独立发布；本地Age
 
 ## 下一步
 
-Bridge不区分Alchemy V1/V2/V3/Lab/Video OS；各版本在Alchemy侧适配成同一最终请求。核实 Alchemy 现有扩展接缝并冻结 API；验证 Hatchet 的 Windows、TLS、权限、重投与资源行为；随后双方分别使用模拟客户端/服务开发，再联调 FakeRenderer。FakeRenderer验证通用桥后，优先Codex CLI与Midjourney人工执行闭环；ComfyUI和视频执行器后置。
+Bridge不区分Alchemy V1/V2/V3/Lab/Video OS；各版本在Alchemy侧适配成同一最终请求。云端继续完成独立服务、Agent与执行器代码，通过模拟任务验收后迁移本地。Codex登录及真实生图留到本地，不作为云端编码前置。Alchemy接入、PostgreSQL生产持久层与双VPS部署仍单列未完成；不把开发版测试等同生产交付。ComfyUI和视频执行器后置。
 
 本仓库是 Render Bridge 的后续开发基线。Alchemy 接入模块实现应位于对应 Alchemy 项目，本仓库保存其设计合同与联调约束，不复制或修改旧业务系统。
 

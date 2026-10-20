@@ -1,8 +1,8 @@
-"""Experimental source-only HTTP adapter.
+"""Source HTTP adapter with explicitly optional development node/dispatch routes.
 
 The caller must inject a BridgeStore and an explicit bearer-to-SourceScope map.
 There is deliberately no module-global app, server startup, credential creation,
-node API, scheduler, or execution trigger. An HTTP read or replay cannot start
+default node API, scheduler, or execution trigger. An HTTP read or replay cannot start
 generation. The fixture harness owns any separately injected engine.
 
 Authentication below is an isolated-test configuration seam, not production
@@ -126,6 +126,8 @@ def create_app(
     source_tokens: Mapping[str, SourceScope],
     max_json_bytes: int = 65_536,
     max_upload_bytes: int = MAX_INPUT_BYTES,
+    node_tokens=None,
+    dispatch_tokens=None,
 ) -> FastAPI:
     """Create an isolated fixture API with no implicit authority or executor."""
     if not isinstance(source_tokens, Mapping) or not source_tokens:
@@ -319,4 +321,14 @@ def create_app(
             scope, receipt_id, await _json_request(request, ReceiptAck, max_json_bytes)
         )
 
+    if node_tokens is not None or dispatch_tokens is not None:
+        # Keep credentials disjoint: source callers cannot acquire node authority.
+        node_keys, dispatch_keys = set(node_tokens or {}), set(dispatch_tokens or {})
+        if set(tokens) & (node_keys | dispatch_keys) or node_keys & dispatch_keys:
+            raise ValueError("Source, node and dispatcher credentials must differ")
+        from .node_api import install_node_routes, install_dispatch_routes
+        if node_tokens is not None:
+            install_node_routes(app, store, node_tokens, call_store)
+        if dispatch_tokens is not None:
+            install_dispatch_routes(app, store, dispatch_tokens, call_store)
     return app

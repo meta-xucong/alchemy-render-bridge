@@ -1,0 +1,12 @@
+{
+  "data_dir": "./.runtime/bridge",
+  "source_id": "local-source",
+  "workspace_id": "local-workspace",
+  "node_id": "local-node",
+  "executor_instance": "local-executor-1",
+  "host": "127.0.0.1",
+  "port": 8787,
+  "source_token_env": "BRIDGE_SOURCE_TOKEN",
+  "node_token_env": "BRIDGE_NODE_TOKEN",
+  "dispatch_token_env": "BRIDGE_DISPATCH_TOKEN"
+}

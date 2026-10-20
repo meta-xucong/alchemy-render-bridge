@@ -1,0 +1,17 @@
+{
+  "cli_version": "codex-cli 0.163.0",
+  "checked_on": "2026-10-20",
+  "method": "codex app-server generate-json-schema --out <temporary-directory> with empty temporary CODEX_HOME",
+  "authentication_used": false,
+  "generation_called": false,
+  "schemas": {
+    "v1/InitializeParams.json": "b55124e7c0f36a1789396daa5578217a92be67f053903696236686e59f6f212e",
+    "v2/ThreadStartParams.json": "e9c6d3cc18d049bfbc0249add3808fb8e5a27e1a0b5a423767aafbc3859a9428",
+    "v2/TurnStartParams.json": "835e0d4ca1a0ddc4fb6db1e2b3249dd67f07c50ac2506092ba81543efc92829b",
+    "v2/ItemCompletedNotification.json": "940dcfba0740e86a7e62b0eacf1bb53c634fdbe8b75fa3163b6e366a55f85fae",
+    "v2/TurnCompletedNotification.json": "69413578ec3ecd02691424bdeb9d640c7244b4ca4c5c3ef26f69a2efe7c37db8",
+    "ClientNotification.json": "706cf248d75027c84a3c63348d0ed507182e8eba40069dd17541793de029145a",
+    "v2/ThreadStartResponse.json": "7247cd531d3f78174444f8262fd3090d5acf8ab74084547b4e0a831d74e77c9a",
+    "v2/TurnStartResponse.json": "20e837d07826b9c01578ff40b962ab08f58a355a9984e96226733498514e9bad"
+  }
+}
