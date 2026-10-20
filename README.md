@@ -9,7 +9,7 @@ An optional API-based bridge between Alchemy applications and local rendering to
 **当前：可配置 Bridge / 通用 Agent 开发版与离线执行器。模拟链路可运行；真实工具登录、生图与生产部署尚未验收。**
 
 - 文档基线：分端开发方案 v1.2，2026-10-20。
-- 新增：[可配置服务与 Node API](docs/implementation/CONFIGURED_BRIDGE_RUNTIME.md)、[离线执行器](docs/implementation/OFFLINE_EXECUTORS.md)、[云端开发与本地迁移说明](docs/implementation/LOCAL_MIGRATION.md)。
+- 新增：[本地就绪诊断](docs/implementation/LOCAL_READINESS_DOCTOR.md)、[可配置服务与 Node API](docs/implementation/CONFIGURED_BRIDGE_RUNTIME.md)、[离线执行器](docs/implementation/OFFLINE_EXECUTORS.md)、[云端开发与本地迁移说明](docs/implementation/LOCAL_MIGRATION.md)。
 - 实现范围：[第一阶段范围](docs/implementation/PHASE1_SCOPE.md)、[运行隔离测试](docs/implementation/RUN_CONTRACT_TESTS.md)。
 - 引擎与业务接缝：[Hatchet门禁](docs/implementation/HATCHET_POC_GATE.md)、[Alchemy只读预检](docs/implementation/ALCHEMY_READ_ONLY_PREFLIGHT.md)。
 - 首阶段：隔离环境、一个受信工作区、一个本地节点、FakeRenderer。
@@ -40,7 +40,7 @@ Alchemy与Render Bridge分别部署在不同VPS，严格独立发布；本地Age
 
 ## 下一步
 
-Bridge不区分Alchemy V1/V2/V3/Lab/Video OS；各版本在Alchemy侧适配成同一最终请求。云端继续完成独立服务、Agent与执行器代码，通过模拟任务验收后迁移本地。Codex登录及真实生图留到本地，不作为云端编码前置。Alchemy接入、PostgreSQL生产持久层与双VPS部署仍单列未完成；不把开发版测试等同生产交付。ComfyUI和视频执行器后置。
+Bridge不区分Alchemy V1/V2/V3/Lab/Video OS；各版本在Alchemy侧适配成同一最终请求。云端继续完成独立服务、Agent与执行器代码，通过模拟任务验收后迁移本地。Codex登录及真实生图留到本地，不作为云端编码前置。Alchemy 可选接入模块的预览和 fake 原生导入已在独立仓库实现；真实 profile 的原生接入参数适配、PostgreSQL生产持久层与双VPS部署仍单列未完成；不把开发版测试等同生产交付。ComfyUI和视频执行器后置。
 
 本仓库是 Render Bridge 的后续开发基线。Alchemy 接入模块实现应位于对应 Alchemy 项目，本仓库保存其设计合同与联调约束，不复制或修改旧业务系统。
 

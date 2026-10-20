@@ -281,6 +281,7 @@ class BridgeStore:
                 "requires_human": profile.execution_mode == "manual",
                 "validation": "isolated_fake_only" if profile.id == "fake-image" else "local_validation_pending",
                 "production_verified": False,
+                "parameter_contract": profile.parameter_contract(),
                 "limits": {"max_output_bytes": profile.max_output_bytes,
                            "max_image_pixels": profile.max_pixels,
                            "max_dimension": profile.max_dimension},

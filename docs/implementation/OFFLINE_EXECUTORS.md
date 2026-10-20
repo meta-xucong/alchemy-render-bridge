@@ -1,8 +1,9 @@
 # Offline executor components and migration boundary
 
 The cloud implementation can be developed without a Codex login. This slice adds
-local components under `render_bridge.executors`; it does not register real
-Codex/Midjourney profiles in the server or claim a real renderer has passed.
+local components under `render_bridge.executors`. Server and Agent configuration
+can now explicitly enable Codex/Midjourney profiles; fake remains the default.
+Enabling a profile does not mean a real renderer has passed local acceptance.
 
 ## Common API
 
@@ -18,12 +19,13 @@ the same attempt. A start with no result stays unknown rather than rerendering.
 References, when supplied, are ordered dictionaries with `input_ref`, `role`,
 `hash`, and a staged local `path`. They are hash-checked and recorded, **not used
 as conditioning for the synthetic image**. Fake dimensions remain 1–1024 per side
-and the current server's 1 MiB upload limit still applies.
+and the fake profile's 1 MiB upload limit still applies.
 
 The local artifact collector supports PNG/JPEG up to 16 MiB / 40 MP. That is only
-a local import limit, not a promise that today's fake-only service accepts large
-real images. Do not advertise a real profile before its server limits and local
-acceptance have been configured and tested.
+also the configured Codex/manual server profile limit; the default fake profile
+still has its own smaller limit. Non-fake requests require explicit width/height,
+and the server rejects originals whose dimensions differ. This validates an
+original, not the external tool's ability to produce a requested size.
 
 ## Explicit local commands
 
@@ -80,7 +82,9 @@ a replacement turn. Approval requests become needs_attention. Transport failures
 remain execution_unknown rather than causing duplicate generation.
 
 The default config is disabled. Explicit local opt-in after account/model and tool
-policy acceptance is through the Python API (not a task-supplied setting):
+policy acceptance is through the strict local Agent JSON config (see
+`config/agent.example.json`) or Python API, never a task-supplied setting. These
+flags are operator declarations, not an observed capability measurement:
 
 ```python
 from pathlib import Path
@@ -131,3 +135,22 @@ mock stdio, full enabled lifecycle/image replay, full text-only lifecycle reject
 and no auto-approval. Real Codex/Midjourney generation, Discord delivery,
 account quota and real Windows image production are deferred to local acceptance.
 The implementation does not modify Alchemy, create credentials or invoke paid tools.
+
+## Shared configuration and diagnostics
+
+`AgentConfig` is shared by the executor registry and local doctor. It rejects
+empty, duplicate and unknown enabled profiles, unknown fields, and string
+booleans. Existing valid fake/Codex/manual configuration remains accepted.
+
+Use `python -m render_bridge.doctor --bridge-config ... --agent-config ... --json`
+for read-only configuration checks. `--probe-codex` explicitly permits only
+version/help in a fresh temporary home, not a login, protocol turn or generation.
+The report never claims real generation or login verification. The additive
+profile `parameter_contract` describes accepted width/height/seed independently
+of actual executor control: Codex receives text instructions, manual input is
+user-selected, and fake seed is accepted but not applied. There are no supported
+quality/output_format/input_fidelity fields. See [the full contract](LOCAL_READINESS_DOCTOR.md).
+
+Alchemy's separate optional integration already supports preview and fake native
+import. Native real-profile adaptation still requires implementation and
+acceptance; logging in to Codex alone does not supply that missing integration.

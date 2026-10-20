@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -28,7 +29,12 @@ MAX_LINE = 1_048_576
 def probe_codex(executable: str = 'codex') -> dict:
     """Only version/help in a fresh empty home. Never inspect saved credentials."""
     with tempfile.TemporaryDirectory(prefix='bridge-codex-probe-') as directory:
-        env = dict(os.environ, CODEX_HOME=directory)
+        # Do not inherit account credentials or the user's real home. These
+        # commands only inspect the installed CLI, not its saved account state.
+        env = {key: os.environ[key] for key in
+               ('PATH', 'PATHEXT', 'SYSTEMROOT', 'SystemRoot', 'WINDIR', 'COMSPEC',
+                'TEMP', 'TMP', 'SystemDrive') if key in os.environ}
+        env.update(CODEX_HOME=directory, HOME=directory, USERPROFILE=directory)
         try:
             version = subprocess.run([executable, '--version'], capture_output=True, text=True,
                                      encoding='utf-8', timeout=10, env=env, check=False)
@@ -154,8 +160,8 @@ class StdioSession:
 class CodexConfig:
     """Trusted local configuration, never populated from an incoming task.
 
-    Acceptance flags attest a local account/model and tool-policy smoke test;
-    the schema alone cannot establish either capability.
+    Acceptance flags are operator declarations, not measurements made by Bridge.
+    Neither this config nor the doctor establishes real account/model capability.
     """
     enabled: bool = False
     executable: str = 'codex'
@@ -163,6 +169,18 @@ class CodexConfig:
     image_capability_verified: bool = False
     tool_policy_verified: bool = False
     timeout: float = 120
+
+    def __post_init__(self):
+        for name in ('enabled', 'image_capability_verified', 'tool_policy_verified'):
+            if type(getattr(self, name)) is not bool:
+                raise ValueError('Codex acceptance flags must be JSON booleans')
+        if not isinstance(self.executable, str) or not self.executable.strip() or '\x00' in self.executable:
+            raise ValueError('Codex executable must be a nonempty string')
+        if not isinstance(self.model, str):
+            raise ValueError('Codex model must be a string')
+        if (type(self.timeout) not in (int, float) or not math.isfinite(self.timeout)
+                or self.timeout <= 0):
+            raise ValueError('Codex timeout must be a positive finite number')
 
 
 class CodexExecutor:

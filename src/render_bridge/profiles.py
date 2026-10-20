@@ -13,12 +13,31 @@ class ExecutionProfile:
     max_output_bytes: int
     max_pixels: int
     max_dimension: int
+    executor_control: str
+    seed_semantics: str
+    reference_semantics: str
+
+    def parameter_contract(self) -> dict:
+        """Admission/validation semantics, never a claim of model capability."""
+        return {
+            'schema_version': '1',
+            'accepted_parameters': ['width', 'height', 'seed'],
+            'required_parameters': [] if self.id == 'fake-image' else ['width', 'height'],
+            'dimension_semantics': 'exact_output_match',
+            'executor_control': self.executor_control,
+            'seed_semantics': self.seed_semantics,
+            'reference_semantics': self.reference_semantics,
+            'unsupported_parameters': ['quality', 'output_format', 'input_fidelity'],
+        }
 
 
 _PROFILES = {
-    'fake-image': ExecutionProfile('fake-image', '1', 'automatic', 1_048_576, 1_048_576, 1024),
-    'codex-image': ExecutionProfile('codex-image', '1', 'automatic', 16_777_216, 40_000_000, 40_000_000),
-    'midjourney-manual': ExecutionProfile('midjourney-manual', '1', 'manual', 16_777_216, 40_000_000, 40_000_000),
+    'fake-image': ExecutionProfile('fake-image', '1', 'automatic', 1_048_576, 1_048_576, 1024,
+        'deterministic_fixture', 'accepted_not_applied', 'hash_checked_not_conditioning'),
+    'codex-image': ExecutionProfile('codex-image', '1', 'automatic', 16_777_216, 40_000_000, 40_000_000,
+        'text_instruction_only', 'text_instruction_only', 'local_image_input_unverified'),
+    'midjourney-manual': ExecutionProfile('midjourney-manual', '1', 'manual', 16_777_216, 40_000_000, 40_000_000,
+        'manual_user_selected', 'manual_user_selected', 'not_supported'),
 }
 MAX_PROFILE_OUTPUT_BYTES = 16_777_216
 
