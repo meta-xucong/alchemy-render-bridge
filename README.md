@@ -8,10 +8,10 @@ An optional API-based bridge between Alchemy applications and local rendering to
 
 **设计与开发准备阶段。仓库目前只有设计文档，没有可安装或可运行的渲染服务。**
 
-- 文档基线：分端开发方案 v1.1，2026-10-20。
+- 文档基线：分端开发方案 v1.2，2026-10-20。
 - 首阶段：隔离环境、一个受信工作区、一个本地节点、FakeRenderer。
 - Hatchet 是待验证的任务引擎候选，不是已确定可上线的依赖。
-- ComfyUI、Codex及其他工具适配尚未实现；没有真实模型、生产或Windows运行验收。
+- 首批真实场景为本机已登录的Codex CLI与Midjourney（Discord API发任务消息、用户手动提交、原图导入）；均尚未实现。ComfyUI后置；没有真实模型、生产或Windows运行验收。
 
 ## 架构边界
 
@@ -19,7 +19,7 @@ An optional API-based bridge between Alchemy applications and local rendering to
 2. **Alchemy 可选接入模块**：默认关闭，使用 API 通信，管理模块自己的任务映射与恢复。
 3. **共享 API 合同**：创建、查询、取消、输入上传、产物下载与接收确认。
 
-双方不共享数据库、文件目录、内部对象或执行队列。Render Bridge 不直接写 Alchemy 的 output/candidate，不执行其计费和审核。Alchemy 原有功能与默认链路保持不变；缺少安全扩展接缝时先提交最小方案，不擅自改核心。
+Alchemy与Render Bridge分别部署在不同VPS，严格独立发布；本地Agent运行在用户电脑。双方不共享数据库、文件目录、内部对象或执行队列。Render Bridge 不直接写 Alchemy 的 output/candidate，不执行其计费和审核。Alchemy 原有功能与默认链路保持不变；缺少安全扩展接缝时先提交最小方案，不擅自改核心。
 
 ## 开发文档
 
@@ -33,10 +33,16 @@ An optional API-based bridge between Alchemy applications and local rendering to
 
 ## 下一步
 
-核实 Alchemy 现有扩展接缝并冻结 API；验证 Hatchet 的 Windows、TLS、权限、重投与资源行为；随后双方分别使用模拟客户端/服务开发，再联调 FakeRenderer。真实平台适配后置。
+Bridge不区分Alchemy V1/V2/V3/Lab/Video OS；各版本在Alchemy侧适配成同一最终请求。核实 Alchemy 现有扩展接缝并冻结 API；验证 Hatchet 的 Windows、TLS、权限、重投与资源行为；随后双方分别使用模拟客户端/服务开发，再联调 FakeRenderer。FakeRenderer验证通用桥后，优先Codex CLI与Midjourney人工执行闭环；ComfyUI和视频执行器后置。
 
 本仓库是 Render Bridge 的后续开发基线。Alchemy 接入模块实现应位于对应 Alchemy 项目，本仓库保存其设计合同与联调约束，不复制或修改旧业务系统。
 
 ## 许可
 
-当前仓库公开可读，但项目自身的代码分发许可证尚未选定，不能把公开状态等同于已授予开源许可。后续实现前应明确项目许可证。外部项目的许可由各自 LICENSE/NOTICE 决定；当前未复制其实现代码。
+当前仓库公开可读，但项目自身的代码分发许可证尚未选定，不能把公开状态等同于已授予开源许可。按实验项目决定，项目自身许可证选择暂缓，不作为隔离开发准备的阻塞。第三方许可证和服务条款仍分别适用。外部项目的许可由各自 LICENSE/NOTICE 决定；当前未复制其实现代码。
+
+## 首批场景与独立部署
+
+- [双VPS与版本独立边界](docs/shared-contract/04_双VPS与版本独立约束.md)
+- [Codex CLI适配方案](docs/render-bridge/adapters/05_Codex_CLI适配方案.md)
+- [Midjourney与Discord API适配方案](docs/render-bridge/adapters/06_Midjourney_Discord适配方案.md)

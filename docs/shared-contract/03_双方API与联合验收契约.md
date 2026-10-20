@@ -1,6 +1,6 @@
-# 双方API与联合验收契约 v1.1
+# 双方API与联合验收契约 v1.2
 
-这是拟实现的协议，非现有已部署接口。双方先冻结schema和golden fixtures，再各自开发。接口发布为v1；文档版本v1.1不代表协议已经迭代上线。
+这是拟实现的协议，非现有已部署接口。双方先冻结schema和golden fixtures，再各自开发。接口发布为v1；文档版本v1.2不代表协议已经迭代上线。
 
 ## 1. 通信方向
 
@@ -40,7 +40,7 @@ source_instance/workspace由已认证源应用可用范围产生或校验；浏�
 
 创建：remote_task_id、origin_key、task_digest、state、poll_after_ms。查询只是状态读取。
 
-状态最少区分：queued、running、uploading、artifacts_ready、execution_unknown、cancel_requested、canceled、failed、expired。技术引擎状态不直接暴露为原生Alchemy Job状态。Bridge内部dispatch_pending映射queued并可附reason=dispatch_pending，active映射running；API不要求Alchemy理解内部引擎状态。产物ready后保持artifacts_ready，单独delivery_ack={pending,accepted,rejected}表示确认；内部delivery_acknowledged映射该字段，不另造成第四套任务终态。
+状态最少区分：queued、running、awaiting_user、uploading、artifacts_ready、execution_unknown、cancel_requested、canceled、failed、expired。技术引擎状态不直接暴露为原生Alchemy Job状态。Bridge内部dispatch_pending映射queued并可附reason=dispatch_pending，active映射running；API不要求Alchemy理解内部引擎状态。产物ready后保持artifacts_ready，单独delivery_ack={pending,accepted,rejected}表示确认；内部delivery_acknowledged映射该字段，不另造成第四套任务终态。
 
 receipt：receipt_id、task_id、attempt_id、slot_id、profile实际版本、artifact_id、original_sha256、size、MIME、dimensions、accepted_at。accepted_at表示Bridge媒体接收合格，不表示创意/像素审核通过。
 
@@ -51,6 +51,7 @@ ack：client_receipt_id、decision(accepted/rejected)、reason_code、可选不�
 | Bridge状态 | Alchemy模块状态/动作 | 原系统行为 |
 |---|---|---|
 | queued/running | remote_pending，有限轮询 | 不修改其他原生Job |
+| awaiting_user | needs_attention，显示action_required.code与说明，不自动重发 | 只影响新增模块 |
 | execution_unknown | needs_reconciliation，禁止重生成 | 不调用旧fallback |
 | artifacts_ready | downloading→import_pending | 仅走既有受支持的导入接缝 |
 | cancel_requested | cancel_pending | 不宣称已停止 |
@@ -89,3 +90,13 @@ Bridge端用模拟Alchemy调用者测试协议/执行；Alchemy端用Mock Bridge
 Bridge先发布向后兼容API，Alchemy模块使用明确支持版本；不支持则新模块拒绝启用，不影响原系统。各仓库各自SHA、构建、许可证、测试、回滚文档，联合报告同时固定两端SHA及schema版本。
 
 禁止同一PR顺手修改Sub2API、Brain、计费或全局Provider规则。后续平台Adapter增加且API不变时只发布Bridge；确需新operation时先更新合同再单独给Alchemy模块加能力，不改变原默认请求语义。
+
+## 9. 首批执行模式补充（v1.2设计）
+
+profile声明execution_mode=automatic或manual、requires_human。这是通用执行能力，不是Alchemy版本分支。任务状态增加awaiting_user，action_required是对象字段（非第二状态机），含code与说明；code至少区分submit_in_tool、attach_references、import_original、login_required、tool_approval_required。仅在需要时出现，并给出不含凭据的说明。Alchemy模块只按通用状态显示提示，不内置Discord协议或Codex命令。
+
+Codex登录/额外审批发生在执行前时可进入awaiting_user；如果执行已开始且结果不明，保留execution_unknown并附action_required，不能用等待用户清除start锁存或释放未决物理槽。
+
+manual场景由用户在工具提交并导入原图；Bridge只保证自身派单、关联和回传幂等，不能保证用户没有在外部重复点击生成。人工来源标记human_asserted，不能声称平台签名认证。等待人工以单独有界pending计数管理，不占自动执行资源槽；超时不自动转换为重新生成。
+
+Alchemy与Bridge位于不同VPS；当前任务协议兼容时两端可独立升级。任何Alchemy版本都应在自己适配层转换为本协议，Bridge不按V1/V2/V3等标记选择业务实现。协议不兼容时明确拒绝新请求，原Alchemy路径保持不变。

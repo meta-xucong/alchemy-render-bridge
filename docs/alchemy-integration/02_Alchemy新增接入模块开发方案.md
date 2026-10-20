@@ -1,4 +1,4 @@
-# Alchemy 新增API接入模块开发方案 v1.1
+# Alchemy 新增API接入模块开发方案 v1.2
 
 2026-10-20。仅描述新增模块设计范围；不把Render Bridge内部实现搬进Alchemy。没有实施代码。
 
@@ -6,7 +6,7 @@
 
 现有文本/图片/视频生成、Sub2API、模型默认值、Job恢复、队列、重试/fallback、审核、选图、交付、记忆、收藏、历史和计费规则均不重写。
 
-新增模块只服务明确选择Bridge的请求，与独立Render Bridge通过HTTPS API通信。不能依赖Hatchet SDK、Bridge数据库、共享目录或内部包。Bridge关闭/不可达时现有功能必须正常。
+新增模块只服务明确选择Bridge的请求，与另一VPS上的独立Render Bridge通过HTTPS API通信。不能依赖Hatchet SDK、Bridge数据库、共享目录或内部包。Bridge关闭/不可达时现有功能必须正常。
 
 v1.0曾建议新增原生pending/resume接缝或调整原容量生命周期，本版收回为默认实施项：pending与恢复由新增模块自己的integration_job负责；原业务缺少必要扩展点时先提交最小差异审批。
 
@@ -81,7 +81,7 @@ v1.0曾建议新增原生pending/resume接缝或调整原容量生命周期，�
 
 ## 8. 各Alchemy版本边界
 
-首阶段只接一个经P0确认的入口，建议V3测试场景，不同时改V1/V2/Lab。
+Bridge协议不绑定首发Alchemy版本。V1/V2/V3/Lab/Video OS都在各自Alchemy侧适配统一请求；可选择一个接口最清晰的测试入口联调，但这不成为Bridge的V3依赖或能力限制。分批接入是验证顺序，不是协议差异。
 
 V2以后有自己的薄模块、自己的后端存储/权限/配置，不导入V1 backend；可以共用纯HTTP合同fixture，不共用业务库。Video OS以后单独接它的接口，不能照搬Python Worker假设。真实工具增加时原则上只改Bridge端，Alchemy仅按已有profile/operation能力展示；新的业务语义要另版本合同。
 

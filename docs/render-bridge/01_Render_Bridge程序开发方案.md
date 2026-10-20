@@ -1,4 +1,4 @@
-# Render Bridge 独立程序开发方案 v1.1
+# Render Bridge 独立程序开发方案 v1.2
 
 日期2026-10-20。责任范围仅Render Bridge仓库。Alchemy侧改动见另一份文件。
 
@@ -14,10 +14,10 @@
 - `engine_adapter`：Hatchet普通任务与SDK封装，唯一执行调度器。先PoC，失败后单次选择薄HTTPS拉取替代，不并存。
 - `artifact_store`：私有暂存、流式输入输出、ready/commit、保留与清理。
 - `node_agent`：Windows单用户后台/CLI、SQLite恢复、单实例锁、资源槽、断线对账。
-- `executors`：统一接口，首版FakeRenderer，后续Comfy/Codex/人工导入。
+- `executors`：统一接口，首个技术闭环FakeRenderer，首批真实场景为本机Codex CLI与Midjourney人工执行/原图导入，Comfy后置。
 - `contracts`：共享API固定副本或发布schema，不依赖Alchemy内部类型。
 
-推荐FastAPI/PostgreSQL/Python Agent，服务自己的DB角色和私有存储。Hatchet内部DB与Bridge逻辑表分离；即使同实例也不能让Alchemy读取引擎表。节点凭据、源应用凭据与上传权限分离。
+推荐FastAPI/PostgreSQL/Python Agent，服务自己的DB角色和私有存储。Hatchet内部DB与Bridge逻辑表分离，均只属于Bridge部署；Alchemy在另一VPS，没有其数据库或引擎凭据。节点凭据、源应用凭据与上传权限分离。
 
 ## 3. 开源采用方式
 
@@ -40,7 +40,7 @@ Task从dispatch_pending/queued/active到artifacts_ready，再到delivery_acknowl
 - 服务端事务签发start_grant并锁存可能已执行，绑定原始node/executor_instance。
 - current_claim另存holder/epoch/scope/expiry；upload_only恢复不能清除start锁存或重新start。
 - 引擎重投不能成为新的生成许可。Agent DB丢失、start回应丢失、外部已接单但ID未落盘，无法查明时unknown。
-- 失联、取消请求、lease到期均不证明物理执行停止。unknown仍占本地资源槽；引擎callback结束后也不能据此接下一项执行。
+- 失联、取消请求、lease到期均不证明物理执行停止。自动执行的unknown仍占本地资源槽；引擎callback结束后也不能据此接下一项执行。
 - 暂停/容量控制或有界not_started退回需验证SDK实际能力。不得把任务写入本地第二等待队列。
 
 ## 5. 文件闭环
@@ -81,7 +81,7 @@ RB-07 联调API合同与最终审计包。
 
 ## 9. 本端验收
 
-- 100次重复引擎投递已启动任务，start计数1；unknown不能自动再start。
+- 100次重复引擎投递已启动的自动执行任务，start计数1；unknown不能自动再start。
 - task创建回应丢失/输入上传回应丢失/receipt回应丢失，原ID可查回。
 - 同键不同payload、不同workspace/input/slot交换均拒绝。
 - cancel/commit并发线性化，已有receipt仍可按权限对账。
@@ -91,6 +91,10 @@ RB-07 联调API合同与最终审计包。
 
 ## 10. 本端运维与回滚
 
-独立部署，默认与既有业务服务隔离部署；是否共址以实测预算决定。停止新任务不停止必要查询/上传/确认。保留unknown与未确认产物，不能按年龄直接删除唯一副本。清理不涉及Alchemy数据。未绑定任务的输入会话有短期TTL；已绑定活动/unknown任务的输入不得被该TTL清理，需引用检查和有界回收。
+独立部署，与Alchemy部署在不同VPS，不提供共址或共享内部依赖作为本项目路线。停止新任务不停止必要查询/上传/确认。保留unknown与未确认产物，不能按年龄直接删除唯一副本。清理不涉及Alchemy数据。未绑定任务的输入会话有短期TTL；已绑定活动/unknown任务的输入不得被该TTL清理，需引用检查和有界回收。
 
 版本升级保持source API兼容，旧任务继续同attempt恢复。回滚不把running改queued；保留恢复端点直到未决任务清楚。真实Adapter、付费调用、生产部署另行验收授权。
+
+## 11. 版本中立与首批执行器
+
+Bridge只理解最终prompt、有序参考图、执行profile/operation、参数和不透明任务关联；不得按Alchemy版本名分支处理Brain/审核/业务字段。Codex与Midjourney适配细节见adapters目录。源码版本不同但API合同兼容时，Alchemy升级不需要Bridge同步升级；新能力通过显式schema/profile协商，不能承诺破坏API也无需适配。
