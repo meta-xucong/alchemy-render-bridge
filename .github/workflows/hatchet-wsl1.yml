@@ -1,4 +1,4 @@
-name: Experimental WSL1 loopback preflight
+name: Experimental WSL1 native Windows engine smoke
 on:
   workflow_dispatch:
   push:
@@ -10,7 +10,7 @@ permissions:
 jobs:
   preflight:
     runs-on: windows-2025
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       PYTHONUTF8: '1'
       PYTHONIOENCODING: 'utf-8'
@@ -24,8 +24,25 @@ jobs:
           python-version: '3.12'
       - name: Unit tests (no external services)
         run: python -m unittest discover -s tests -v
-      - name: WSL1 loopback and isolated PostgreSQL compatibility
-        run: python preflight.py --postgres
+      - name: Install hash-locked SDK dependencies
+        working-directory: experiments/hatchet-windows-compat
+        run: python -m pip install --require-hashes -r requirements-upstream.txt
+      - name: Download exact upstream SDK wheel
+        working-directory: experiments/hatchet-windows-compat
+        run: python -m pip download --no-deps --dest .cache hatchet-sdk==1.42.1
+      - name: Build deterministic isolated candidate
+        working-directory: experiments/hatchet-windows-compat
+        run: python build_candidate.py .cache/hatchet_sdk-1.42.1-py3-none-any.whl
+      - name: Verify candidate source and wheel identity
+        working-directory: experiments/hatchet-windows-compat
+        run: python verify_candidate.py
+      - name: Install exact candidate wheel
+        working-directory: experiments/hatchet-windows-compat
+        run: python -m pip install --no-deps --force-reinstall dist/hatchet_sdk-1.42.1+bridgewin1-py3-none-any.whl
+      - name: Verify dependency consistency
+        run: python -m pip check
+      - name: WSL1 and PostgreSQL gates then native Windows real-engine smoke
+        run: python preflight.py --engine
       - name: Always clean up only our temporary distro
         if: always()
         run: python preflight.py --cleanup

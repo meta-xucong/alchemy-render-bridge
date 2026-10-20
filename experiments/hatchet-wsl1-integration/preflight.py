@@ -245,7 +245,7 @@ def postgres_gate(name: str, root: Path) -> dict:
             # when this process is interrupted before Linux cleanup completes.
 
 
-def preflight(state_path: Path, base: Path, report_path: Path, postgres: bool = False) -> int:
+def preflight(state_path: Path, base: Path, report_path: Path, postgres: bool = False, engine: bool = False) -> int:
     result = {'status': 'blocked', 'stage': 'platform', 'engine_tested': False,
               'postgres_tested': False, 'rootfs_sha256': ROOTFS_SHA256,
               'image_os': os.environ.get('ImageOS'), 'image_version': os.environ.get('ImageVersion')}
@@ -322,6 +322,16 @@ def preflight(state_path: Path, base: Path, report_path: Path, postgres: bool = 
             result['postgres_tested'] = True
             result['status'] = 'passed'
             result['stage'] = 'postgres_complete_engine_not_tested'
+        if engine:
+            from engine_host import engine_gate
+            result['status'] = 'blocked'
+            result['stage'] = 'real_engine_smoke'
+            result['engine'] = engine_gate(name, root, run, windows_listener, validate_listener)
+            if result['engine'].get('status') != 'passed':
+                raise RuntimeError('Real-engine smoke blocked; see sanitized engine evidence')
+            result['engine_tested'] = True
+            result['status'] = 'passed'
+            result['stage'] = 'real_engine_smoke_complete_not_full_phase_acceptance'
     except Exception as exc:
         result['error'] = str(exc)
     finally:
@@ -353,6 +363,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--cleanup', action='store_true')
     parser.add_argument('--postgres', action='store_true')
+    parser.add_argument('--engine', action='store_true')
     args = parser.parse_args()
     base = Path(os.environ.get('RUNNER_TEMP', tempfile.gettempdir())).resolve()
     state = base / 'bridge-wsl1-owned.json'
@@ -360,7 +371,7 @@ def main() -> int:
         errors = cleanup(state, base)
         print(json.dumps({'cleanup_errors': errors}))
         return bool(errors)
-    return preflight(state, base, Path('result.json'), postgres=args.postgres)
+    return preflight(state, base, Path('result.json'), postgres=args.postgres or args.engine, engine=args.engine)
 
 
 if __name__ == '__main__':

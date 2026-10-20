@@ -1,11 +1,10 @@
-# Isolated WSL1 loopback and PostgreSQL capability gates
+# Isolated WSL1 engine / native Windows synthetic smoke
 
-These are capability gates, **not a Hatchet integration test**. The default
-mode creates no database or credentials. The workflow now enables `--postgres`,
-which adds a temporary PostgreSQL-only gate after the canary. Neither mode
-creates a Hatchet engine/worker, public endpoint, production connection, renderer
-or tunnel. A green PostgreSQL result does not establish Hatchet registration,
-task delivery, worker shutdown semantics, or Phase 1 acceptance.
+The default mode is a loopback canary. `--postgres` adds the separate database
+gate; `--engine` runs both gates before a real Linux Hatchet engine with a native
+Windows SDK worker and three synthetic tasks. This is **not** Bridge API/replay,
+TLS, active-task cancellation/draining, production, or full Phase 1 acceptance.
+No mode uses a real provider, public endpoint, tunnel, or production data.
 
 ## Purpose and authorization boundary
 
@@ -65,14 +64,15 @@ rootfs. Download and import do not make the rootfs part of this repository.
    result. An `always()` workflow step retries cleanup if Python was interrupted.
 
 A pass requires all six stages. `result.json` explicitly reports
-`engine_tested: false`; `postgres_tested` remains false unless the separate
+`engine_tested` remains false unless the real-engine gate passes;
+`postgres_tested` remains false unless the separate
 PostgreSQL gate below passes. No skipped probe counts as a pass. Failed Linux startup/syscalls, download mismatch, inaccessible loopback,
 unverifiable WSL version or cleanup failure all produce a nonzero workflow step.
 The report contains only image/version/checksum, inventories, synthetic ports,
 synthetic SQL result, cleanup evidence and bounded diagnostics. Only that report is uploaded, never the rootfs or logs.
 
 All subprocesses have bounded timeouts; downloads are bounded by 240 seconds and
-600 MiB. The job has a 15-minute outer limit. `finally` and the independent
+600 MiB. The job has a 25-minute outer limit. `finally` and the independent
 `always()` cleanup are best effort under runner failure or hard cancellation;
 GitHub runner disposal is the final isolation boundary, not a claimed guarantee
 that cleanup executes after an infrastructure crash.
@@ -103,7 +103,7 @@ This proves only that exact canary/environment, not PostgreSQL or Hatchet.
 
 ## Separate PostgreSQL-only gate
 
-The workflow runs `python preflight.py --postgres`. After the canary succeeds,
+Run the independent database gate with `python preflight.py --postgres`. After the canary succeeds,
 it downloads the **Zonky-packaged PostgreSQL 18.3 artifact published to Maven
 Central**, the packaging used by the embedded stack. This is not described as
 an official PostgreSQL-project binary.
@@ -156,9 +156,90 @@ not count as an orderly PostgreSQL pass. Unexpected syscall or access errors
 remain blocked, with no security-setting workaround. Diagnostics report only
 fixed failure categories (syscall, permissions, shared memory, locale, binding,
 configuration) and tightly validated missing-library names. Raw database logs
-and credential-bearing output are never uploaded. The new PostgreSQL stage
-has not yet been validated in actual WSL1 CI at implementation time. Hatchet
-integration can be considered only after this separate gate passes.
+and credential-bearing output are never uploaded. The PostgreSQL gate passed at commit
+`67cbbf61426f67fb7902bd8bdbb6a86855283504`, CI `39380555897`, job
+`118488462472`: PostgreSQL 18.3 ran as nobody UID 65534, Windows observed
+`127.0.0.1:52901`, Linux-side authenticated `SELECT 42` passed, and normal stop,
+process/PID-file/temp-directory removal, host listener absence and distro
+cleanup all passed. This was database evidence only, not engine evidence.
+
+## Real engine and native Windows worker gate
+
+The workflow now builds and verifies the existing isolated SDK candidate, then
+runs `python preflight.py --engine`. Previous gates remain mandatory. The engine
+increment requires a new actual CI result; it is not claimed passed at source
+implementation time.
+
+Pinned inputs:
+
+- Official Hatchet embedded sidecar `v0.110.5`, Linux amd64:
+  https://github.com/hatchet-dev/hatchet-embedded/releases/download/v0.110.5/hatchet-embedded-sidecar_linux_amd64
+- Sidecar SHA256: `18ddacae0005042bd982328bcb8d370cca6907352a1ab2a3c8406001d31e7dee`.
+- Embedded source: `3dc26f939dfc5c1072c35dedc65bf51313d665a7`; engine source:
+  `56c617e0da399bc9d8a10d2ba74b4950f8a950b8`. The embedded MIT license is retained
+  in `ENGINE_LICENSE`. Runtime binaries are not committed.
+- SDK official input 1.42.1 SHA256:
+  `da9b111aac64fb678f371b92862f48f475631994ba2340ebea28c94de21a61fd`.
+- Existing deterministic candidate `1.42.1+bridgewin1` SHA256:
+  `f8fbe9ed1944a1c1718b1655b17dddd55ba5e79920d99beabf68c98ad9d8af92`.
+  Its source verification, hash-locked dependencies and notices remain in the
+  sibling compatibility experiment; this gate does not modify that patch.
+
+Private credential handling and service boundaries:
+
+1. A fresh database and official sidecar run as existing nobody inside the
+   uniquely owned WSL1 distro. Binary/JAR/inner hashes are checked before use.
+   The database URL on argv contains **no password**. The password is in a
+   private Linux `PGPASSFILE`, supported by the exact pgx v5.11.0 source:
+   https://github.com/jackc/pgx/blob/v5.11.0/pgconn/config.go .
+2. The pinned embedded source sets gRPC bind and broadcast to `127.0.0.1`, TLS
+   disabled for this local-only test, and healthcheck off. `--no-api` disables
+   REST; Prometheus, analytics and OTEL exporting are disabled explicitly.
+   `SERVER_SECURITY_CHECK_ENABLED=false` disables only Hatchet's outbound
+   version/security-alert reporting, not Windows/Ubuntu security or request
+   authentication. Its exact implementation is
+   https://github.com/hatchet-dev/hatchet/blob/56c617e0da399bc9d8a10d2ba74b4950f8a950b8/pkg/security/security.go .
+3. The sidecar's private handshake file is read by the Linux controller. Its
+   temporary token goes only through a captured subprocess pipe to the Windows
+   controller, then through a second stdin pipe to the native worker. These
+   pipes are never printed, logged or uploaded. No token appears in argv,
+   environment, Windows files, GitHub outputs, or artifacts. Linux handshake,
+   keysets, profile, password files and database are deleted with private state.
+4. Windows independently checks the PG/gRPC ports and a complete native TCP
+   listener delta against a pre-start baseline. Only the two exact IPv4
+   loopback endpoints may be new. Repeat the full delta while the actual worker
+   is alive after its first completed task. Unexpected REST/metrics/health or
+   wildcard listeners block. After shutdown, the complete new-listener delta
+   must be empty and both expected ports individually absent.
+
+Real execution and lifecycle evidence:
+
+- The native worker verifies platform `win32` and exact candidate version,
+  registers an actual workflow/worker and processes three engine-dispatched
+  synthetic tasks. Each result must have its distinct marker, `renderer=fake`,
+  platform `win32` and the native worker PID. There are no SDK/transport mocks
+  in this runtime smoke. Unit tests remain separate mocked safety checks.
+- The SDK's public lifespan captures its running event loop and schedules the
+  task driver. After completed tasks, the driver directly awaits public
+  `exit_gracefully()` in the same task, using `asyncio.timeout`, not a signal,
+  monkeypatch, private event-loop mutation or termination mislabeled graceful.
+  It records completion before SDK `loop.stop()` takes effect. Observed listener
+  subprocesses must each exit with code zero and no children may remain.
+- REST pause is deliberately unavailable at `127.0.0.1:1`; this proves only
+  orderly **idle/completed-task** worker shutdown, not server-side pause or
+  in-flight drain. Worker stop must finish before engine shutdown begins.
+- Closing the official sidecar stdin requests its documented EOF-triggered
+  shutdown. Engine exit zero, process disappearance, normal PostgreSQL stop,
+  PID-file absence, private directory removal and host listener disappearance
+  are all mandatory. Timeout/forced cleanup is a blocked run, never graceful.
+- Failure cleanup targets only the owned native worker tree/controller/distro.
+  Failure reports allowlist fixed evidence fields and sanitized categories;
+  arbitrary exceptions, handshake data, raw SDK/engine logs and credential
+  payloads are omitted. The only artifact remains `result.json`.
+
+The engine gate is bounded by download, startup, task, pipe, process and cleanup
+timeouts plus the 25-minute disposable-runner job limit. Hard infrastructure
+termination can still prevent cleanup callbacks, as noted above.
 
 ## Platform references
 

@@ -16,5 +16,16 @@
     "inner_txz_sha256": "e09b13df10e9df257275d498b19b8c214a3e86d7a5d8cd263b0860e308e8b0b6",
     "packaging_commit": "f3c31c8a290fe09fd4ae8c027697a046f3f656b7",
     "verification": "Registry .sha256 matched actual JAR bytes; inner digest calculated from verified JAR; no signature verification claimed"
+  },
+  "engine": {
+    "version": "v0.110.5",
+    "url": "https://github.com/hatchet-dev/hatchet-embedded/releases/download/v0.110.5/hatchet-embedded-sidecar_linux_amd64",
+    "sha256": "18ddacae0005042bd982328bcb8d370cca6907352a1ab2a3c8406001d31e7dee",
+    "embedded_source_commit": "3dc26f939dfc5c1072c35dedc65bf51313d665a7",
+    "engine_source_commit": "56c617e0da399bc9d8a10d2ba74b4950f8a950b8",
+    "pgx_version": "v5.11.0",
+    "pgpassfile_source": "https://github.com/jackc/pgx/blob/v5.11.0/pgconn/config.go",
+    "candidate_version": "1.42.1+bridgewin1",
+    "candidate_sha256": "f8fbe9ed1944a1c1718b1655b17dddd55ba5e79920d99beabf68c98ad9d8af92"
   }
 }
