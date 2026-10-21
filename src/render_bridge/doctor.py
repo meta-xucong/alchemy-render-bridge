@@ -139,7 +139,7 @@ def inspect_local(bridge_path: Path, agent_path: Path, *, probe: bool = False) -
     real_profiles = bool(relevant - {'fake-image'})
     add('real_generation', 'attention' if real_profiles else 'not_checked', 'not_checked',
         'real_generation_not_verified' if real_profiles else 'fake_only_not_real_verification',
-        'Real generation requires separate authorized local acceptance. Alchemy native real-profile adaptation is also unfinished; login alone does not enable it.')
+        'Real generation requires separate authorized local acceptance. Verify the installed Alchemy adapter, host prerequisites and end-to-end image receipt; CLI availability or login alone is not image validation.')
     outcome = ('invalid' if not (bridge and agent) else
                'attention' if any(c['status'] in ('attention', 'fail') for c in checks) else 'ready')
     return {'schema_version': '1', 'kind': 'render_bridge_doctor',

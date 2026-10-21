@@ -153,6 +153,15 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(report['outcome'], 'invalid')
         self.assertEqual(self.checks(report)['agent_config']['code'], 'agent_config_invalid')
 
+    def test_generation_guidance_preserves_acceptance_boundary_without_stale_scope_claim(self):
+        report = self.inspect()
+        check = self.checks(report)['real_generation']
+        self.assertEqual(check['status'], 'not_checked')
+        self.assertEqual(check['code'], 'fake_only_not_real_verification')
+        self.assertIn('host prerequisites', check['next_step'])
+        self.assertIn('not image validation', check['next_step'])
+        self.assertNotIn('unfinished', check['next_step'])
+
     def test_malformed_and_unreadable_configs_return_stable_invalid(self):
         for value in ('not json do-not-print', 'null', '[]', '{"data_dir": "do-not-print"}'):
             self.bridge_path.write_text(value)

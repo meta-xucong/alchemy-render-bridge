@@ -200,6 +200,18 @@ TLS 默认不变。只有 REST 与 gRPC **都确实是回环**的本地引擎才
 
 ## 5. Alchemy 本机 fake 配置与启动
 
+### 5.1 先核对宿主前提，不能把 fake 渲染器当作完整 mock 宿主
+
+以下 fresh-clone 配置只准备隔离服务，并不建立本地账户、登录会话、项目归属或 Brain/审核能力。`fake-image` 只替代渲染器，不替代 Alchemy 登录、canonical Brain 规划和共享审核；原生入口仍要求 `remote_brain_canonical`，不能把测试 fixture 的签核注入用户服务。
+
+先只读核对 `D:\AI\Alchemy Media Agent System` 是否确为用户现有目录、分支、完整 revision、修改及实际启动方式；不覆盖该目录、不 merge、不 reset/clean。本文的新 clone 是独立功能分支联调，不是该主目录的 mainline 验收或正式升级。所有私有配置与数据先按第1节备份，再由操作者逐项选择可复用设置，不盲拷整个 `.env`，不打印或上传秘密。
+
+进入管理员卡片及原生试用前，须核实已有合法管理员/用户、本人项目、有效登录会话及已授权的 canonical Brain/共享审核运行配置。实际宿主认证使用 `VEYRA_AUTH_ENABLED`、`VEYRA_SUB2API_BASE_URL`、`VEYRA_INTERNAL_TOKEN`，会话校验使用 `VEYRA_SESSION_SECRET` 或已有内部 token；应核对现有正确配置，不新造 token、伪签 JWT 或关闭认证绕过。默认 `VEYRA_AUTH_ENABLED=false` 时管理员 API 返回401，打开页面不等于已登录。核对 loopback 地址对应的现有登录/cookie 策略，不擅自降低安全设置。
+
+还须核对祖先 `.env` 和 `MEDIA_AGENT_RUNTIME_ENV_FILE`、`ALCHEMY_MEDIA_AGENT_ENV_FILE`、`ALCHEMY_MEDIA_RUNTIME_ENV_FILE` 的实际来源，确保隔离终端没有意外加载 live 配置。即使选择 fake 图，规划/审核仍可能调用模型并产生费用；须先明确本次允许的服务、素材及费用范围。缺少这些前提时只完成配置检查及第6节独立 configured demo/预览层验收，报告原生联调被宿主前提阻断，不声称完整链路通过。预览页面同样不能代替其适用的合法身份要求。
+
+### 5.2 隔离服务的配置示例
+
 新 clone 安装，不覆盖现有 Alchemy 环境：
 
 ```powershell
