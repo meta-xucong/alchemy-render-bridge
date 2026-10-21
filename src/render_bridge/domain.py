@@ -152,6 +152,8 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
         with self._connection() as con:
             con.executescript("""
                 PRAGMA journal_mode=WAL;
+                CREATE TABLE IF NOT EXISTS terminal_failures (
+                    task_id TEXT PRIMARY KEY, payload TEXT NOT NULL, confirmation TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS withdrawals (
                     source TEXT NOT NULL, workspace TEXT NOT NULL, withdrawal_key TEXT NOT NULL,
                     task_id TEXT NOT NULL UNIQUE, proof TEXT NOT NULL,
@@ -942,6 +944,45 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             # Successful manual preparation supersedes any pre-start prerequisite.
             con.execute("DELETE FROM task_attention WHERE task_id=?", (task_id,))
             return {"attempt_id": attempt["id"], "state": "awaiting_user", "may_execute": False}
+
+    def confirm_terminal_failure(self, scope, task_id, node_id, executor_instance, payload):
+        """A bound node's durable terminal evidence, never a health-based reset.
+
+        No current lease is needed: the immutable original execution identity
+        authorizes reconciliation after expiry/restart. The start latch survives.
+        """
+        from .schemas import TerminalFailureRequest
+        try:
+            payload = TerminalFailureRequest.model_validate(payload).model_dump()
+        except ValueError:
+            _fail('invalid_terminal_failure')
+        with self._transaction() as con:
+            self._check_node_active(con, scope, node_id, executor_instance, required=True)
+            task = self._scoped(con, 'tasks', task_id, scope)
+            attempt = con.execute('SELECT * FROM attempts WHERE task_id=?', (task_id,)).fetchone()
+            if (self._profile(task).id != 'codex-image' or not attempt['start_grant_id']
+                    or payload['attempt_id'] != task['attempt_id']
+                    or attempt['original_node'] != node_id or attempt['original_executor'] != executor_instance):
+                _fail('terminal_failure_binding_mismatch', 409)
+            old = con.execute('SELECT * FROM terminal_failures WHERE task_id=?', (task_id,)).fetchone()
+            canonical = _canonical(payload)
+            if old:
+                if old['payload'] != canonical:
+                    _fail('terminal_failure_binding_mismatch', 409)
+                return json.loads(old['confirmation'])
+            if (task['state'] not in {'running', 'execution_unknown', 'cancel_requested'}
+                    or con.execute('SELECT 1 FROM receipts WHERE task_id=?', (task_id,)).fetchone()
+                    or con.execute('SELECT 1 FROM uploads WHERE task_id=?', (task_id,)).fetchone()):
+                _fail('terminal_failure_not_safe', 409)
+            confirmation = {**payload, 'task_id': task_id, 'status': 'failed',
+                            'terminal_failure_ref': _id('failure')}
+            con.execute('INSERT INTO terminal_failures VALUES(?,?,?)',
+                        (task_id, canonical, _canonical(confirmation)))
+            con.execute("UPDATE tasks SET state='failed' WHERE id=?", (task_id,))
+            con.execute('DELETE FROM task_attention WHERE task_id=?', (task_id,))
+            self._audit(con, scope, 'terminal_failure_confirmed', task_id=task_id,
+                        attempt_id=task['attempt_id'])
+            return confirmation
 
     def mark_execution_unknown(self, scope, task_id, claim_id):
         with self._transaction() as con:

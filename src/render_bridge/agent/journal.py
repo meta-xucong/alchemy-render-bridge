@@ -93,8 +93,13 @@ class AgentJournal:
 
     def occupied_by_other(self, task_id):
         with self.connection() as con:
-            return con.execute("SELECT 1 FROM attempts WHERE task_id!=? AND state IN ('start_requested','execution_unknown') LIMIT 1",
+            return con.execute("SELECT 1 FROM attempts WHERE task_id!=? AND state IN ('start_requested','execution_unknown','failure_report_pending') LIMIT 1",
                                (task_id,)).fetchone() is not None
+
+    def terminal_recovery_records(self):
+        with self.connection() as con:
+            return [json.loads(row['record']) for row in con.execute(
+                "SELECT record FROM attempts WHERE state IN ('start_requested','execution_unknown','failure_report_pending') LIMIT 10")]
 
     def next_health_revision(self, profile):
         with self.connection() as con:

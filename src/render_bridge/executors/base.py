@@ -56,7 +56,7 @@ class Artifact:
 
 @dataclass(frozen=True)
 class ExecutionResult:
-    status: Literal['ready', 'needs_attention', 'execution_unknown']
+    status: Literal['ready', 'needs_attention', 'execution_unknown', 'terminal_failure']
     code: str
     artifact: Artifact | None = None
     details: dict = field(default_factory=dict)

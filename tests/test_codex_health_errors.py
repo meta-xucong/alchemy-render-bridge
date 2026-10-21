@@ -22,7 +22,7 @@ class CodexHealthErrorTests(unittest.TestCase):
                 ({'httpConnectionFailed':{'httpStatusCode':400}},None)]:
             self.assertEqual(expected, health_reason_from_codex_error(info))
 
-    def test_failed_turn_flows_into_persistent_health_but_task_stays_unknown(self):
+    def test_terminal_failed_turn_records_health_and_releases_slot_without_replay(self):
         for index, (info, expected) in enumerate([('unauthorized','auth_unavailable'),('usageLimitExceeded','quota_exhausted')]):
             task_id = self.create('codex-image', 'failure'+str(index))
             config = CodexConfig(enabled=True, model='accepted', image_capability_verified=True,
@@ -35,20 +35,18 @@ class CodexHealthErrorTests(unittest.TestCase):
                                                          wall_clock=lambda:self.now, codex_probe=good)
             def execute(request):
                 return executor.collect_completed(request, thread_id='thread',turn_id='turn',events=[{
-                    'method':'turn/completed','params':{'threadId':'thread','turn':{'id':'turn','status':'failed',
+                    'method':'turn/completed','params':{'threadId':'thread','turn':{'id':'turn','status':'failed','items':[],
                         'error':{'message':'PRIVATE PROVIDER TEXT','codexErrorInfo':info}}}}])
             with patch.object(executor, 'preflight', return_value=None), patch.object(executor, 'execute', side_effect=execute):
                 result = agent.execute_task(task_id)
-            self.assertEqual('execution_unknown', result['outcome'])
-            self.assertEqual('execution_unknown', self.store.get_task(self.scope, task_id)['state'])
+            self.assertEqual('terminal_failed', result['outcome'])
+            self.assertEqual('failed', self.store.get_task(self.scope, task_id)['state'])
             fact = self.store.routing_availability(self.scope)['profiles'][1]
             self.assertEqual(expected, fact['reason_code']); self.assertEqual('unavailable', fact['health'])
             self.assertNotIn('PRIVATE', str(fact))
             fresh = ProfileHealthReporter(agent.journal, registry, codex_probe=good)
             self.assertEqual(expected, fresh.reports()[0]['reason_code'])
-            # Test fixture frees occupancy without granting any replay/withdrawal right.
-            with self.store._transaction() as con: con.execute("UPDATE tasks SET state='failed' WHERE id=?",(task_id,))
-            record = agent.journal.get(task_id); record['state'] = 'fixture_finished'; agent.journal.save(record)
+            self.assertFalse(agent.journal.occupied_by_other('new-task'))
 
     def test_unbound_failure_and_input_error_never_poison_profile(self):
         executor = CodexExecutor(self.state/'executors')

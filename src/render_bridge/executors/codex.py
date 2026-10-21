@@ -229,10 +229,65 @@ class CodexExecutor:
             return ExecutionResult('needs_attention', 'codex_version_not_validated', details=probe)
         return None
 
+    def _terminal_failure(self, request, files, thread_id, turn_id, events):
+        # Only known pre-generation account failures with a complete bound turn
+        # and no image tool activity establish physical completion. A transport
+        # error, missing items, or partial image activity remains unknown.
+        matched = [event.get('params', {}).get('turn', {}) for event in events
+                   if event.get('method') == 'turn/completed'
+                   and event.get('params', {}).get('threadId') == thread_id
+                   and event.get('params', {}).get('turn', {}).get('id') == turn_id]
+        if any((files.path / name).exists() for name in ('artifact.original', 'artifact.json')):
+            return None
+        if len(matched) != 1:
+            return None
+        turn = matched[0]
+        error = turn.get('error')
+        items = turn.get('items')
+        if (turn.get('status') != 'failed' or not isinstance(error, dict)
+                or error.get('codexErrorInfo') not in ('unauthorized', 'usageLimitExceeded')
+                or not isinstance(items, list) or any(not isinstance(item, dict) for item in items)):
+            return None
+        if any(item.get('type') == 'imageGeneration' for item in items):
+            return None
+        for event in events:
+            params = event.get('params', {})
+            if (params.get('threadId') == thread_id and params.get('turnId') == turn_id
+                    and ((isinstance(params.get('item'), dict)
+                          and params['item'].get('type') == 'imageGeneration')
+                         or event.get('method', '').startswith('item/imageGeneration/'))):
+                return None
+        raw = json.dumps({'thread_id': thread_id, 'turn_id': turn_id, 'events': events},
+                         sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+        path = files.path / 'codex-terminal-failure.json'
+        try:
+            files.write_exclusive(path, raw)
+        except FileExistsError:
+            if path.read_bytes() != raw:
+                raise ValueError('Terminal evidence changed')
+        reason = health_reason_from_codex_error(error['codexErrorInfo'])
+        return ExecutionResult('terminal_failure', 'codex_terminal_account_failure', details={
+            'profile_health_reason': reason,
+            'terminal_failure': {'schema_version': '1', 'thread_id': thread_id,
+                'turn_id': turn_id, 'reason_code': reason,
+                'completion_sha256': hashlib.sha256(raw).hexdigest()}})
+
+    def recover_terminal_failure(self, request):
+        files = AttemptFiles(self.root, request, 'codex-cli')
+        for name in ('codex-terminal-failure.json', 'codex-completion.json'):
+            path = files.path / name
+            if path.exists():
+                saved = json.loads(path.read_text(encoding='utf-8'))
+                return self._terminal_failure(request, files, **saved)
+        return None
+
     def recover_completed(self, request: ExecutionRequest) -> ExecutionResult | None:
         """Recover completed local evidence only; never probe or launch a CLI."""
         validate_image_request(request.parameters, request.references, 'codex-image')
         files = AttemptFiles(self.root, request, 'codex-cli')
+        terminal = self.recover_terminal_failure(request)
+        if terminal is not None:
+            return terminal
         cached = files.cached()
         if cached:
             return cached
@@ -345,6 +400,9 @@ class CodexExecutor:
         files = AttemptFiles(self.root, request, 'codex-cli')
         if not thread_id or not turn_id:
             raise ValueError('Persisted thread and turn identity required')
+        terminal = self._terminal_failure(request, files, thread_id, turn_id, events)
+        if terminal is not None:
+            return terminal
         candidates = {}
         completed = False
         failure_reason = None

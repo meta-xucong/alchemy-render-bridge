@@ -106,7 +106,7 @@ def make_worker(hatchet, node, executor=None, name='bridge-node-one-slot'):
                   execution_timeout=timedelta(minutes=55), schedule_timeout=timedelta(hours=1))
     def execute(input: Input, ctx: Context) -> dict:
         result = node.execute_task(input.task_id, executor)
-        if result['outcome'] in ('upload_pending', 'physical_slot_busy'):
+        if result['outcome'] in ('upload_pending', 'physical_slot_busy', 'failure_report_pending'):
             # Hatchet owns bounded retries; Agent reuses the same attempt/artifact.
             raise RuntimeError('Bridge attempt needs a bounded retry')
         return result

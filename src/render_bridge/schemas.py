@@ -31,6 +31,19 @@ class StrictRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
+class TerminalFailureEvidence(StrictRequest):
+    schema_version: Literal['1']
+    thread_id: Key
+    turn_id: Key
+    reason_code: Literal['auth_unavailable', 'quota_exhausted']
+    completion_sha256: SHA256
+
+
+class TerminalFailureRequest(StrictRequest):
+    attempt_id: Key
+    evidence: TerminalFailureEvidence
+
+
 class InputCreate(StrictRequest):
     input_key: Key
     original_sha256: SHA256

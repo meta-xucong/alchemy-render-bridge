@@ -12,7 +12,7 @@ from render_bridge.fake import fixture_png, fixture_jpeg
 
 
 class CodexLifecycleTests(unittest.TestCase):
-    def run_fixture(self, image, requested_format=None, actual_format='png', recover=False):
+    def run_fixture(self, image, requested_format=None, actual_format='png', recover=False, terminal_failure=False):
         original_bytes = (fixture_jpeg if actual_format == 'jpeg' else fixture_png)()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -51,6 +51,8 @@ for line in sys.stdin:
  else: raise AssertionError('duplicate operation')
  stage+=1
 '''.replace('if IMAGE:', 'if ' + repr(image) + ':').replace('base64.b64decode(PNG)', 'base64.b64decode(' + repr(base64.b64encode(original_bytes).decode()) + ')'), encoding='utf-8')
+            if terminal_failure:
+                script.write_text(script.read_text(encoding='utf-8').replace("'status':'completed','items':[item]", "'status':'failed','items':[item],'error':{'codexErrorInfo':'usageLimitExceeded'}"), encoding='utf-8')
             parameters = {} if requested_format is None else {'image_options': {
                 'schema_version': '1', 'quality': 'auto', 'output_format': requested_format}}
             request = ExecutionRequest('task', 'attempt', '原始完整 prompt', parameters)
@@ -70,6 +72,9 @@ for line in sys.stdin:
                     self.assertEqual(result.code, 'output_format_mismatch' if mismatch else 'artifact_ready')
                     self.assertEqual(result.artifact.path.read_bytes(), original_bytes)
                     self.assertEqual(result.details['turn_id'], 'turn-fixture')
+                elif terminal_failure:
+                    self.assertEqual(result.status, 'terminal_failure')
+                    self.assertEqual(result.details['terminal_failure']['reason_code'], 'quota_exhausted')
                 else:
                     self.assertEqual(result.status, 'needs_attention')
                     self.assertEqual(result.code, 'codex_single_image_event_required')
@@ -84,6 +89,9 @@ for line in sys.stdin:
                 self.assertEqual(launched.call_count, 1)
                 folder = root / 'data/task/attempt'
                 self.assertEqual(json.loads((folder / 'codex-turn.json').read_text())['thread_id'], 'thread-fixture')
+
+    def test_full_terminal_failed_turn_and_replay_without_new_cli(self):
+        self.run_fixture(False, terminal_failure=True)
 
     def test_full_image_lifecycle_and_replay(self):
         self.run_fixture(True)

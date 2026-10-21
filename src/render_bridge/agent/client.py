@@ -80,6 +80,10 @@ class HttpNodeClient:
     def start(self, task_id, claim_id):
         return self.request('POST', f'/tasks/{self.key(task_id)}/start', json={'claim_id': claim_id}).json()
 
+    def terminal_failure(self, task_id, attempt_id, evidence):
+        return self.request('POST', f'/tasks/{self.key(task_id)}/terminal-failure',
+                            json={'attempt_id': attempt_id, 'evidence': evidence}).json()
+
     def unknown(self, task_id, claim_id):
         return self.request('POST', f'/tasks/{self.key(task_id)}/unknown', json={'claim_id': claim_id}).json()
 

@@ -42,7 +42,7 @@ python -m render_bridge.agent --state-dir ./local-agent-state run-task TASK_ID
 - 在发 start 请求前持久化 `start_requested`。start 回包不确定、执行异常或已有未知执行均转为 `execution_unknown`，后续投递不会重新生成；未知任务阻止本地其他执行占用物理槽。
 - 参考图按冻结顺序经授权 HTTP 下载，校验大小和 SHA-256 后交给执行器。Fake 记录其顺序与 hash，但合成图不声称受参考图视觉条件控制。
 - 产物检查后保存在本地并记录 `artifact_ready`，再上传。上传失败保留同一 attempt 和原始字节；claim 过期则申请 `upload_only`，只重传、不重新执行。提交成功但回包丢失时，通过服务端 receipt 恢复。
-- 已完成任务再次投递直接返回原 receipt。保留状态和产物目录；本版没有自动清理调度或 unknown 强制重置命令；已有显式 maintain 清理命令，只处理已确认且符合保留条件的受管媒体，见 [最终开发范围](FINAL_DEVELOPMENT_SCOPE.md)。不要删除 journal 来“解锁”。
+- 已完成任务再次投递直接返回原 receipt。保留状态和产物目录；本版没有 unknown 强制重置命令（已确认终止的账号失败按下述证据路径处理）；已有显式 maintain 清理命令，只处理已确认且符合保留条件的受管媒体，见 [最终开发范围](FINAL_DEVELOPMENT_SCOPE.md)。不要删除 journal 来“解锁”。
 
 这些是针对关键故障窗口的保守恢复，不代表所有磁盘/断电/网络故障均已验收。输出限制由共享 profile registry 决定：Fake 为 1 MiB / 单边 1024；Codex 与人工 MJ 为 16 MiB / 40 MP。输入参考图仍最多 1 MiB，顺序和 hash 不变。
 
@@ -89,3 +89,8 @@ python -m render_bridge.agent --state-dir ./local-agent-state --config ./agent.l
 CLI/磁盘等普通原因用相应成功检查恢复；auth/quota 必须有上述已启用探测的可靠证据，或操作者针对原原因的显式确认。Alchemy 仍对新报告执行两个成功报告/稳定窗口的恢复门禁，只有未来新请求恢复本地优先，不能让已经转云端的任务重新生成。账户探测关闭时，不承诺 auth/quota 无人值守自动恢复。
 
 配置升级后先运行 doctor（默认不运行账户探测），再由操作者按授权决定是否启动 worker。fake 示例保持全部真实能力关闭；验收应记录所用 revision、选择的工具策略、是否同意账户探测及实际结果，不能把配置值写 true 当作验收。
+
+
+### 已确认终止失败的槽位恢复
+
+Codex明确返回匹配的失败turn、原因是登录失效或额度限制，且完整证据没有图片工具活动或原图时，Agent先落盘证据并向Bridge幂等上报。Bridge确认原attempt已终止为failed后，Agent才释放槽位。上报响应丢失时，后续心跳或下个任务入口会重报同证据，不要求手动再投旧任务，不启动新CLI。真正执行不明仍占槽；恢复登录/额度或健康变绿不是释放依据。旧失败任务不再执行、不转云端。详见[健康与终止证据](PROFILE_HEALTH_RUNTIME.md#confirmed-terminal-account-failures-and-physical-slot-recovery)。

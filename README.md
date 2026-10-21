@@ -6,9 +6,9 @@ An optional API-based bridge between Alchemy applications and local rendering to
 
 ## 当前状态
 
-**当前：可配置 Bridge / 通用 Agent 开发版与离线执行器。模拟链路可运行；真实工具登录、生图与生产部署尚未验收。**
+**当前：可配置 Bridge / 通用 Agent、Alchemy V3 Standard/general 单图原生适配及显式自动回退已有代码与模拟联调证据；仍为开发与 review-only 范围，用户 Windows 实机登录、生图及生产部署尚未验收。**
 
-- 文档基线：分端开发方案 v1.2；2026-10-21 新增自动回退契约与同机 Windows 首轮验收安排。
+- 文档基线：分端开发方案 v1.2；2026-10-21 新增自动回退契约、实现与同机 Windows 首轮验收安排。当前证据和限制见[自动回退实现验收](docs/implementation/AUTO_FALLBACK_ACCEPTANCE.md)，实机步骤见[Windows 同机指南](docs/implementation/WINDOWS_LOCAL_LOOPBACK.md)。
 - 新增：[单节点撤销与有界事件记录](docs/implementation/NODE_OPERATIONS_SCOPE.md)。
 - 新增：[节点就绪、待处理与停新任务](docs/implementation/NODE_READINESS_AND_ATTENTION.md)、[完整蓝图缺口审计](docs/implementation/DELIVERY_GAP_AUDIT.md)。
 - 新增：[有界图片选项合同](docs/implementation/TYPED_IMAGE_OPTIONS_SCOPE.md)、[本地就绪诊断](docs/implementation/LOCAL_READINESS_DOCTOR.md)、[可配置服务与 Node API](docs/implementation/CONFIGURED_BRIDGE_RUNTIME.md)、[离线执行器](docs/implementation/OFFLINE_EXECUTORS.md)、[云端开发与本地迁移说明](docs/implementation/LOCAL_MIGRATION.md)。
@@ -18,7 +18,7 @@ An optional API-based bridge between Alchemy applications and local rendering to
 - Hatchet 是待验证的任务引擎候选，不是已确定可上线的依赖。
 - [原生Windows与真实Linux引擎的三任务试验](docs/implementation/WSL_NATIVE_ENGINE_VALIDATION.md)已通过，TLS、权限及故障恢复等门禁仍未完成。
 - [Source HTTP 开发演示与运行方法](docs/implementation/SOURCE_HTTP_DEMO.md)：补齐来源侧实际 HTTP 调用，提供合成 PNG 和结果报告；仍非生产渲染服务。
-- [节点HTTP与任务账本的隔离闭环](docs/implementation/NODE_LEDGER_HTTP_TRIAL.md)已通过；该次试验的来源侧为领域模拟器，本次增量已补齐来源 HTTP，仍不是 Alchemy 联调。
+- [节点HTTP与任务账本的隔离闭环](docs/implementation/NODE_LEDGER_HTTP_TRIAL.md)已通过；该历史试验的来源侧为领域模拟器，不能用它证明 Alchemy 联调；后续实际 Alchemy 宿主加独立 Bridge HTTP 的合成联调证据见上述实现验收收据。
 - Windows 合同测试不代表 Windows Agent 验收；该实验存储不承诺 Windows 断电目录持久性或 ACL 安全隔离。
 - 首批真实场景为本机已登录的Codex CLI与Midjourney（Discord API发任务消息、用户手动提交、原图导入）；已有可配置任务路由与适配组件，真实调用默认未启用。ComfyUI后置；没有真实模型、生产或正式Windows Agent验收。
 
@@ -42,7 +42,7 @@ Alchemy与Render Bridge是独立服务、严格独立发布；最新首轮验收
 
 ## 下一步
 
-Bridge不区分Alchemy V1/V2/V3/Lab/Video OS；各版本在Alchemy侧适配成同一最终请求。云端继续完成独立服务、Agent与执行器代码，通过模拟任务验收后迁移本地。Codex登录及真实生图留到本地，不作为云端编码前置。Alchemy 可选接入模块的预览和 fake 原生导入已在独立仓库实现；Bridge 侧有界图片选项已实现，Alchemy 独立参数适配须单独验收；Codex 原生控制缺口、本机真实生图验收、PostgreSQL生产持久层与双VPS部署仍单列限制或未完成项；不把开发版测试等同生产交付。ComfyUI和视频执行器后置。
+Bridge不区分Alchemy V1/V2/V3/Lab/Video OS；各版本应在Alchemy侧适配成同一最终请求，但这不表示所有版本的接入均已实现。当前Alchemy独立仓库已实现预览、V3 Standard/general单图原生登记与共享审核接缝、有界图片参数适配及默认关闭的prefer_bridge路由；代码和模拟证据不等于真实工具能力验收，也不开放正式交付/计费。最终交付须先完成已确认缺口的修复与最终版本回归，再按Windows同机指南进行实机分阶段验收，使用真实宿主认证、canonical Brain和审核配置；fake渲染器不保证宿主规划/审核无费用。Codex登录、真实图片/参考图效果与恢复仍留到用户本机验证，不以版本号、健康报告或操作者配置标记代替。Codex原生控制缺口、PostgreSQL生产持久层、双VPS部署、其他Alchemy版本接入仍是限制或后续范围；ComfyUI和视频执行器后置。
 
 本仓库是 Render Bridge 的后续开发基线。Alchemy 接入模块实现应位于对应 Alchemy 项目，本仓库保存其设计合同与联调约束，不复制或修改旧业务系统。
 
@@ -56,4 +56,4 @@ Bridge不区分Alchemy V1/V2/V3/Lab/Video OS；各版本在Alchemy侧适配成�
 - [Codex CLI适配方案](docs/render-bridge/adapters/05_Codex_CLI适配方案.md)
 - [Midjourney与Discord API适配方案](docs/render-bridge/adapters/06_Midjourney_Discord适配方案.md)
 
-- [自动回退代码落地与兼容契约](docs/shared-contract/08_自动回退代码落地与兼容契约.md)：冻结健康信号、pre-start撤回、路由身份和V3传统provider接缝；设计/实施计划不等于运行验收。
+- [自动回退代码落地与兼容契约](docs/shared-contract/08_自动回退代码落地与兼容契约.md)：冻结健康信号、pre-start撤回、路由身份和V3传统provider接缝；相关代码与模拟联调已实施，具体证据/未测范围见[实现验收](docs/implementation/AUTO_FALLBACK_ACCEPTANCE.md)，设计或模拟通过均不等于实机/生产验收。

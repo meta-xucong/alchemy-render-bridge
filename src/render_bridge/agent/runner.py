@@ -33,6 +33,7 @@ class NodeAgent:
         if not isinstance(task_id, str) or not _KEY.fullmatch(task_id):
             raise ValueError('Invalid task identifier')
         with InstanceLock(self.journal.root / 'agent.lock'):
+            self._retry_terminal_reports()
             self._active = True
             self._current_attempt = None
             try:
@@ -56,6 +57,12 @@ class NodeAgent:
 
     def heartbeat(self):
         """Best-effort liveness plus explicitly enabled, read-only local health probes."""
+        if not self._active:
+            try:
+                with InstanceLock(self.journal.root / 'agent.lock'):
+                    self._retry_terminal_reports()
+            except (OSError, RuntimeError):
+                pass  # Another task owns the instance lock; it reconciles first.
         if not hasattr(self.client, 'heartbeat'):
             return False
         try:
@@ -87,6 +94,10 @@ class NodeAgent:
             return {'outcome': 'already_committed', 'task_id': task_id, 'receipt_id': task['receipt_id']}
         if record and record['state'] == 'complete':
             return {'outcome': 'already_committed', 'task_id': task_id, 'receipt_id': record['receipt_id']}
+        if record and record['state'] == 'failure_report_pending':
+            return self._report_terminal_failure(record)
+        if record and record['state'] == 'terminal_failed':
+            return {'outcome': 'terminal_failed', 'task_id': task_id}
         if task['state'] in ('canceled', 'failed', 'expired'):
             return {'outcome': 'not_executable', 'task_id': task_id}
         profile_id = task['request']['execution_profile_id']
@@ -104,6 +115,8 @@ class NodeAgent:
                 try:
                     recovered = executor.recover_completed(ExecutionRequest(**record['request']))
                     if recovered is not None:
+                        if recovered.status == 'terminal_failure':
+                            return self._save_terminal_failure(record, recovered)
                         if recovered.status == 'ready' and recovered.artifact is not None:
                             self._save_artifact(record, recovered.artifact, profile)
                             return self._upload(record)
@@ -186,6 +199,8 @@ class NodeAgent:
             result = executor.execute(request)
             if self.health_reporter is not None:
                 self.health_reporter.record_result(profile_id, result, attempt_id)
+            if result.status == 'terminal_failure':
+                return self._save_terminal_failure(record, result)
             if result.status != 'ready' or result.artifact is None:
                 self._unknown(record)
                 return {'outcome': result.status, 'code': result.code, 'task_id': task_id}
@@ -279,6 +294,44 @@ class NodeAgent:
         except FileExistsError:
             if path.read_bytes() != content:
                 raise ValueError('Attempt file content changed')
+
+    def _save_terminal_failure(self, record, result):
+        record.update(state='failure_report_pending', terminal_failure=result.details['terminal_failure'])
+        self.journal.save(record)
+        return self._report_terminal_failure(record)
+
+    def _report_terminal_failure(self, record):
+        try:
+            confirmation = self.client.terminal_failure(record['task_id'], record['attempt_id'], record['terminal_failure'])
+            if (confirmation.get('status') != 'failed' or confirmation.get('task_id') != record['task_id']
+                    or confirmation.get('attempt_id') != record['attempt_id']
+                    or confirmation.get('evidence') != record['terminal_failure']
+                    or not isinstance(confirmation.get('terminal_failure_ref'), str)
+                    or not confirmation['terminal_failure_ref']):
+                raise ValueError('Terminal confirmation binding mismatch')
+            record.update(state='terminal_failed', terminal_failure_ref=confirmation['terminal_failure_ref'])
+            self.journal.save(record)
+            return {'outcome': 'terminal_failed', 'task_id': record['task_id']}
+        except Exception:
+            return {'outcome': 'failure_report_pending', 'task_id': record['task_id']}
+
+    def _retry_terminal_reports(self):
+        # Only reconcile existing execution evidence. Never dispatch, preflight,
+        # open a turn, or release a genuinely unknown execution from health alone.
+        for record in self.journal.terminal_recovery_records():
+            try:
+                if record['state'] == 'failure_report_pending':
+                    self._report_terminal_failure(record)
+                    continue
+                executor = self.registry.get(record.get('profile_id'))
+                if hasattr(executor, 'recover_terminal_failure') and record.get('request'):
+                    result = executor.recover_terminal_failure(ExecutionRequest(**record['request']))
+                    if result is not None:
+                        if self.health_reporter is not None:
+                            self.health_reporter.record_result(record['profile_id'], result, record['attempt_id'])
+                        self._save_terminal_failure(record, result)
+            except Exception:
+                pass  # Incomplete local evidence remains occupied and unknown.
 
     def _unknown(self, record):
         record['state'] = 'execution_unknown'
