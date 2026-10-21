@@ -29,6 +29,7 @@ from PIL import Image, UnidentifiedImageError
 
 from .profiles import get_profile, enabled_profile_ids, MAX_PROFILE_OUTPUT_BYTES
 from .image_options import validate_image_request, requested_output_mime
+from .operational_store import OperationsMixin
 
 MAX_INPUT_BYTES = 1_048_576
 MAX_OUTPUT_BYTES = 1_048_576
@@ -118,7 +119,7 @@ def _utc(timestamp):
     return datetime.fromtimestamp(timestamp, timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-class BridgeStore:
+class BridgeStore(OperationsMixin):
     """SQLite-backed isolated fixture store; separate instances may share a DB.
 
     POSIX writes synchronize the file and its containing directory. Windows
@@ -150,6 +151,15 @@ class BridgeStore:
         with self._connection() as con:
             con.executescript("""
                 PRAGMA journal_mode=WAL;
+                CREATE TABLE IF NOT EXISTS node_registry (
+                    source TEXT NOT NULL, workspace TEXT NOT NULL, node TEXT NOT NULL,
+                    executor TEXT NOT NULL, active INTEGER NOT NULL,
+                    PRIMARY KEY(source,workspace,node,executor));
+                CREATE TABLE IF NOT EXISTS audit_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL,
+                    workspace TEXT NOT NULL, occurred REAL NOT NULL, kind TEXT NOT NULL,
+                    task_id TEXT, attempt_id TEXT, receipt_id TEXT, code TEXT);
+
                 CREATE TABLE IF NOT EXISTS node_heartbeats (
                     source TEXT NOT NULL, workspace TEXT NOT NULL, node TEXT NOT NULL,
                     executor TEXT NOT NULL, seen REAL NOT NULL, state TEXT NOT NULL,
@@ -282,6 +292,7 @@ class BridgeStore:
         claim = con.execute("SELECT * FROM claims WHERE task_id=?", (task["id"],)).fetchone()
         if not claim or claim["id"] != claim_id:
             _fail("stale_claim", 409)
+        self._check_node_active(con, SourceScope(task["source"], task["workspace"]), claim["node"], claim["executor"])
         if claim["expires"] <= self.clock():
             _fail("claim_expired", 409)
         return claim
@@ -296,6 +307,7 @@ class BridgeStore:
             if profile not in {"fake-image", "codex-image", "midjourney-manual"}:
                 _fail("invalid_node_profiles")
         with self._transaction() as con:
+            self._check_node_active(con, scope, node_id, executor_instance)
             con.execute("INSERT OR REPLACE INTO node_heartbeats VALUES(?,?,?,?,?,?,?)",
                         (source, workspace, node_id, executor_instance, self.clock(), state, _canonical(profiles)))
         return {"accepted": True, "heartbeat_timeout_seconds": 90}
@@ -305,7 +317,10 @@ class BridgeStore:
         with self._connection() as con:
             row = con.execute("SELECT * FROM node_heartbeats WHERE source=? AND workspace=? ORDER BY seen DESC LIMIT 1",
                               (source, workspace)).fetchone()
-        return {"state": ("unknown" if row is None else "offline" if self.clock() - row["seen"] >= 90 else row["state"]),
+            registered = con.execute("SELECT active FROM node_registry WHERE source=? AND workspace=?", (source, workspace)).fetchall()
+        authorization = "unknown" if not registered else "active" if any(r["active"] for r in registered) else "revoked"
+        return {"state": ("attention" if authorization == "revoked" else "unknown" if row is None else "offline" if self.clock() - row["seen"] >= 90 else row["state"]),
+                "authorization": authorization,
                 "last_seen_at": _utc(row["seen"]) if row else None,
                 "heartbeat_timeout_seconds": 90,
                 "reported_profiles": json.loads(row["profiles"]) if row else [],
@@ -316,6 +331,7 @@ class BridgeStore:
         if code not in ATTENTION_MESSAGES:
             _fail("invalid_attention_code")
         with self._transaction() as con:
+            self._check_node_active(con, scope, node_id, executor_instance)
             task = self._scoped(con, "tasks", task_id, scope)
             if task["attempt_id"] != attempt_id:
                 _fail("attempt_mismatch", 409)
@@ -325,6 +341,9 @@ class BridgeStore:
             if task["state"] in _TERMINAL or task["cancel_requested"] or (not attempt["start_grant_id"] and task["deadline"] <= self.clock()):
                 return self._task_view(con, task)
             started = bool(attempt["start_grant_id"]) and self._profile(task).execution_mode == "automatic"
+            previous = con.execute("SELECT code FROM task_attention WHERE task_id=?", (task_id,)).fetchone()
+            if previous is None or previous["code"] != code:
+                self._audit(con, scope, "task_attention", task_id=task_id, attempt_id=attempt_id, code=code)
             con.execute("INSERT OR REPLACE INTO task_attention VALUES(?,?)", (task_id, code))
             con.execute("UPDATE tasks SET state=? WHERE id=?", ("execution_unknown" if started else "awaiting_user", task_id))
             return self._task_view(con, self._scoped(con, "tasks", task_id, scope))
@@ -694,6 +713,7 @@ class BridgeStore:
                         (_id("dispatch"), task_id))
             for ref in payload["references"]:
                 con.execute("INSERT OR IGNORE INTO input_pins VALUES(?,?)", (task_id, ref["input_ref"]))
+            self._audit(con, scope, "task_created", task_id=task_id, attempt_id=attempt_id)
             return self._task_view(con, self._scoped(con, "tasks", task_id, scope))
 
     @staticmethod
@@ -758,6 +778,8 @@ class BridgeStore:
                 else:
                     state = "cancel_requested" if started and self._profile(task).execution_mode == "automatic" else "canceled"
                     con.execute("UPDATE tasks SET state=?,cancel_requested=1 WHERE id=?", (state, task_id))
+                    if not task["cancel_requested"]:
+                        self._audit(con, scope, state, task_id=task_id, attempt_id=task["attempt_id"])
             return self._task_view(con, self._scoped(con, "tasks", task_id, scope))
 
     def claim_task(self, scope, task_id, *, node_id, executor_instance, mode="execute", lease_seconds=60):
@@ -768,6 +790,7 @@ class BridgeStore:
             _fail("invalid_claim_mode")
         _integer(lease_seconds, 1, 3600)
         with self._transaction() as con:
+            self._check_node_active(con, scope, node_id, executor_instance)
             task = self._scoped(con, "tasks", task_id, scope)
             attempt = con.execute("SELECT * FROM attempts WHERE task_id=?", (task_id,)).fetchone()
             if task["state"] == "expired":
@@ -828,6 +851,7 @@ class BridgeStore:
                         (grant, claim["node"], claim["executor"], self.clock(), attempt["id"]))
             con.execute("DELETE FROM task_attention WHERE task_id=?", (task_id,))
             con.execute("UPDATE tasks SET state='running' WHERE id=?", (task_id,))
+            self._audit(con, scope, "start_granted", task_id=task_id, attempt_id=attempt["id"])
             return {"start_grant_id": grant, "attempt_id": attempt["id"], "may_execute": True}
 
     def begin_manual(self, scope, task_id, claim_id):
@@ -854,6 +878,7 @@ class BridgeStore:
                     started=? WHERE id=?""", (_id("manual"), claim["node"], claim["executor"],
                                                self.clock(), attempt["id"]))
                 con.execute("UPDATE tasks SET state='awaiting_user' WHERE id=?", (task_id,))
+                self._audit(con, scope, "manual_ready", task_id=task_id, attempt_id=attempt["id"])
             return {"attempt_id": attempt["id"], "state": "awaiting_user", "may_execute": False}
 
     def mark_execution_unknown(self, scope, task_id, claim_id):
@@ -866,6 +891,8 @@ class BridgeStore:
             if not attempt["start_grant_id"]:
                 _fail("execution_not_started", 409)
             if task["state"] not in _TERMINAL and not task["cancel_requested"]:
+                if task["state"] != "execution_unknown":
+                    self._audit(con, scope, "execution_unknown", task_id=task_id, attempt_id=attempt["id"])
                 con.execute("UPDATE tasks SET state='execution_unknown' WHERE id=?", (task_id,))
             return self._task_view(con, self._scoped(con, "tasks", task_id, scope))
 
@@ -950,6 +977,7 @@ class BridgeStore:
                         (receipt_id, task["id"], upload_id, artifact_id, _canonical(manifest)))
             con.execute("UPDATE uploads SET state='committed' WHERE id=?", (upload_id,))
             con.execute("UPDATE tasks SET state='artifacts_ready' WHERE id=?", (task["id"],))
+            self._audit(con, scope, "receipt_committed", task_id=task["id"], attempt_id=task["attempt_id"], receipt_id=receipt_id)
             return self._receipt_view(con, con.execute("SELECT * FROM receipts WHERE id=?", (receipt_id,)).fetchone())
 
     @staticmethod
@@ -1003,6 +1031,7 @@ class BridgeStore:
                 con.execute("INSERT INTO acknowledgements VALUES(?,?,?,?,?,?)",
                             (receipt_id, source, workspace, payload["client_receipt_id"],
                              digest, _canonical(payload)))
+                self._audit(con, scope, "delivery_" + payload["decision"], task_id=row["task_id"], receipt_id=receipt_id)
             return self._receipt_view(con, row)
 
 

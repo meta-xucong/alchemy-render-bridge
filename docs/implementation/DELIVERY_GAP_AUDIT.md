@@ -38,19 +38,17 @@ separate local acceptance; all login/generation verified fields remain false.
 - PostgreSQL is explicitly recommended in blueprint section 2, not mandatory for
   the initial one-trusted-workspace/node scope. SQLite remains a bounded development
   store; the documented production migration is not completed.
-- Static source/workspace/node/executor token binding provides configured
-  provisioning for that initial trusted node. Self-service pairing and a durable
-  node-management registry are intended later lifecycle functions, not necessary
-  to run this single-node workflow. Multi-node expansion is not this deliverable.
-- Immediate hot revocation is not implemented. The bounded operator procedure is
-  replace/remove the configured node credential and restart the Bridge service;
-  the old bearer is denied thereafter. This is not online revocation, but no new
-  registry framework is required for a trusted-node development handoff. Keep
-  source credentials available for task/receipt reconciliation when rotating node
-  access. Never reset existing execution facts during credential rotation.
-- An audit-event table is listed in section 4 and remains absent. Existing task,
-  receipt and acknowledgment records establish outcomes, not full event history.
-  Full event auditing is an explicitly deferred operational feature.
+- Static source/workspace/node/executor token binding is the current initial
+  trusted-node pairing/provisioning method. Persistent active/revoked registration
+  and immediate authorization checks now exist. Self-service pairing is not
+  implemented; multi-node expansion is not this deliverable.
+- Local operator revoke/reactivate commands now change persistent authorization
+  without restarting the server or creating credentials. They do not cancel an
+  upstream execution, clear its evidence or permit a second start. Source
+  reads/downloads/acks remain available. See NODE_OPERATIONS_SCOPE.md.
+- The blueprint audit-event basic is now implemented as a bounded latest-1000
+  metadata-only ring for meaningful outcomes. It is not an unlimited compliance
+  archive or a full trace of every read, heartbeat, failure or input byte.
 - Full streaming and execution lease renewal remain partial; bounded byte buffers,
   fixed leases and upload-only recovery are the present implementations.
 - Windows real-tool acceptance, remote TLS/failure recovery and dual-VPS joint

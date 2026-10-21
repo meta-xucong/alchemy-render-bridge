@@ -83,10 +83,14 @@ def _bearer(request, mapping):
 
 def install_node_routes(app, store: BridgeStore, node_tokens: Mapping[str, NodeScope], call_store):
     tokens = _credential_map(node_tokens, NodeScope)
+    for identity in tokens.values():
+        store.provision_node(identity.source_scope, identity.node_id, identity.executor_instance)
     prefix = '/bridge/node/v1'
 
     async def node(request: Request):
-        return _bearer(request, tokens)
+        identity = _bearer(request, tokens)
+        await call_store(store.authorize_active_node, identity.source_scope, identity.node_id, identity.executor_instance)
+        return identity
 
     async def claim_body(request):
         return await _json_request(request, ClaimIdentity, 16384)

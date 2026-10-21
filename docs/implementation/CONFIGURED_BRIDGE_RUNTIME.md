@@ -129,3 +129,11 @@ Completed journals and executor start/binding/manifest evidence remain; replays 
 not render again and retired executor caches report `artifact_expired`. Codex's
 validated generated original is registered for cleanup; unregistered legacy copies
 are conservatively retained. No actual user data is cleaned by the tests.
+
+## Single configured-node operations
+
+The initial node binding now provisions a persistent active/revoked record. Local
+operator revoke/reactivate applies without a server restart; it changes neither
+credentials nor execution facts. A bounded metadata-only audit ring records
+important outcomes. See [node operations](NODE_OPERATIONS_SCOPE.md). Self-service
+pairing, multi-node management and a remote administration API are not implemented.

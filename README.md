@@ -9,6 +9,7 @@ An optional API-based bridge between Alchemy applications and local rendering to
 **当前：可配置 Bridge / 通用 Agent 开发版与离线执行器。模拟链路可运行；真实工具登录、生图与生产部署尚未验收。**
 
 - 文档基线：分端开发方案 v1.2，2026-10-20。
+- 新增：[单节点撤销与有界事件记录](docs/implementation/NODE_OPERATIONS_SCOPE.md)。
 - 新增：[节点就绪、待处理与停新任务](docs/implementation/NODE_READINESS_AND_ATTENTION.md)、[完整蓝图缺口审计](docs/implementation/DELIVERY_GAP_AUDIT.md)。
 - 新增：[有界图片选项合同](docs/implementation/TYPED_IMAGE_OPTIONS_SCOPE.md)、[本地就绪诊断](docs/implementation/LOCAL_READINESS_DOCTOR.md)、[可配置服务与 Node API](docs/implementation/CONFIGURED_BRIDGE_RUNTIME.md)、[离线执行器](docs/implementation/OFFLINE_EXECUTORS.md)、[云端开发与本地迁移说明](docs/implementation/LOCAL_MIGRATION.md)。
 - 实现范围：[第一阶段范围](docs/implementation/PHASE1_SCOPE.md)、[运行隔离测试](docs/implementation/RUN_CONTRACT_TESTS.md)。
