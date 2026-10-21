@@ -66,10 +66,12 @@ def inspect_local(bridge_path: Path, agent_path: Path, *, probe: bool = False) -
             }[contract['executor_control']]
             add('parameter_contract_' + profile_id.replace('-', '_'), 'pass', 'configuration',
                 'parameter_contract_v1',
-                'Only width/height/seed are accepted. Output dimensions must match exactly. ' +
+                'Width/height/seed and optional nested image_options v1 are accepted. '
+                'Output dimensions must match exactly. ' +
                 ('Width/height default to 32 for fake. ' if not contract['required_parameters']
                  else 'Explicit width/height are required. ') + instruction +
-                ' Quality/output_format/input_fidelity are unsupported.')
+                ' Nested quality supports auto (unspecified) only; png/jpeg output_format is checked '
+                'against the decoded original, not a native control. Input_fidelity must be omitted.')
     else:
         add('parameter_contract', 'not_checked', 'not_checked', 'valid_profiles_required',
             'Correct the enabled profiles before inspecting parameter semantics.')

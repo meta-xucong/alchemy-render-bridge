@@ -63,7 +63,7 @@ pattern may be shown as sanitized local probe evidence. Required fields remain p
 Each source capabilities profile gains `parameter_contract` with its own
 `schema_version: "1"`; it is independent of task schema/profile revision:
 
-- `accepted_parameters`: `width`, `height`, `seed` only.
+- `accepted_parameters`: `width`, `height`, `seed`, and optional `image_options`.
 - `required_parameters`: empty for fake, `width` and `height` for real profiles.
 - `dimension_semantics`: `exact_output_match`, an original-artifact acceptance
   requirement, not a promise that an external image tool obeys the dimensions.
@@ -73,16 +73,25 @@ Each source capabilities profile gains `parameter_contract` with its own
   `manual_user_selected` respectively. Accepting seed is not reproducibility.
 - `reference_semantics`: `hash_checked_not_conditioning`,
   `local_image_input_unverified`, or `not_supported` respectively.
-- `unsupported_parameters`: `quality`, `output_format`, `input_fidelity`.
-  Unlisted parameters are not implicitly supported; the accepted list is closed.
+- `unsupported_parameters`: `quality`, `output_format`, `input_fidelity` at the
+  top level of `parameters`. The nested contract below is separate. Unlisted parameters are not implicitly supported; the accepted list is closed.
 
 Consumers must not turn operator declarations, installed-CLI metadata or profile
 enablement into claims of login, real generation, reference fidelity or quality.
 The current Codex lifecycle passes rendering parameters as text instructions,
 not structured image-tool controls. Midjourney reference requests remain blocked.
-Alchemy's optional preview/fake-native integration exists in its own repository;
-native real-profile quality/format/fidelity adaptation is still an implementation
-gap. Logging in does not fill that gap or authorize a real render.
+Each profile also exposes `image_options_contract` version 1: quality `auto`
+means `unspecified_only`; PNG/JPEG means `original_artifact_postcondition`;
+input fidelity has no values and means `omitted_only`. References retain their
+existing semantics, with max_count 8 for fake/Codex and 0 for manual.
+
+The typed Bridge contract is implemented, not a native-control promise. Codex
+0.163.0 provides no structured quality/format/fidelity controls. Unsupported
+quality tiers or any explicit fidelity are rejected before execution; a format
+mismatch preserves the original and requires attention, never conversion or
+another render. Alchemy's independent adapter and local real-tool acceptance
+remain separately verified. Logging in does not add native CLI controls or
+authorize a real render. See [typed options](TYPED_IMAGE_OPTIONS_SCOPE.md).
 
 ## Verification for this slice
 

@@ -20,6 +20,7 @@ import threading
 import time
 from collections.abc import Sequence
 
+from render_bridge.image_options import validate_image_request
 from .base import AttemptFiles, ExecutionRequest, ExecutionResult, MAX_ARTIFACT_BYTES
 
 PINNED_CLI_VERSION = 'codex-cli 0.163.0'
@@ -190,6 +191,7 @@ class CodexExecutor:
 
     def preflight(self, request: ExecutionRequest) -> ExecutionResult | None:
         """Check local acceptance and version only; never starts a thread or turn."""
+        validate_image_request(request.parameters, request.references, 'codex-image')
         config = self.config
         if not (config.enabled and config.model and config.image_capability_verified
                 and config.tool_policy_verified):
@@ -199,7 +201,9 @@ class CodexExecutor:
             return ExecutionResult('needs_attention', 'codex_version_not_validated', details=probe)
         return None
 
-    def execute(self, request: ExecutionRequest) -> ExecutionResult:
+    def recover_completed(self, request: ExecutionRequest) -> ExecutionResult | None:
+        """Recover completed local evidence only; never probe or launch a CLI."""
+        validate_image_request(request.parameters, request.references, 'codex-image')
         files = AttemptFiles(self.root, request, 'codex-cli')
         cached = files.cached()
         if cached:
@@ -208,6 +212,14 @@ class CodexExecutor:
         if completion.exists():
             saved = json.loads(completion.read_text(encoding='utf-8'))
             return self.collect_completed(request, **saved)
+        return None
+
+    def execute(self, request: ExecutionRequest) -> ExecutionResult:
+        recovered = self.recover_completed(request)
+        if recovered is not None:
+            return recovered
+        files = AttemptFiles(self.root, request, 'codex-cli')
+        completion = files.path / 'codex-completion.json'
         config = self.config
         if not (config.enabled and config.model and config.image_capability_verified
                 and config.tool_policy_verified):
@@ -221,7 +233,10 @@ class CodexExecutor:
         inputs = [{'type': 'text', 'text': request.prompt}]
         if request.parameters:
             # These are instructions, not invented image API parameters.
-            inputs.append({'type': 'text', 'text': 'Requested rendering parameters: ' +
+            instructions = ('Requested rendering parameters (image_options quality auto means unspecified; '
+                            'output_format is an original-artifact acceptance requirement, not a native '
+                            'control; do not convert or rerender to meet it): ')
+            inputs.append({'type': 'text', 'text': instructions +
                            json.dumps(request.parameters, ensure_ascii=False, sort_keys=True)})
         for ref in request.references:
             path = Path(ref['path'])
@@ -294,6 +309,7 @@ class CodexExecutor:
         Caller must supply IDs it persisted from that attempt's start responses.
         Plain text, `result` prose, and directory mtime are never image evidence.
         """
+        validate_image_request(request.parameters, request.references, 'codex-image')
         files = AttemptFiles(self.root, request, 'codex-cli')
         if not thread_id or not turn_id:
             raise ValueError('Persisted thread and turn identity required')
@@ -332,5 +348,5 @@ class CodexExecutor:
             raise ValueError('Image event original is unavailable or too large')
         result = files.save(path.read_bytes(), 'codex_image_event_locally_unverified')
         return ExecutionResult(result.status, result.code, result.artifact,
-                               {'thread_id': thread_id, 'turn_id': turn_id,
+                               {**result.details, 'thread_id': thread_id, 'turn_id': turn_id,
                                 'image_item_id': next(iter(candidates))})

@@ -2,7 +2,8 @@
 from pathlib import Path
 import hashlib
 import json
-from render_bridge.fake import fixture_png
+from render_bridge.fake import fixture_png, fixture_jpeg
+from render_bridge.image_options import validate_image_request
 from .base import AttemptFiles, ExecutionRequest, ExecutionResult
 
 
@@ -11,6 +12,7 @@ class FakeExecutor:
         self.root = Path(root)
 
     def execute(self, request: ExecutionRequest) -> ExecutionResult:
+        options = validate_image_request(request.parameters, request.references, 'fake-image')
         references = []
         for reference in request.references:
             path = Path(reference['path'])
@@ -25,7 +27,8 @@ class FakeExecutor:
         if cached:
             return cached
         # Validate fixture dimensions before acquiring a possible-execution latch.
-        content = fixture_png(request.parameters.get('width', 32), request.parameters.get('height', 32))
+        render = fixture_jpeg if options and options['output_format'] == 'jpeg' else fixture_png
+        content = render(request.parameters.get('width', 32), request.parameters.get('height', 32))
         if not files.begin():
             return ExecutionResult('execution_unknown', 'attempt_already_started')
         if references:

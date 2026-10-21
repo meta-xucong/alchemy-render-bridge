@@ -15,7 +15,8 @@ from render_bridge.domain import BridgeStore, SourceScope
 from render_bridge.executors.codex import CodexConfig, CodexExecutor
 from render_bridge.executors.fake import FakeExecutor
 from render_bridge.executors.manual import MidjourneyManualExecutor
-from render_bridge.fake import fixture_png
+from render_bridge.fake import fixture_png, fixture_jpeg
+from render_bridge.executors.base import AttemptFiles
 from render_bridge.node_api import NodeScope
 from render_bridge.runtime import create_runtime_app
 
@@ -44,14 +45,80 @@ class AgentProfilesTests(unittest.TestCase):
         self.store.close()
         self.temp.cleanup()
 
-    def create(self, profile, origin='task'):
+    def create(self, profile, origin='task', image_options=None):
         return self.store.create_task(self.scope, {'schema_version': '1', 'origin_key': origin,
             'binding_id': 'binding', 'operation': 'image.generate', 'execution_profile_id': profile,
             'execution_profile_revision': '1', 'prompt': '冻结提示词 中文',
-            'parameters': {'width': 32, 'height': 24, 'seed': 1}, 'references': [],
+            'parameters': {'width': 32, 'height': 24, 'seed': 1,
+                **({'image_options': image_options} if image_options is not None else {})}, 'references': [],
             'output_slot': {'slot_id': 'primary', 'count': 1}, 'routing': 'bridge_only',
             'deadline': (datetime.fromtimestamp(self.now, timezone.utc) + timedelta(hours=2)).isoformat()
         })['remote_task_id']
+
+    def test_invalid_frozen_options_are_rejected_before_claim(self):
+        task = self.create('fake-image')
+        snapshot = self.client.task(task)
+        snapshot['request']['parameters']['image_options'] = {
+            'schema_version': '1', 'quality': 'high', 'output_format': 'png'}
+        with patch.object(self.client, 'task', return_value=snapshot), \
+             patch.object(self.client, 'claim') as claim, patch.object(self.client, 'start') as start:
+            with self.assertRaises(ValueError):
+                self.agent.execute_task(task)
+            claim.assert_not_called()
+            start.assert_not_called()
+
+    def test_agent_recovers_completed_codex_original_without_second_execution(self):
+        for manifest in (False, True):
+            with self.subTest(manifest=manifest):
+                self._completed_codex_recovery(manifest=manifest)
+
+    def test_agent_mismatch_retains_original_and_replays_attention(self):
+        self._completed_codex_recovery(manifest=True, mismatch=True)
+
+    def _completed_codex_recovery(self, *, manifest, mismatch=False):
+        executor = CodexExecutor(self.state / 'executors', CodexConfig(enabled=True,
+            model='mock-model', image_capability_verified=True, tool_policy_verified=True))
+        self.registry.executors['codex-image'] = executor
+        task = self.create('codex-image', 'recovery-'+str(manifest)+str(mismatch), {
+            'schema_version': '1', 'quality': 'auto', 'output_format': 'jpeg'})
+        expected = (fixture_png if mismatch else fixture_jpeg)(32, 24)
+        def completed(request):
+            files = AttemptFiles(executor.root, request, 'codex-cli')
+            files.begin()
+            original = files.path / 'original.image'
+            original.write_bytes(expected)
+            evidence = {'thread_id': 'thread', 'turn_id': 'turn', 'events': [
+                {'method': 'item/completed', 'params': {'threadId': 'thread', 'turnId': 'turn', 'item': {
+                    'id': 'image', 'type': 'imageGeneration', 'status': 'completed', 'savedPath': str(original)}}},
+                {'method': 'turn/completed', 'params': {'threadId': 'thread', 'turn': {'id': 'turn', 'status': 'completed'}}}]}
+            (files.path / 'codex-completion.json').write_text(json.dumps(evidence))
+            if manifest:
+                result = executor.collect_completed(request, **evidence)
+                if mismatch:
+                    return result
+            raise RuntimeError('Simulated interruption before Agent saves the completed result')
+        with patch('render_bridge.executors.codex.probe_codex', return_value={
+                'schema_version_matches': True, 'stdio_advertised': True}) as probe, \
+             patch.object(executor, 'execute', side_effect=completed) as execute, \
+             patch.object(self.client, 'start', wraps=self.client.start) as start, \
+             patch('render_bridge.executors.codex.StdioSession', side_effect=AssertionError('unexpected turn')):
+            result = self.agent.execute_task(task)
+            self.assertEqual(result['outcome'], 'needs_attention' if mismatch else 'execution_unknown')
+            self.now += 61  # Recovery renews only the upload claim, never a start grant.
+            reopened = NodeAgent(self.client, self.state, registry=self.registry)
+            recovered = reopened.execute_task(task)
+            self.assertEqual(recovered['outcome'], 'needs_attention' if mismatch else 'artifact_committed')
+            if mismatch:
+                self.assertEqual(result['code'], 'output_format_mismatch')
+                self.assertEqual(recovered['code'], 'output_format_mismatch')
+                self.assertIsNone(self.client.task(task)['receipt_id'])
+            else:
+                self.assertEqual(reopened.execute_task(task)['outcome'], 'already_committed')
+            execute.assert_called_once()
+            probe.assert_called_once()
+            start.assert_called_once()
+        attempt = self.client.task(task)['attempt_id']
+        self.assertEqual((executor.root / task / attempt / 'artifact.original').read_bytes(), expected)
 
     def test_default_registry_remains_fake_only(self):
         agent = NodeAgent(self.client, self.state)

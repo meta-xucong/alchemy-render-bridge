@@ -12,6 +12,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, model_validator
 from pydantic.json_schema import SkipJsonSchema
 from .profiles import get_profile
+from .image_options import validate_image_request
 
 
 Key = Annotated[StrictStr, Field(min_length=1, max_length=128)]
@@ -37,10 +38,24 @@ class InputCreate(StrictRequest):
     mime_type: Literal["image/png", "image/jpeg"]
 
 
+class ImageOptions(StrictRequest):
+    schema_version: Literal["1"]
+    quality: Literal["auto"]
+    output_format: Literal["png", "jpeg"]
+
+
 class ImageParameters(StrictRequest):
     width: ImageDimension = 32
     height: ImageDimension = 32
     seed: ImageSeed = 0
+    image_options: ImageOptions | SkipJsonSchema[None] = Field(default_factory=lambda: None)
+
+    @model_validator(mode="before")
+    @classmethod
+    def image_options_must_not_be_null(cls, value):
+        if isinstance(value, dict) and 'image_options' in value and value['image_options'] is None:
+            raise ValueError('image_options must be omitted instead of null')
+        return value
 
 
 class InputReference(StrictRequest):
@@ -81,6 +96,8 @@ class TaskCreate(StrictRequest):
 
     @model_validator(mode="after")
     def enforce_profile_dimensions(self):
+        validate_image_request(self.parameters.model_dump(exclude_unset=True),
+                               self.references, self.execution_profile_id)
         profile = get_profile(self.execution_profile_id)
         if (max(self.parameters.width, self.parameters.height) > profile.max_dimension
                 or self.parameters.width * self.parameters.height > profile.max_pixels):

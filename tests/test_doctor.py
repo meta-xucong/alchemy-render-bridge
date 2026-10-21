@@ -271,7 +271,7 @@ class ProbeAndDescriptorTests(unittest.TestCase):
                 self.assertEqual(contract, profile.parameter_contract())
                 self.assertEqual(item['execution_profile_revision'], '1')
                 self.assertEqual(contract['schema_version'], '1')
-                self.assertEqual(contract['accepted_parameters'], ['width', 'height', 'seed'])
+                self.assertEqual(contract['accepted_parameters'], ['width', 'height', 'seed', 'image_options'])
                 self.assertEqual(contract['dimension_semantics'], 'exact_output_match')
                 self.assertEqual(contract['required_parameters'], [] if profile.id == 'fake-image' else ['width', 'height'])
                 self.assertEqual(contract['unsupported_parameters'], ['quality', 'output_format', 'input_fidelity'])

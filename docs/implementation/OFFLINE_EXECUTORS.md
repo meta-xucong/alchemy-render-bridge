@@ -13,7 +13,7 @@ contains one frozen request. `ExecutionResult` is `ready`, `needs_attention` or
 size, MIME, dimensions and provenance. An Agent must still obtain its server start
 grant, enforce the server upload limits and reconcile cancellation before upload.
 
-`FakeExecutor(root).execute(request)` produces a deterministic synthetic PNG and
+`FakeExecutor(root).execute(request)` produces a deterministic synthetic PNG (or declared JPEG) and
 reuses the cached original for the same attempt. A changed request cannot reuse
 the same attempt. A start with no result stays unknown rather than rerendering.
 References, when supplied, are ordered dictionaries with `input_ref`, `role`,
@@ -146,11 +146,17 @@ Use `python -m render_bridge.doctor --bridge-config ... --agent-config ... --jso
 for read-only configuration checks. `--probe-codex` explicitly permits only
 version/help in a fresh temporary home, not a login, protocol turn or generation.
 The report never claims real generation or login verification. The additive
-profile `parameter_contract` describes accepted width/height/seed independently
-of actual executor control: Codex receives text instructions, manual input is
-user-selected, and fake seed is accepted but not applied. There are no supported
-quality/output_format/input_fidelity fields. See [the full contract](LOCAL_READINESS_DOCTOR.md).
+profile `parameter_contract` describes accepted width/height/seed and optional
+nested `image_options` independently of actual executor control. Codex receives
+text instructions, manual input is user-selected, and fake seed is not applied.
+Nested quality accepts only `auto` (unspecified tier); `output_format` PNG/JPEG
+is a decoded-original postcondition; input fidelity must be omitted. Explicit
+fidelity, unsupported quality, and manual references fail before execution.
+A completed format mismatch retains original bytes and evidence, returns
+`needs_attention`, and never converts or regenerates. Cached replay rechecks the
+decoded format. Agent interrupted-result recovery uses completed evidence only,
+not another CLI turn. See [typed options](TYPED_IMAGE_OPTIONS_SCOPE.md).
 
-Alchemy's separate optional integration already supports preview and fake native
-import. Native real-profile adaptation still requires implementation and
-acceptance; logging in to Codex alone does not supply that missing integration.
+Alchemy's integration is maintained and verified separately. Bridge's bounded
+typed real-profile contract is implemented; real account/model acceptance is
+still pending. Logging in alone does not provide native image-tool controls.

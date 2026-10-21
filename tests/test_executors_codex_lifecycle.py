@@ -8,11 +8,12 @@ import unittest
 from unittest.mock import patch
 
 from render_bridge.executors import CodexConfig, CodexExecutor, ExecutionRequest, StdioSession
-from render_bridge.fake import fixture_png
+from render_bridge.fake import fixture_png, fixture_jpeg
 
 
 class CodexLifecycleTests(unittest.TestCase):
-    def run_fixture(self, image):
+    def run_fixture(self, image, requested_format=None, actual_format='png', recover=False):
+        original_bytes = (fixture_jpeg if actual_format == 'jpeg' else fixture_png)()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             script = root / 'mock.py'
@@ -35,6 +36,7 @@ for line in sys.stdin:
  elif stage==3:
   assert method=='turn/start' and p['threadId']=='thread-fixture'
   assert p['input'][0]['text']=='原始完整 prompt'
+  assert not {'quality','output_format','input_fidelity'} & p.keys()
   assert p['sandboxPolicy']['networkAccess'] is False
   assert p['sandboxPolicy']['writableRoots']==[str(pathlib.Path.cwd())]
   emit({'id':r['id'],'result':{'turn':{'id':'turn-fixture','status':'inProgress'}}})
@@ -48,8 +50,10 @@ for line in sys.stdin:
   emit({'method':'turn/completed','params':{'threadId':'thread-fixture','turn':{'id':'turn-fixture','status':'completed','items':[item]}}})
  else: raise AssertionError('duplicate operation')
  stage+=1
-'''.replace('if IMAGE:', 'if ' + repr(image) + ':').replace('base64.b64decode(PNG)', 'base64.b64decode(' + repr(base64.b64encode(fixture_png()).decode()) + ')'), encoding='utf-8')
-            request = ExecutionRequest('task', 'attempt', '原始完整 prompt')
+'''.replace('if IMAGE:', 'if ' + repr(image) + ':').replace('base64.b64decode(PNG)', 'base64.b64decode(' + repr(base64.b64encode(original_bytes).decode()) + ')'), encoding='utf-8')
+            parameters = {} if requested_format is None else {'image_options': {
+                'schema_version': '1', 'quality': 'auto', 'output_format': requested_format}}
+            request = ExecutionRequest('task', 'attempt', '原始完整 prompt', parameters)
             config = CodexConfig(enabled=True, model='local-accepted-model',
                                  image_capability_verified=True, tool_policy_verified=True, timeout=3)
             executor = CodexExecutor(root / 'data', config)
@@ -61,20 +65,43 @@ for line in sys.stdin:
                 result = executor.execute(request)
                 self.assertEqual(launched.call_count, 1)
                 if image:
-                    self.assertEqual(result.status, 'ready')
-                    self.assertEqual(result.artifact.path.read_bytes(), fixture_png())
+                    mismatch = requested_format is not None and requested_format != actual_format
+                    self.assertEqual(result.status, 'needs_attention' if mismatch else 'ready')
+                    self.assertEqual(result.code, 'output_format_mismatch' if mismatch else 'artifact_ready')
+                    self.assertEqual(result.artifact.path.read_bytes(), original_bytes)
                     self.assertEqual(result.details['turn_id'], 'turn-fixture')
                 else:
                     self.assertEqual(result.status, 'needs_attention')
                     self.assertEqual(result.code, 'codex_single_image_event_required')
-                replay = executor.execute(request)
+                if recover:
+                    (root / 'data/task/attempt/artifact.json').unlink()
+                with patch('render_bridge.executors.codex.probe_codex', side_effect=AssertionError('reprobe')):
+                    replay = executor.execute(request)
                 self.assertEqual(replay.status, result.status)
+                self.assertEqual(replay.code, result.code)
+                if image:
+                    self.assertEqual(replay.artifact.path.read_bytes(), original_bytes)
                 self.assertEqual(launched.call_count, 1)
                 folder = root / 'data/task/attempt'
                 self.assertEqual(json.loads((folder / 'codex-turn.json').read_text())['thread_id'], 'thread-fixture')
 
     def test_full_image_lifecycle_and_replay(self):
         self.run_fixture(True)
+
+    def test_typed_png_and_jpeg_original_lifecycles(self):
+        for fmt in ('png', 'jpeg'):
+            with self.subTest(fmt=fmt):
+                self.run_fixture(True, requested_format=fmt, actual_format=fmt)
+
+    def test_completed_mismatch_retains_original_without_second_turn(self):
+        self.run_fixture(True, requested_format='jpeg', actual_format='png')
+
+    def test_completed_original_recovers_missing_manifest_without_execution(self):
+        self.run_fixture(True, requested_format='jpeg', actual_format='jpeg', recover=True)
+        self.run_fixture(True, requested_format='jpeg', actual_format='png', recover=True)
+
+    def test_typed_refusal_is_replayed_without_fresh_turn(self):
+        self.run_fixture(False, requested_format='jpeg')
 
     def test_full_text_only_lifecycle_is_not_image_success(self):
         self.run_fixture(False)

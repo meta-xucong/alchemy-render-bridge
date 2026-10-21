@@ -2,6 +2,7 @@
 import hashlib
 import json
 from pathlib import Path
+from render_bridge.image_options import validate_image_request
 from .base import AttemptFiles, ExecutionRequest, ExecutionResult, MAX_ARTIFACT_BYTES
 
 
@@ -10,8 +11,7 @@ class MidjourneyManualExecutor:
         self.root = Path(root)
 
     def execute(self, request: ExecutionRequest) -> ExecutionResult:
-        if request.references:
-            return ExecutionResult('needs_attention', 'manual_reference_flow_not_validated')
+        validate_image_request(request.parameters, request.references, 'midjourney-manual')
         files = AttemptFiles(self.root, request, 'midjourney-manual')
         cached = files.cached()
         if cached:
@@ -39,8 +39,7 @@ class MidjourneyManualExecutor:
         This function cannot prove a picture came from Midjourney or distinguish
         a composite grid automatically; the caller must explicitly confirm it.
         """
-        if request.references:
-            return ExecutionResult('needs_attention', 'manual_reference_flow_not_validated')
+        validate_image_request(request.parameters, request.references, 'midjourney-manual')
         if confirmed_request_sha256 != request.digest or confirmed_single_original is not True:
             raise ValueError('Explicit matching task and single-original confirmation required')
         files = AttemptFiles(self.root, request, 'midjourney-manual')

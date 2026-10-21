@@ -10,9 +10,18 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from .domain import BridgeStore, SourceScope
+from .image_options import validate_image_request
 
 
 def fixture_png(width: int = 32, height: int = 32) -> bytes:
+    return _fixture_image(width, height, 'PNG')
+
+
+def fixture_jpeg(width: int = 32, height: int = 32) -> bytes:
+    return _fixture_image(width, height, 'JPEG')
+
+
+def _fixture_image(width: int, height: int, output_format: str) -> bytes:
     """Return a visible synthetic fixture; no model or external service is used."""
     if type(width) is not int or type(height) is not int:
         raise ValueError("fixture dimensions must be integers")
@@ -23,7 +32,7 @@ def fixture_png(width: int = 32, height: int = 32) -> bytes:
     draw.line((0, 0, width - 1, height - 1), fill=(255, 190, 40), width=1)
     draw.line((0, height - 1, width - 1, 0), fill=(255, 190, 40), width=1)
     out = io.BytesIO()
-    image.save(out, format="PNG")
+    image.save(out, format=output_format)
     return out.getvalue()
 
 
@@ -54,7 +63,10 @@ def run_fake_once(
         os.fsync(handle.fileno())
     task = store.get_task(scope, task_id)
     params = task["request"]["parameters"]
-    content = fixture_png(params.get("width", 32), params.get("height", 32))
+    options = validate_image_request(params, task['request']['references'], 'fake-image')
+    output_format = options['output_format'] if options else 'png'
+    render = fixture_jpeg if output_format == 'jpeg' else fixture_png
+    content = render(params.get("width", 32), params.get("height", 32))
     upload = store.create_upload(
         scope,
         task_id,
@@ -64,7 +76,7 @@ def run_fake_once(
             "slot_id": "primary",
             "original_sha256": hashlib.sha256(content).hexdigest(),
             "size": len(content),
-            "mime_type": "image/png",
+            "mime_type": "image/" + output_format,
         },
     )
     store.put_upload_content(scope, upload["upload_id"], claim["claim_id"], content)

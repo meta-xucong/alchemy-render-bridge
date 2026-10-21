@@ -12,6 +12,8 @@ from typing import Literal
 
 from PIL import Image
 
+from render_bridge.image_options import requested_output_mime
+
 _KEY = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$')
 MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
 MAX_ARTIFACT_PIXELS = 40_000_000
@@ -116,6 +118,13 @@ class AttemptFiles:
         artifact = inspect_image(content_path.read_bytes(), provenance=data['provenance'], path=content_path)
         if artifact.sha256 != data['sha256'] or data['request_sha256'] != self.digest:
             raise ValueError('Cached artifact does not match attempt')
+        return self._artifact_result(artifact)
+
+    def _artifact_result(self, artifact: Artifact) -> ExecutionResult:
+        expected = requested_output_mime(self.request.parameters)
+        if expected and artifact.mime_type != expected:
+            return ExecutionResult('needs_attention', 'output_format_mismatch', artifact,
+                {'expected_mime_type': expected, 'actual_mime_type': artifact.mime_type})
         return ExecutionResult('ready', 'artifact_ready', artifact)
 
     def save(self, content: bytes, provenance: str) -> ExecutionResult:
@@ -138,4 +147,4 @@ class AttemptFiles:
             self.write_exclusive(self.path / 'artifact.json', json.dumps(record).encode())
         except FileExistsError:
             return self.cached()
-        return ExecutionResult('ready', 'artifact_ready', artifact)
+        return self._artifact_result(artifact)

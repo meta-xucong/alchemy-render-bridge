@@ -11,6 +11,7 @@ from .client import NodeHTTPError
 from .journal import AgentJournal, InstanceLock
 from render_bridge.executors.base import ExecutionRequest, inspect_image
 from render_bridge.profiles import get_profile
+from render_bridge.image_options import validate_image_request, requested_output_mime
 from .registry import ExecutorRegistry
 
 _KEY = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$')
@@ -46,17 +47,30 @@ class NodeAgent:
             return {'outcome': 'already_committed', 'task_id': task_id, 'receipt_id': record['receipt_id']}
         if task['state'] in ('canceled', 'failed', 'expired'):
             return {'outcome': 'not_executable', 'task_id': task_id}
+        profile_id = task['request']['execution_profile_id']
+        validate_image_request(task['request']['parameters'], task['request']['references'], profile_id)
         if record and record['state'] == 'artifact_ready':
             return self._upload(record)
-        if record and record['state'] in ('start_requested', 'execution_unknown'):
-            self._unknown(record)
-            return {'outcome': 'execution_unknown', 'task_id': task_id}
-        profile_id = task['request']['execution_profile_id']
         profile = get_profile(profile_id)
         # Legacy explicit injection is limited to the configured legacy profile.
         executor = executor if executor is not None and profile_id == self.profile else self.registry.get(profile_id)
         if executor is None:
             return {'outcome': 'needs_attention', 'code': 'profile_not_enabled', 'task_id': task_id}
+        if record and record['state'] in ('start_requested', 'execution_unknown'):
+            # Recovery uses completed evidence only, never execute/preflight.
+            if hasattr(executor, 'recover_completed') and record.get('request'):
+                try:
+                    recovered = executor.recover_completed(ExecutionRequest(**record['request']))
+                    if recovered is not None:
+                        if recovered.status == 'ready' and recovered.artifact is not None:
+                            self._save_artifact(record, recovered.artifact, profile)
+                            return self._upload(record)
+                        self._unknown(record)
+                        return {'outcome': recovered.status, 'code': recovered.code, 'task_id': task_id}
+                except Exception:
+                    pass  # Incomplete evidence must not authorize another turn.
+            self._unknown(record)
+            return {'outcome': 'execution_unknown', 'task_id': task_id}
         if record and record['state'] == 'manual_prepared' and task['state'] == 'awaiting_user':
             record['state'] = 'awaiting_user'
             self.journal.save(record)
@@ -146,6 +160,9 @@ class NodeAgent:
         if (checked.mime_type != artifact.mime_type or checked.width * checked.height > profile.max_pixels
                 or max(checked.width, checked.height) > profile.max_dimension):
             raise ValueError('Executor artifact does not match profile limits')
+        expected_mime = requested_output_mime(record['request']['parameters'])
+        if expected_mime and checked.mime_type != expected_mime:
+            raise ValueError('Executor original does not match requested output format')
         self._save_bytes(saved, content)
         record.update(state='artifact_ready', artifact=str(saved.relative_to(self.journal.root)),
                       sha256=checked.sha256, size=checked.size, mime_type=checked.mime_type)
@@ -210,6 +227,10 @@ class NodeAgent:
         content = path.read_bytes()
         if hashlib.sha256(content).hexdigest() != record['sha256'] or len(content) != record['size']:
             raise ValueError('Saved artifact changed; cannot upload')
+        expected_mime = requested_output_mime(record['request']['parameters'])
+        checked = inspect_image(content, provenance='agent_saved_original', path=path)
+        if expected_mime and checked.mime_type != expected_mime:
+            return {'outcome': 'needs_attention', 'code': 'output_format_mismatch', 'task_id': record['task_id']}
         payload = {'attempt_id': record['attempt_id'], 'slot_id': 'primary',
                    'original_sha256': record['sha256'], 'size': record['size'], 'mime_type': record['mime_type']}
         try:
@@ -234,6 +255,8 @@ class NodeAgent:
             self.journal.save(record)
             return {'outcome': 'artifact_committed', 'task_id': record['task_id'], 'receipt_id': receipt['receipt_id']}
         except NodeHTTPError as exc:
+            if exc.code == 'output_format_mismatch':
+                return {'outcome': 'needs_attention', 'code': exc.code, 'task_id': record['task_id']}
             if exc.code in ('task_not_executable', 'task_not_accepting', 'task_expired', 'task_canceled', 'task_cancelled'):
                 return {'outcome': 'not_executable', 'code': exc.code, 'task_id': record['task_id']}
             return {'outcome': 'upload_pending', 'code': exc.code, 'task_id': record['task_id']}

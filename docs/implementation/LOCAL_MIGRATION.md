@@ -50,6 +50,6 @@ python -m render_bridge.doctor --bridge-config config/bridge.example.json --agen
 
 默认服务和 Agent 只启用 `fake-image`。`codex-image` 与 `midjourney-manual` 的配置路由、执行前检查、人工等待及原图导入接线已经实现，必须在服务和 Agent 配置中分别显式启用。启用 Codex 还需要本地账号/model/工具策略验收标记；当前仅通过模拟子进程测试，不代表真实生图已验收。非 fake 请求必须显式提供目标宽高，回传原图严格核验尺寸，不自动缩放。
 
-SQLite 是单机开发后端，不等于设计中的 PostgreSQL 生产持久层。Alchemy 独立接入模块的预览和 fake 原生导入已在对应仓库实现，不属于本仓库代码。真实 profile 的原生接入仍缺少 quality/output_format/input_fidelity 的结构化参数映射与验收，不能只靠登录完成。PostgreSQL迁移、生产节点管理/配对及双VPS部署仍未完成。不要直接将本开发配置暴露公网，也不要宣称所有产品功能已完成。
+SQLite 是单机开发后端，不等于设计中的 PostgreSQL 生产持久层。Alchemy 独立接入模块的预览和 fake 原生导入已在对应仓库实现，不属于本仓库代码。Bridge 已实现有界的嵌套 image_options：quality 仅接受 auto（未指定档位），output_format 仅校验原图 PNG/JPEG，input_fidelity 必须省略；Codex 0.163.0 没有这些原生结构化控制。Alchemy 独立适配与本机真实生图仍须分别验收，不能只靠登录或把文本指令当成原生控制。PostgreSQL迁移、生产节点管理/配对及双VPS部署仍未完成。不要直接将本开发配置暴露公网，也不要宣称所有产品功能已完成。
 
 验收聚焦正常主流程、重复投递不重复生成和已生成文件不丢失。非阻塞的复杂故障矩阵后置，不因尚未登录真实工具停下其他可实施开发。

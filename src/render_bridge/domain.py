@@ -28,6 +28,7 @@ import warnings
 from PIL import Image, UnidentifiedImageError
 
 from .profiles import get_profile, enabled_profile_ids, MAX_PROFILE_OUTPUT_BYTES
+from .image_options import validate_image_request, requested_output_mime
 
 MAX_INPUT_BYTES = 1_048_576
 MAX_OUTPUT_BYTES = 1_048_576
@@ -282,6 +283,7 @@ class BridgeStore:
                 "validation": "isolated_fake_only" if profile.id == "fake-image" else "local_validation_pending",
                 "production_verified": False,
                 "parameter_contract": profile.parameter_contract(),
+                "image_options_contract": profile.image_options_contract(),
                 "limits": {"max_output_bytes": profile.max_output_bytes,
                            "max_image_pixels": profile.max_pixels,
                            "max_dimension": profile.max_dimension},
@@ -483,7 +485,11 @@ class BridgeStore:
         _origin(payload["origin_key"])
         _text(payload["binding_id"], 256)
         _text(payload["prompt"], 16000, multiline=True)
-        _object(payload["parameters"], (), ("width", "height", "seed"))
+        _object(payload["parameters"], (), ("width", "height", "seed", "image_options"))
+        try:
+            validate_image_request(payload["parameters"], payload["references"], profile.id)
+        except ValueError:
+            _fail("unsupported_image_options_or_references", 422)
         if profile.id != "fake-image" and not {"width", "height"} <= payload["parameters"].keys():
             _fail("explicit_dimensions_required", 422)
         width = _integer(payload["parameters"].get("width", 32), 1, profile.max_dimension)
@@ -762,6 +768,10 @@ class BridgeStore:
             dimensions = self._verify_media(content, payload, profile=self._profile(task))
             request = json.loads(task["payload"])
             parameters = request["parameters"]
+            expected_mime = requested_output_mime(parameters)
+            # _verify_media has already matched the MIME against the decoded format.
+            if expected_mime and payload["mime_type"] != expected_mime:
+                _fail("output_format_mismatch", 422)
             if dimensions != {"width": parameters.get("width", 32),
                               "height": parameters.get("height", 32)}:
                 _fail("output_dimensions_mismatch", 422)
