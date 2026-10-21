@@ -8,7 +8,7 @@ the dummy config string is intentionally invalid and has no authorization power.
 
 ## Reproduce in a disposable Python 3.12 environment
 
-1. `python -m pip install --require-hashes -r requirements-upstream.txt`
+1. `python -m pip install --require-hashes -r requirements-upstream.txt -r requirements-sidecar.txt`
 2. `python probe_upstream.py`
 3. `python -m pip download --no-deps --dest .cache hatchet-sdk==1.42.1`
 4. `python build_candidate.py .cache/hatchet_sdk-1.42.1-py3-none-any.whl`
@@ -88,3 +88,66 @@ control also passed. The same commit's Bridge contract matrix passed in
 
 This supersedes the earlier pending Windows lifecycle status, but not the excluded
 real-engine, console, TLS, authorization, drain, or complete Phase 1 gates above.
+
+
+## Configured Bridge sidecar
+
+Use a separate Python 3.12 SDK virtual environment. Do not install the root
+Bridge distribution or its runtime requirements here: Bridge pins Pydantic
+2.13.4 while this SDK lock uses 2.14.1. The sidecar reads the Bridge source tree
+through PYTHONPATH instead, so `pip check` remains meaningful.
+
+From this experiment directory, with that SDK environment's Python:
+
+```sh
+python -m pip install --require-hashes -r requirements-upstream.txt -r requirements-sidecar.txt
+python -m pip check
+python -m unittest discover -s tests -p test_sidecar_runtime.py -v
+```
+
+`requirements-sidecar.txt` adds httpx 0.28.1, Pillow 12.3.0 and their locked
+transitive requirements, copied from the root runtime lock. Shared idna 3.20
+and typing-extensions 4.16.0 match the SDK lock. It adds no FastAPI and does not
+change the SDK's Pydantic dependencies. Never install the root package with
+`--no-deps` in this interpreter: that leaves conflicting package metadata.
+
+Linux keeps the official SDK 1.42.1. On Windows, also perform candidate build,
+verification and installation steps 2–7 above, obtaining 1.42.1+bridgewin1.
+Keep PYTHONUTF8=1 and PYTHONIOENCODING=utf-8 on Windows as described above.
+The Windows patched wheel remains required; the dependency supplement does
+not replace that platform fix.
+
+Before launching, change to the Bridge repository root and expose its source:
+
+Linux shell:
+
+```sh
+export PYTHONPATH="$PWD/src"
+python -m render_bridge.agent.hatchet_sidecar --help
+```
+
+Windows PowerShell:
+
+```powershell
+$env:PYTHONPATH = (Join-Path (Get-Location) 'src')
+$env:PYTHONUTF8 = '1'
+$env:PYTHONIOENCODING = 'utf-8'
+python -m render_bridge.agent.hatchet_sidecar --help
+```
+
+Use this same interpreter, source checkout and environment for the configured
+`dispatcher` / `worker` commands in [the Agent guide](../../docs/implementation/CONFIGURED_AGENT.md).
+Supply existing credentials only when starting those processes. The smoke tests
+above only import modules and request help; they need no credentials, engine,
+CLI login, provider or network. Their absence-of-FastAPI check deliberately fails
+if run in the root Bridge environment, preventing that environment from masking
+a missing sidecar dependency. The platform lifecycle workflow installs both locks
+and runs these tests on Linux and Windows; a local Linux pass does not itself
+establish a new Windows or remote-engine acceptance result.
+
+Local verification on 2026-10-21 (Linux Python 3.12.14): a fresh SDK-only virtual
+environment installed both hash-locked requirement files, retaining official
+hatchet-sdk 1.42.1 / Pydantic 2.14.1. `pip check` passed; all three sidecar smoke
+tests passed, with FastAPI and the root Bridge distribution absent. The SDK
+emitted existing Tenacity deprecation warnings. New Windows CI and remote
+engine execution are not claimed by this local result.

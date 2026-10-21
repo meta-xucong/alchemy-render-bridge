@@ -11,7 +11,7 @@
 - 独立 dispatcher 将 outbox 中 task_id 交给 Hatchet；HTTP 源 API 和 node API 本身都不执行任务。没有 HTTP 拉取执行队列。
 - Node token 固定绑定 source/workspace/node/executor_instance。任务请求不能更换执行身份。
 - 通用 node 路径提供查询、claim、start、unknown、已绑定参考图下载、输出上传和提交。
-- `fake-image` 是当前允许提交的 profile。Codex/Midjourney 适配器的离线开发不等于其真实 profile 已放行。
+- `fake-image` 是默认允许提交的 profile；已实现显式配置的 Codex/Midjourney 开发路由，见后文。配置开放不等于真实工具验收通过。
 
 ## 启动步骤与进程边界
 
@@ -41,7 +41,7 @@
 
 ## 范围与后续迁移
 
-这是可配置的单机开发后端，SQLite 并未替代设计中的 PostgreSQL 生产路线。仍未完成 PostgreSQL 迁移、持续节点管理/配对、完整故障恢复、真实 Codex/Midjourney 生成、Alchemy 接入和双 VPS 部署验收。固定内存 token 映射是最小受信环境配置，不是完整凭据管理服务。
+这是可配置的单机开发后端，SQLite 并未替代设计中的 PostgreSQL 生产路线。已实现单节点持久 active/revoked 管理、就绪报告、停新任务和有界事件记录；Alchemy 独立接入、原生登记与审核以及 V3 试用入口在另一仓库已有实现。PostgreSQL 迁移、自助配对/多节点管理、完整生产故障矩阵及双 VPS 部署验收未完成；真实 Codex/Midjourney 仍未验收。固定 token 绑定是最小受信环境配置，不是完整凭据管理服务。范围分类见 [最终开发范围](FINAL_DEVELOPMENT_SCOPE.md)。
 
 本次验收聚焦动态 fake 任务主流程及必要身份/重放行为。真实工具登录及图片能力留到本地迁移后，不作为继续编写其他模块的前置条件。
 

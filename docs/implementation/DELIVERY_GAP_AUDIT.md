@@ -4,7 +4,11 @@ Audit baseline: Bridge 1159150; Alchemy 60b2764e. Earlier stage tests establish
 only their stated slices, not full blueprint delivery. No real account, provider,
 Discord channel, deployment or Windows execution is verified by this audit.
 
-## Delivery gaps in priority order
+## Historical delivery gaps in priority order
+
+The list below records findings at the audit baseline above, not current missing
+features. All six slices now have implementations; final integrated acceptance
+is tracked in [Final development scope](FINAL_DEVELOPMENT_SCOPE.md).
 
 1. Static capabilities do not establish live node availability. Add scoped node
    heartbeat, freshness, profile readiness, and truthful unknown/offline states.
@@ -56,8 +60,9 @@ separate local acceptance; all login/generation verified fields remain false.
 - Structured Codex image controls and a built-in tool allowlist are absent in the
   pinned upstream schema, not capabilities this adapter can invent. ComfyUI/video
   remain explicitly deferred.
-- Bounded retention and Discord work are separate practical delivery slices and
-  must be verified before being reported complete.
+- Bounded retention and Discord notification slices are now implemented and have
+  focused offline tests (test_retention.py, test_agent_retention.py,
+  test_discord_notice.py). Real Discord delivery remains unverified.
 
 ## Acceptance / stopping condition
 
@@ -67,7 +72,7 @@ and recovery, unchanged once-only execution and default fake flow. Integrate the
 administrator view against those contracts. Stop after scoped tests/review, list
 real-tool/deployment gaps honestly; do not chase speculative edge hardening.
 
-## Verification of this readiness slice
+## Historical verification of this readiness slice
 
 149 offline unittest cases passed (141 baseline plus 8 new); focused 8 also passed
 independent review. Compileall, unchanged contract export and git diff --check

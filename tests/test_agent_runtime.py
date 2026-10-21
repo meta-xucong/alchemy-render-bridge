@@ -69,6 +69,23 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(content).hexdigest(), receipt['original_sha256'])
         self.assertEqual(mime, 'image/png')
 
+    def test_long_render_uploads_after_execution_claim_expires(self):
+        task_id = self.create()
+        execute = self.fake.execute
+        def finish_after_lease(request):
+            self.now += 3601
+            return execute(request)
+        self.fake.execute = finish_after_lease
+        self.assertEqual(self.agent.execute_task(task_id, self.fake)['outcome'], 'artifact_committed')
+        self.assertEqual(self.fake.calls, 1)
+        record = self.agent.journal.get(task_id)
+        with self.store._connection() as con:
+            claim = con.execute('SELECT mode, epoch FROM claims WHERE task_id=?', (task_id,)).fetchone()
+        self.assertEqual((claim['mode'], claim['epoch']), ('upload_only', 2))
+        self.assertEqual(self.client.task(task_id)['attempt_id'], record['attempt_id'])
+        self.assertEqual(self.agent.execute_task(task_id, self.fake)['outcome'], 'already_committed')
+        self.assertEqual(self.fake.calls, 1)
+
     def test_upload_failure_replays_only_upload_after_claim_expiry(self):
         task_id = self.create()
         put = self.client.put_upload

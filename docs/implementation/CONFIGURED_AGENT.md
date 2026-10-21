@@ -6,7 +6,7 @@
 
 - Bridge 服务独立解释器运行 FastAPI，默认 `http://127.0.0.1:8787`。
 - Agent 使用 `httpx`、Pillow 和 Python 标准库。凭据仅从已有环境变量读取，不生成授权，不保存在 journal，不作为命令行参数。
-- SDK 侧车使用独立解释器，沿用已有固定依赖锁：Linux 官方 `hatchet-sdk==1.42.1`，Windows 已验证候选 `1.42.1+bridgewin1`。不要升级 SDK 或把 FastAPI 依赖混进 SDK 环境；在该环境安装 Bridge 包时使用 `--no-deps`，并确保 `httpx` 和 Pillow 可用。固定候选安装流程见 [实验目录](../../experiments/hatchet-windows-compat/README.md)，既有真实引擎验证见 [验证记录](WSL_NATIVE_ENGINE_VALIDATION.md)。
+- SDK 侧车使用独立解释器，沿用已有固定依赖锁：Linux 官方 `hatchet-sdk==1.42.1`，Windows 已验证候选 `1.42.1+bridgewin1`。不要升级 SDK 或把 FastAPI 依赖混进 SDK 环境；不要在 SDK 环境安装主 Bridge distribution（即使使用 `--no-deps`，其 Pydantic 元数据仍与 SDK 冲突）。按 [Configured Bridge sidecar 安装配方](../../experiments/hatchet-windows-compat/README.md#configured-bridge-sidecar) 安装 `requirements-sidecar.txt` 的锁定 `httpx`/Pillow 及兼容依赖；仅安装 SDK 锁不包含这些运行依赖。通过该配方设置源码 `src` 的 `PYTHONPATH` 来运行侧车，主 Bridge distribution 仍只安装在独立服务端环境。固定候选安装流程见 [实验目录](../../experiments/hatchet-windows-compat/README.md)，既有真实引擎验证见 [验证记录](WSL_NATIVE_ENGINE_VALIDATION.md)。
 - 需要操作者预先提供 `HATCHET_CLIENT_TOKEN`、`HATCHET_CLIENT_HOST_PORT`、`HATCHET_CLIENT_SERVER_URL`。默认 `HATCHET_CLIENT_TLS_STRATEGY=tls`；只有回环开发环境可显式设为 `none`。程序不跳过证书验证。
 - `BRIDGE_URL` 可覆盖默认地址。远程 Bridge 必须 HTTPS；仅回环允许 HTTP。`--state-dir` 指定本机持久目录，不能放到网络共享目录；各次启动必须复用同一节点目录。
 
@@ -40,7 +40,7 @@ python -m render_bridge.agent --state-dir ./local-agent-state run-task TASK_ID
 - 在发 start 请求前持久化 `start_requested`。start 回包不确定、执行异常或已有未知执行均转为 `execution_unknown`，后续投递不会重新生成；未知任务阻止本地其他执行占用物理槽。
 - 参考图按冻结顺序经授权 HTTP 下载，校验大小和 SHA-256 后交给执行器。Fake 记录其顺序与 hash，但合成图不声称受参考图视觉条件控制。
 - 产物检查后保存在本地并记录 `artifact_ready`，再上传。上传失败保留同一 attempt 和原始字节；claim 过期则申请 `upload_only`，只重传、不重新执行。提交成功但回包丢失时，通过服务端 receipt 恢复。
-- 已完成任务再次投递直接返回原 receipt。保留状态和产物目录；本版没有自动清理或 unknown 强制重置命令。不要删除 journal 来“解锁”。
+- 已完成任务再次投递直接返回原 receipt。保留状态和产物目录；本版没有自动清理调度或 unknown 强制重置命令；已有显式 maintain 清理命令，只处理已确认且符合保留条件的受管媒体，见 [最终开发范围](FINAL_DEVELOPMENT_SCOPE.md)。不要删除 journal 来“解锁”。
 
 这些是针对关键故障窗口的保守恢复，不代表所有磁盘/断电/网络故障均已验收。输出限制由共享 profile registry 决定：Fake 为 1 MiB / 单边 1024；Codex 与人工 MJ 为 16 MiB / 40 MP。输入参考图仍最多 1 MiB，顺序和 hash 不变。
 
@@ -60,7 +60,7 @@ python -m render_bridge.agent.hatchet_sidecar worker --state-dir ./local-agent-s
 ```
 
 - 默认配置不启用 Codex 或人工 MJ。加入 `codex-image` 后，还必须在本地完成真实能力验证并显式配置 `codex.enabled`、`model`、`image_capability_verified`、`tool_policy_verified`。Agent 在 server start 前只做版本/help preflight；不通过返回 needs_attention，不占物理执行槽。真正 thread/turn 生命周期仍受本地配置控制，本轮仅 mock 验证。
-- 加入 `midjourney-manual` 后，任务导出 prompt.txt/task.json，服务通过 manual-ready 建立同 attempt 的 awaiting_user。返回 request_sha256 与导出文件路径，Hatchet 回调即结束，人工等待不占自动物理槽。不发送 Discord 或调用 /imagine。人工参考图流程尚未验证，带参考图的人工任务返回 needs_attention。
+- 加入 `midjourney-manual` 后，任务导出 prompt.txt/task.json，服务通过 manual-ready 建立同 attempt 的 awaiting_user。返回 request_sha256 与导出文件路径，Hatchet 回调即结束，人工等待不占自动物理槽。此导出步骤不发送 Discord，也不调用 /imagine。已有独立、显式确认的 manual-notify 官方 Discord 普通消息功能，见 [Discord 任务通知](DISCORD_TASK_NOTICES.md)；消息不等于提交生成。人工 profile 不支持参考图，创建阶段即拒绝，不退化为纯文生图。
 - 每个真实 profile 请求必须显式给 width/height；原图需与冻结尺寸一致。用户自行在 Midjourney 生成，并明确选定一张原图，不是网格截图。使用导出时返回的 request_sha256：
 
 ```sh
