@@ -110,6 +110,8 @@ class AttemptFiles:
             return False
 
     def cached(self) -> ExecutionResult | None:
+        if (self.path / 'retired.json').exists():
+            return ExecutionResult('needs_attention', 'artifact_expired')
         manifest = self.path / 'artifact.json'
         if not manifest.exists():
             return None
@@ -132,6 +134,8 @@ class AttemptFiles:
         artifact = inspect_image(content, provenance=provenance, path=path)
         cached = self.cached()
         if cached:
+            if cached.artifact is None:
+                return cached
             if cached.artifact.sha256 != artifact.sha256:
                 raise ValueError('Attempt already contains a different original')
             return cached

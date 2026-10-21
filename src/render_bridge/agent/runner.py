@@ -21,6 +21,9 @@ class NodeAgent:
     def __init__(self, client, state_dir: Path, *, profile='fake-image', registry=None):
         self.client = client
         self.journal = AgentJournal(state_dir)
+        self._active = False
+        self._worker_running = False
+        self._current_attempt = None
         self.profile = profile
         self.registry = registry or ExecutorRegistry.from_config(self.journal.root / 'executors')
 
@@ -28,11 +31,45 @@ class NodeAgent:
         if not isinstance(task_id, str) or not _KEY.fullmatch(task_id):
             raise ValueError('Invalid task identifier')
         with InstanceLock(self.journal.root / 'agent.lock'):
-            return self._execute(task_id, executor)
+            self._active = True
+            self._current_attempt = None
+            try:
+                self.heartbeat()
+                result = self._execute(task_id, executor)
+                if result.get('outcome') in ('needs_attention', 'execution_unknown') and self._current_attempt and hasattr(self.client, 'attention'):
+                    from render_bridge.readiness import ATTENTION_MESSAGES
+                    code = result.get('code', 'execution_requires_reconciliation')
+                    if code not in ATTENTION_MESSAGES:
+                        code = 'execution_requires_reconciliation'
+                    try:
+                        self.client.attention(task_id, self._current_attempt, code)
+                        result['attention_reported'] = True
+                    except Exception:
+                        # Report failure is visible locally; never restart a renderer.
+                        result['attention_reported'] = False
+                return result
+            finally:
+                self._active = False
+                self.heartbeat()
+
+    def heartbeat(self):
+        """Best-effort bounded metadata only; no CLI, login, or generation probe."""
+        if not hasattr(self.client, 'heartbeat'):
+            return False
+        try:
+            profiles = sorted(self.registry.executors)
+            state = ('busy' if self._active or self.journal.occupied_by_other('')
+                     else 'available' if self._worker_running and any(p != 'codex-image' for p in profiles) else 'attention')
+            self.client.heartbeat(state, profiles)
+            return True
+        except Exception:
+            return False
+
 
     def _execute(self, task_id, executor):
         task = self.client.task(task_id)
         attempt_id = task['attempt_id']
+        self._current_attempt = attempt_id
         if not isinstance(attempt_id, str) or not _KEY.fullmatch(attempt_id):
             raise ValueError('Invalid attempt identifier')
         record = self.journal.get(task_id)
@@ -167,6 +204,30 @@ class NodeAgent:
         record.update(state='artifact_ready', artifact=str(saved.relative_to(self.journal.root)),
                       sha256=checked.sha256, size=checked.size, mime_type=checked.mime_type)
         self.journal.save(record)
+
+    def manual_notify(self, task_id, notifier, *, confirmed_request_sha256):
+        """Explicit ordinary task notice; never changes generation/attempt state."""
+        if not isinstance(task_id, str) or not _KEY.fullmatch(task_id):
+            raise ValueError('Invalid task identifier')
+        with InstanceLock(self.journal.root / 'agent.lock'):
+            task = self.client.task(task_id)
+            record = self.journal.get(task_id)
+            if not record or record['attempt_id'] != task['attempt_id']:
+                raise ValueError('Matching exported local attempt required')
+            if record.get('profile_id') != 'midjourney-manual':
+                raise ValueError('Task is not a manual profile')
+            if confirmed_request_sha256 != record['request_sha256']:
+                raise ValueError('Explicit matching task confirmation required')
+            if task.get('receipt_id') or task['state'] in ('canceled', 'failed', 'expired'):
+                return {'outcome': 'not_executable', 'task_id': task_id}
+            if record['state'] != 'awaiting_user' or task['state'] != 'awaiting_user':
+                raise ValueError('Task is not awaiting manual submission/import')
+            if self.registry.get('midjourney-manual') is None:
+                return {'outcome': 'needs_attention', 'code': 'profile_not_enabled', 'task_id': task_id}
+            request = ExecutionRequest(**record['request'])
+            if request.digest != confirmed_request_sha256:
+                raise ValueError('Saved request no longer matches its confirmation')
+            return {'task_id': task_id, **notifier.send(request, self.journal, record)}
 
     def manual_import(self, task_id, source, *, confirmed_request_sha256, confirmed_single_original):
         if not isinstance(task_id, str) or not _KEY.fullmatch(task_id):

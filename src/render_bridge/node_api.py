@@ -36,6 +36,16 @@ class ClaimIdentity(StrictRequest):
     claim_id: Key
 
 
+class HeartbeatRequest(StrictRequest):
+    state: Literal['available', 'busy', 'attention']
+    profiles: Annotated[list[Literal['fake-image', 'codex-image', 'midjourney-manual']], Field(max_length=3)]
+
+
+class AttentionRequest(StrictRequest):
+    attempt_id: Key
+    code: Annotated[StrictStr, Field(min_length=1, max_length=64)]
+
+
 class UploadMetadata(StrictRequest):
     attempt_id: Key
     slot_id: Literal['primary']
@@ -84,6 +94,18 @@ def install_node_routes(app, store: BridgeStore, node_tokens: Mapping[str, NodeS
     async def check(identity, task_id, claim_id):
         return await call_store(store.authorize_node_claim, identity.source_scope, task_id,
                                 claim_id, identity.node_id, identity.executor_instance)
+
+    @app.post(prefix + '/heartbeat')
+    async def heartbeat(request: Request, identity: NodeScope = Depends(node)):
+        data = await _json_request(request, HeartbeatRequest, 4096)
+        return await call_store(store.report_heartbeat, identity.source_scope, identity.node_id,
+                                identity.executor_instance, data['state'], data['profiles'])
+
+    @app.post(prefix + '/tasks/{task_id}/attention')
+    async def attention(task_id: str, request: Request, identity: NodeScope = Depends(node)):
+        data = await _json_request(request, AttentionRequest, 4096)
+        return await call_store(store.report_attention, identity.source_scope, task_id, data['attempt_id'],
+                                identity.node_id, identity.executor_instance, data['code'])
 
     @app.get(prefix + '/tasks/{task_id}')
     async def task(task_id: str, identity: NodeScope = Depends(node)):

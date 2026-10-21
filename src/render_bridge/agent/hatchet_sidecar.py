@@ -154,7 +154,9 @@ def main(argv=None):
             client = HttpNodeClient(args.url, token)
             registry = ExecutorRegistry.from_config(args.state_dir / 'executors', args.config)
             node = NodeAgent(client, args.state_dir, registry=registry)
-            make_worker(hatchet, node).start()
+            from .heartbeat import HeartbeatLoop
+            with HeartbeatLoop(node):
+                make_worker(hatchet, node).start()
     except KeyboardInterrupt:
         return 0
     except Exception as exc:

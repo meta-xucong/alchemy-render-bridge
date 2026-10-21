@@ -347,6 +347,15 @@ class CodexExecutor:
         if not path.is_file() or path.stat().st_size > MAX_ARTIFACT_BYTES:
             raise ValueError('Image event original is unavailable or too large')
         result = files.save(path.read_bytes(), 'codex_image_event_locally_unverified')
+        if result.artifact is not None:
+            registry = files.path / 'retention-files.json'
+            registered = json.dumps({'original': str(resolved.relative_to(files.path.resolve())),
+                                     'sha256': result.artifact.sha256}).encode()
+            try:
+                files.write_exclusive(registry, registered)
+            except FileExistsError:
+                if registry.read_bytes() != registered:
+                    raise ValueError('Generated original registration changed')
         return ExecutionResult(result.status, result.code, result.artifact,
                                {**result.details, 'thread_id': thread_id, 'turn_id': turn_id,
                                 'image_item_id': next(iter(candidates))})

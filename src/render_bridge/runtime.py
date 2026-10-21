@@ -2,6 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+from contextlib import asynccontextmanager
+import logging
+
+import anyio
 from dataclasses import dataclass
 import json
 import os
@@ -27,6 +32,7 @@ class RuntimeConfig:
     node_id: str
     executor_instance: str
     enabled_profiles: tuple[str, ...] = ("fake-image",)
+    accepting_new_tasks: bool = True
     host: str = '127.0.0.1'
     port: int = 8787
     source_token_env: str = 'BRIDGE_SOURCE_TOKEN'
@@ -34,6 +40,10 @@ class RuntimeConfig:
     dispatch_token_env: str = 'BRIDGE_DISPATCH_TOKEN'
     tls_certfile: str | None = None
     tls_keyfile: str | None = None
+    retention_enabled: bool = False
+    retention_seconds: int = 86400
+    maintenance_interval_seconds: int = 60
+    maintenance_batch_size: int = 100
 
     @classmethod
     def load(cls, path):
@@ -47,6 +57,15 @@ class RuntimeConfig:
 
     def validate(self):
         enabled_profile_ids(self.enabled_profiles)
+        if type(self.retention_enabled) is not bool:
+            raise ValueError('retention_enabled must be a boolean')
+        for value, low, high in ((self.retention_seconds, 1, 365 * 86400),
+                                 (self.maintenance_interval_seconds, 1, 86400),
+                                 (self.maintenance_batch_size, 1, 100)):
+            if type(value) is not int or not low <= value <= high:
+                raise ValueError('Invalid bounded maintenance configuration')
+        if type(self.accepting_new_tasks) is not bool:
+            raise ValueError("accepting_new_tasks must be boolean")
         for value in (self.source_id, self.workspace_id, self.node_id, self.executor_instance):
             if not isinstance(value, str) or not 1 <= len(value) <= 128 or any(ord(c) < 32 for c in value):
                 raise ValueError('Invalid configured identity')
@@ -74,11 +93,36 @@ class RuntimeConfig:
         self.validate()
         source, node, dispatcher = self.credentials(environ)
         store = BridgeStore(self.data_dir / 'bridge.sqlite', self.data_dir / 'artifacts',
-                            enabled_profiles=self.enabled_profiles)
+                            enabled_profiles=self.enabled_profiles, accepting_new_tasks=self.accepting_new_tasks)
         scope = SourceScope(self.source_id, self.workspace_id)
         app = create_runtime_app(store=store, source_tokens={source: scope},
             node_tokens={node: NodeScope(self.source_id, self.workspace_id, self.node_id, self.executor_instance)},
             dispatch_tokens={dispatcher: scope})
+        if self.retention_enabled:
+            previous_lifespan = app.router.lifespan_context
+
+            async def maintain():
+                while True:
+                    try:
+                        await anyio.to_thread.run_sync(lambda: store.maintain_retention(
+                            scope, retention_seconds=self.retention_seconds,
+                            batch_size=self.maintenance_batch_size))
+                    except Exception:
+                        # No payload, credential, path, or exception text in logs.
+                        logging.getLogger(__name__).warning('Bridge retention pass failed; will retry')
+                    await asyncio.sleep(self.maintenance_interval_seconds)
+
+            @asynccontextmanager
+            async def lifespan(application):
+                async with previous_lifespan(application):
+                    async with anyio.create_task_group() as group:
+                        group.start_soon(maintain)
+                        try:
+                            yield
+                        finally:
+                            group.cancel_scope.cancel()
+
+            app.router.lifespan_context = lifespan
         return app
 
 

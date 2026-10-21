@@ -89,3 +89,43 @@ manual pending capacity. Cancellation also blocks commit. The receipt records
 the frozen request's actual profile, including after a configuration change.
 The node may export an offline task package and explicitly import a confirmed
 single original; this is not automatic Discord or Midjourney execution.
+
+## Opt-in bounded retention
+
+`retention_enabled` defaults to false. To enable private Bridge media reclamation,
+set it true together with `retention_seconds` (default 86400, range 1–31536000),
+`maintenance_interval_seconds` (default 60, range 1–86400), and
+`maintenance_batch_size` (default 100, range 1–100) in the runtime JSON config.
+The server lifespan runs maintenance in its configured workspace and retries failed
+passes. The grace period starts on the first maintenance observation of eligibility,
+not task creation; existing records also receive the full grace period.
+
+Only source-acknowledged outputs (accepted or rejected), and input references of
+acknowledged or provably unstarted terminal tasks, are released after that delay.
+Unpinned input sessions then follow their existing one-hour TTL. Queued/active/unknown
+references and unacknowledged output originals remain protected. Manual cancellation
+or expiry after a start/manual grant does not prove stopped execution and is retained.
+The finite byte quota still rejects new data if protected work fills storage.
+
+After reclamation the artifact content endpoint returns HTTP 410 `artifact_expired`.
+Receipt manifests, ACKs, task identities and idempotency keys remain queryable and
+replayable. This reclaims media, not indefinite metadata; no PostgreSQL/storage
+archival claim. A committed tombstone/deletion queue makes interrupted deletion
+retryable. Arbitrary orphan files are not removed.
+
+Local Agent cleanup is deliberately explicit (no second scheduler):
+
+```
+python -m render_bridge.agent --state-dir /private/agent-state maintain --retention-seconds 86400 --batch-size 20
+```
+
+Uses existing `BRIDGE_NODE_TOKEN` and `--url`; each pass checks at most the requested
+number of completed journal entries (1–100). Run again after the grace period, or
+invoke from the operator's existing maintenance schedule. Every destructive pass
+rechecks matching remote task/attempt/receipt and source ACK. Offline, mismatched,
+unknown or unacknowledged records are skipped. Only registered managed media copies
+are removed, never user-import source files, arbitrary files, or directories.
+Completed journals and executor start/binding/manifest evidence remain; replays do
+not render again and retired executor caches report `artifact_expired`. Codex's
+validated generated original is registered for cleanup; unregistered legacy copies
+are conservatively retained. No actual user data is cleaned by the tests.
