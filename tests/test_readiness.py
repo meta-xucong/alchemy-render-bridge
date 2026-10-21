@@ -63,6 +63,26 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(self.agent.execute_task(task)['outcome'], 'already_committed')
         self.assertEqual(self.store.capabilities(self.scope)['node_status']['state'], 'attention')
 
+    def test_manual_resume_clears_prestart_attention(self):
+        from render_bridge.fake import fixture_png
+        task = self.create('midjourney-manual')
+        attempt = self.client.task(task)['attempt_id']
+        executor = self.registry.executors.pop('midjourney-manual')
+        self.assertEqual(self.agent.execute_task(task)['code'], 'profile_not_enabled')
+        self.registry.executors['midjourney-manual'] = executor
+        exported = self.agent.execute_task(task)
+        self.assertEqual(exported['outcome'], 'awaiting_user')
+        view = self.client.task(task)
+        self.assertEqual(view['attempt_id'], attempt)
+        self.assertEqual(view['action_required'], 'import_original')
+        self.assertEqual(view['action_required_detail']['code'], 'import_original')
+        source = self.root / 'original.png'
+        source.write_bytes(fixture_png(32, 24))
+        result = self.agent.manual_import(task, source,
+            confirmed_request_sha256=exported['request_sha256'], confirmed_single_original=True)
+        self.assertEqual(result['outcome'], 'artifact_committed')
+        self.assertEqual(self.client.task(task)['attempt_id'], attempt)
+
     def test_poststart_attention_never_reexecutes(self):
         task = self.create('fake-image')
         executor = self.registry.executors['fake-image']

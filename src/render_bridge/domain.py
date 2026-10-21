@@ -879,6 +879,8 @@ class BridgeStore(OperationsMixin):
                                                self.clock(), attempt["id"]))
                 con.execute("UPDATE tasks SET state='awaiting_user' WHERE id=?", (task_id,))
                 self._audit(con, scope, "manual_ready", task_id=task_id, attempt_id=attempt["id"])
+            # Successful manual preparation supersedes any pre-start prerequisite.
+            con.execute("DELETE FROM task_attention WHERE task_id=?", (task_id,))
             return {"attempt_id": attempt["id"], "state": "awaiting_user", "may_execute": False}
 
     def mark_execution_unknown(self, scope, task_id, claim_id):
