@@ -26,7 +26,7 @@ from pydantic import BaseModel, ValidationError
 from starlette.exceptions import HTTPException
 
 from .domain import MAX_INPUT_BYTES, BridgeStore, DomainError, SourceScope
-from .schemas import InputCreate, ReceiptAck, TaskCreate
+from .schemas import InputCreate, ReceiptAck, TaskCreate, WithdrawalRequest
 
 
 _RequestModel = TypeVar("_RequestModel", bound=BaseModel)
@@ -283,6 +283,15 @@ def create_app(
     @app.get(f"{_API_PREFIX}/tasks/{{task_id}}")
     async def get_task(task_id: str, scope: SourceScope = Depends(source_scope)):
         return await call_store(store.get_task, scope, task_id)
+
+    @app.post(f"{_API_PREFIX}/tasks/{{task_id}}/withdraw-before-start")
+    async def withdraw(task_id: str, request: Request, scope: SourceScope = Depends(source_scope)):
+        data = await _json_request(request, WithdrawalRequest, 4096)
+        return await call_store(store.withdraw_before_start, scope, task_id, data)
+
+    @app.get(f"{_API_PREFIX}/tasks/{{task_id}}/withdraw-before-start/{{withdrawal_key}}")
+    async def withdrawal(task_id: str, withdrawal_key: str, scope: SourceScope = Depends(source_scope)):
+        return await call_store(store.get_withdrawal, scope, task_id, withdrawal_key)
 
     @app.post(f"{_API_PREFIX}/tasks/{{task_id}}/cancel")
     async def cancel_task(task_id: str, scope: SourceScope = Depends(source_scope)):

@@ -2,7 +2,7 @@
 EVENTS = frozenset({
     'node_configured', 'node_revoked', 'node_reactivated', 'task_created',
     'start_granted', 'manual_ready', 'execution_unknown', 'task_attention',
-    'cancel_requested', 'canceled', 'receipt_committed', 'delivery_accepted', 'delivery_rejected',
+    'cancel_requested', 'canceled', 'withdrawn_before_start', 'receipt_committed', 'delivery_accepted', 'delivery_rejected',
 })
 AUDIT_CAPACITY = 1000
 

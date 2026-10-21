@@ -1,5 +1,7 @@
 # Final development scope and machine acceptance handoff
 
+> Historical first-delivery receipt below. The new availability/queue automatic-fallback stage has its own [08 implementation and compatibility contract](../shared-contract/08_自动回退代码落地与兼容契约.md); “closed” below does not accept that later stage. Its final revisions, audit and tests are recorded separately in [AUTO_FALLBACK_ACCEPTANCE](AUTO_FALLBACK_ACCEPTANCE.md). Immediate real-machine acceptance is [same-Windows loopback deployment](WINDOWS_LOCAL_LOOPBACK.md), not a dual-VPS prerequisite.
+
 Audit date: 2026-10-21. Code inspected: Bridge `de072bc`, Alchemy `6a56652a`.
 The bounded code audit is closed with the corrections and local verification
 recorded below. This is not real-tool or deployment acceptance. No real account,

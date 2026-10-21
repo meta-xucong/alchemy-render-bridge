@@ -125,3 +125,39 @@ class ReceiptAck(StrictRequest):
                 if field in value and value[field] is None:
                     raise ValueError("Optional fields must be omitted instead of null.")
         return value
+
+
+class WithdrawalRequest(StrictRequest):
+    schema_version: Literal['1']
+    withdrawal_key: OriginKey
+    origin_key: OriginKey
+    attempt_id: Key
+    task_digest: SHA256
+
+
+class WithdrawalProof(StrictRequest):
+    schema_version: Literal['1']
+    status: Literal['withdrawn_before_start']
+    withdrawal_key: OriginKey
+    withdrawal_ref: Key
+    task_id: Key
+    origin_key: OriginKey
+    attempt_id: Key
+    task_digest: SHA256
+
+
+class AvailabilityProfile(StrictRequest):
+    profile_id: Literal['fake-image', 'codex-image', 'midjourney-manual']
+    profile_revision: Literal['1']
+    health: Literal['available', 'unavailable', 'unknown']
+    capacity: Literal['idle', 'busy']
+    reason_code: Literal['ready', 'tool_missing', 'version_unsupported', 'auth_unavailable', 'quota_exhausted', 'resource_unavailable', 'probe_failed', 'unverified', 'stale']
+    evidence_kind: Literal['local_probe', 'provider_error', 'operator_validation', 'operator_attested_preflight', 'account_status', 'none']
+    observed_at: StrictStr | None
+    valid_until: StrictStr | None
+
+
+class RoutingAvailability(StrictRequest):
+    schema_version: Literal['1']
+    revision: Annotated[StrictInt, Field(ge=0)]
+    profiles: Annotated[list[AvailabilityProfile], Field(max_length=3)]

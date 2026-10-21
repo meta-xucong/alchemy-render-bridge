@@ -30,6 +30,7 @@ from PIL import Image, UnidentifiedImageError
 from .profiles import get_profile, enabled_profile_ids, MAX_PROFILE_OUTPUT_BYTES
 from .image_options import validate_image_request, requested_output_mime
 from .operational_store import OperationsMixin
+from .availability import AvailabilityMixin, HEALTH_DDL
 
 MAX_INPUT_BYTES = 1_048_576
 MAX_OUTPUT_BYTES = 1_048_576
@@ -119,7 +120,7 @@ def _utc(timestamp):
     return datetime.fromtimestamp(timestamp, timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-class BridgeStore(OperationsMixin):
+class BridgeStore(OperationsMixin, AvailabilityMixin):
     """SQLite-backed isolated fixture store; separate instances may share a DB.
 
     POSIX writes synchronize the file and its containing directory. Windows
@@ -151,6 +152,10 @@ class BridgeStore(OperationsMixin):
         with self._connection() as con:
             con.executescript("""
                 PRAGMA journal_mode=WAL;
+                CREATE TABLE IF NOT EXISTS withdrawals (
+                    source TEXT NOT NULL, workspace TEXT NOT NULL, withdrawal_key TEXT NOT NULL,
+                    task_id TEXT NOT NULL UNIQUE, proof TEXT NOT NULL,
+                    PRIMARY KEY(source,workspace,withdrawal_key));
                 CREATE TABLE IF NOT EXISTS node_registry (
                     source TEXT NOT NULL, workspace TEXT NOT NULL, node TEXT NOT NULL,
                     executor TEXT NOT NULL, active INTEGER NOT NULL,
@@ -216,6 +221,9 @@ class BridgeStore(OperationsMixin):
                     client_receipt_id TEXT NOT NULL, digest TEXT NOT NULL, payload TEXT NOT NULL,
                     UNIQUE(source, workspace, client_receipt_id));
             """)
+            con.executescript(HEALTH_DDL)
+            if 'revalidation_generation' not in {r[1] for r in con.execute('PRAGMA table_info(profile_health)')}:
+                con.execute('ALTER TABLE profile_health ADD COLUMN revalidation_generation INTEGER NOT NULL DEFAULT 0')
             con.execute("""INSERT OR IGNORE INTO dispatch_outbox(dispatch_key,task_id)
                 SELECT 'dispatch_' || id, id FROM tasks WHERE state='queued'""")
         os.chmod(self.db_path, 0o600)
@@ -297,7 +305,7 @@ class BridgeStore(OperationsMixin):
             _fail("claim_expired", 409)
         return claim
 
-    def report_heartbeat(self, scope, node_id, executor_instance, state, profiles):
+    def report_heartbeat(self, scope, node_id, executor_instance, state, profiles, profile_health=None):
         source, workspace = self._scope(scope)
         if state not in {"available", "busy", "attention"}:
             _fail("invalid_node_status")
@@ -308,6 +316,7 @@ class BridgeStore(OperationsMixin):
                 _fail("invalid_node_profiles")
         with self._transaction() as con:
             self._check_node_active(con, scope, node_id, executor_instance)
+            self._record_health(con, scope, node_id, executor_instance, profiles, profile_health)
             con.execute("INSERT OR REPLACE INTO node_heartbeats VALUES(?,?,?,?,?,?,?)",
                         (source, workspace, node_id, executor_instance, self.clock(), state, _canonical(profiles)))
         return {"accepted": True, "heartbeat_timeout_seconds": 90}
@@ -356,6 +365,7 @@ class BridgeStore(OperationsMixin):
             "admission": {"accepting_new_tasks": self.accepting_new_tasks,
                           "mode": "enabled" if self.accepting_new_tasks else "draining"},
             "node_status": node,
+            "routing_availability_v1": self.routing_availability(scope),
             "profiles": [{
                 "execution_profile_id": profile.id,
                 "execution_profile_revision": profile.revision,
@@ -767,6 +777,56 @@ class BridgeStore(OperationsMixin):
                 _fail("not_found", 404)
             return self._task_view(con, row)
 
+    def withdraw_before_start(self, scope, task_id, payload):
+        """Permanent proof-bearing fence, serialized with both kinds of start grant."""
+        _object(payload, ('schema_version', 'withdrawal_key', 'origin_key', 'attempt_id', 'task_digest'))
+        if payload['schema_version'] != '1':
+            _fail('invalid_schema_version')
+        _origin(payload['withdrawal_key'])
+        _origin(payload['origin_key'])
+        _text(payload['attempt_id'])
+        _hash(payload['task_digest'])
+        source, workspace = self._scope(scope)
+        with self._transaction() as con:
+            task = self._scoped(con, 'tasks', task_id, scope)
+            if any(payload[k] != task[v] for k, v in
+                   (('origin_key', 'origin_key'), ('attempt_id', 'attempt_id'), ('task_digest', 'digest'))):
+                _fail('withdrawal_binding_mismatch', 409)
+            old = con.execute('SELECT * FROM withdrawals WHERE source=? AND workspace=? AND withdrawal_key=?',
+                              (source, workspace, payload['withdrawal_key'])).fetchone()
+            if old:
+                if old['task_id'] != task_id:
+                    _fail('withdrawal_binding_mismatch', 409)
+                return json.loads(old['proof'])
+            if con.execute('SELECT 1 FROM withdrawals WHERE task_id=?', (task_id,)).fetchone():
+                _fail('withdrawal_binding_mismatch', 409)
+            attempt = con.execute('SELECT * FROM attempts WHERE task_id=?', (task_id,)).fetchone()
+            if (task['state'] not in {'queued', 'awaiting_user'} or task['cancel_requested']
+                    or attempt['start_grant_id'] or attempt['started'] is not None
+                    or con.execute('SELECT 1 FROM receipts WHERE task_id=?', (task_id,)).fetchone()
+                    or con.execute('SELECT 1 FROM uploads WHERE task_id=?', (task_id,)).fetchone()):
+                _fail('withdrawal_not_safe', 409)
+            proof = {'schema_version': '1', 'status': 'withdrawn_before_start',
+                     'withdrawal_key': payload['withdrawal_key'], 'withdrawal_ref': _id('withdrawal'),
+                     'task_id': task_id, 'origin_key': task['origin_key'],
+                     'attempt_id': task['attempt_id'], 'task_digest': task['digest']}
+            con.execute('INSERT INTO withdrawals VALUES(?,?,?,?,?)',
+                        (source, workspace, payload['withdrawal_key'], task_id, _canonical(proof)))
+            con.execute("UPDATE tasks SET state='canceled',cancel_requested=1 WHERE id=?", (task_id,))
+            self._audit(con, scope, 'withdrawn_before_start', task_id=task_id, attempt_id=task['attempt_id'])
+            return proof
+
+    def get_withdrawal(self, scope, task_id, withdrawal_key):
+        source, workspace = self._scope(scope)
+        _origin(withdrawal_key)
+        with self._read_transaction() as con:
+            self._scoped(con, 'tasks', task_id, scope)
+            row = con.execute('SELECT proof FROM withdrawals WHERE source=? AND workspace=? AND task_id=? AND withdrawal_key=?',
+                              (source, workspace, task_id, withdrawal_key)).fetchone()
+            if row is None:
+                _fail('not_found', 404)
+            return json.loads(row['proof'])
+
     def cancel_task(self, scope, task_id):
         with self._transaction() as con:
             task = self._scoped(con, "tasks", task_id, scope)
@@ -1058,6 +1118,8 @@ class BridgeStore(OperationsMixin):
             if not row:
                 _fail("not_found", 404)
             self._scoped(con, "tasks", row["task_id"], scope)
+            if con.execute('SELECT 1 FROM withdrawals WHERE task_id=?', (row['task_id'],)).fetchone():
+                _fail('task_not_executable', 409)
             # A lost submit response may yield more than one engine run. The first
             # acknowledged handoff is canonical; execution remains start-latched.
             if row["engine_run_id"] is None:

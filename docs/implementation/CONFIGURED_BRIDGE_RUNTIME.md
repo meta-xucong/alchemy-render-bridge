@@ -1,5 +1,7 @@
 # 可配置 Bridge 服务：单工作区开发版
 
+> 当前实机验收：同一台 Windows 电脑运行本地 Alchemy、独立 Bridge 与用户已有 Codex CLI，通过回环版本化 HTTP API 联调；不要求先部署双 VPS。精确 PowerShell 安装、独立目录、SDK/引擎前提、启动顺序及分阶段验收见 [Windows 同机联调](WINDOWS_LOCAL_LOOPBACK.md)。生产远程 TLS 与数据隔离边界不变。
+
 本增量把固定 happy/unknown fixture 之外的动态任务接入现有源 API、持久账本和 Node HTTP。服务端接受合法的调用方冻结请求，不写 Alchemy，也不读取用户本机目录。
 
 ## 已实现

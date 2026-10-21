@@ -8,7 +8,7 @@ from typing import Annotated, Literal, Mapping
 
 from fastapi import Depends, Request
 from fastapi.responses import Response
-from pydantic import Field, StrictStr
+from pydantic import Field, StrictStr, StrictInt
 
 from .api import _APIError, _bounded_body, _json_request, _TOKEN
 from .domain import BridgeStore, SourceScope
@@ -36,9 +36,20 @@ class ClaimIdentity(StrictRequest):
     claim_id: Key
 
 
+class ProfileHealth(StrictRequest):
+    profile_id: Literal['fake-image', 'codex-image', 'midjourney-manual']
+    profile_revision: Literal['1']
+    report_revision: Annotated[StrictInt, Field(ge=1, le=2**63-1)]
+    revalidation_generation: Annotated[StrictInt, Field(ge=0, le=2**63-1)] = 0
+    health: Literal['available', 'unavailable', 'unknown']
+    reason_code: Literal['ready', 'tool_missing', 'version_unsupported', 'auth_unavailable', 'quota_exhausted', 'resource_unavailable', 'probe_failed', 'unverified', 'stale']
+    evidence_kind: Literal['local_probe', 'provider_error', 'operator_validation', 'operator_attested_preflight', 'account_status', 'none']
+
+
 class HeartbeatRequest(StrictRequest):
     state: Literal['available', 'busy', 'attention']
     profiles: Annotated[list[Literal['fake-image', 'codex-image', 'midjourney-manual']], Field(max_length=3)]
+    profile_health: Annotated[list[ProfileHealth], Field(max_length=3)] | None = None
 
 
 class AttentionRequest(StrictRequest):
@@ -103,7 +114,7 @@ def install_node_routes(app, store: BridgeStore, node_tokens: Mapping[str, NodeS
     async def heartbeat(request: Request, identity: NodeScope = Depends(node)):
         data = await _json_request(request, HeartbeatRequest, 4096)
         return await call_store(store.report_heartbeat, identity.source_scope, identity.node_id,
-                                identity.executor_instance, data['state'], data['profiles'])
+                                identity.executor_instance, data['state'], data['profiles'], data.get('profile_health'))
 
     @app.post(prefix + '/tasks/{task_id}/attention')
     async def attention(task_id: str, request: Request, identity: NodeScope = Depends(node)):

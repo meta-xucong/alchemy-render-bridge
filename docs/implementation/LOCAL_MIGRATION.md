@@ -1,5 +1,7 @@
 # 云端开发与本地迁移
 
+> 当前实机验收：同一台 Windows 电脑运行本地 Alchemy、独立 Bridge 与用户已有 Codex CLI，通过回环版本化 HTTP API 联调；不要求先部署双 VPS。精确 PowerShell 安装、独立目录、SDK/引擎前提、启动顺序及分阶段验收见 [Windows 同机联调](WINDOWS_LOCAL_LOOPBACK.md)。生产远程 TLS 与数据隔离边界不变。
+
 当前交付目标是无需登录真实工具即可开发和验证的 Bridge/Agent 开发版。真实 Codex 登录、生图和 Midjourney 操作在迁移本地后验收，不阻塞云端代码实现。
 
 ## 最快验证
@@ -48,10 +50,13 @@ python -m render_bridge.doctor --bridge-config config/bridge.example.json --agen
 
 ## 仍需开发或配置的范围
 
-默认服务和 Agent 只启用 `fake-image`。`codex-image` 与 `midjourney-manual` 的配置路由、执行前检查、人工等待及原图导入接线已经实现，必须在服务和 Agent 配置中分别显式启用。启用 Codex 还需要本地账号/model/工具策略验收标记；当前仅通过模拟子进程测试，不代表真实生图已验收。非 fake 请求必须显式提供目标宽高，回传原图严格核验尺寸，不自动缩放。
+默认服务和 Agent 只启用 `fake-image`。`codex-image` 与 `midjourney-manual` 的配置路由、执行前检查、人工等待及原图导入接线已经实现，必须在服务和 Agent 配置中分别显式启用。启用 Codex 还需要本地账号/model/工具策略验收标记，以及操作者显式确认的 `codex.approval_policy="on-request"`（固定 0.163.0 不支持旧 `untrusted`，空策略仍阻断，旧标记不自动迁移）；当前仅通过模拟子进程测试，不代表真实生图已验收。非 fake 请求必须显式提供目标宽高，回传原图严格核验尺寸，不自动缩放。
 
 SQLite 是单机开发后端，不等于设计中的 PostgreSQL 生产持久层。Alchemy 独立模块的预览、原生登记/审核恢复、显式真实开发 profile 适配、管理员界面和 V3 Standard/general 单图试用入口已在对应仓库实现，不属于本仓库代码；不是普通 Generate、正式选图/导出或计费接入。Bridge 已实现有界的嵌套 image_options：quality 仅接受 auto（未指定档位），output_format 仅校验原图 PNG/JPEG，input_fidelity 必须省略；Codex 0.163.0 没有这些原生结构化控制。Alchemy 独立适配已有模拟合同/HTTP验收，最终修订回归与本机真实生图仍须分别记录，不能只靠登录或把文本指令当成原生控制。单节点持久撤销/恢复、就绪报告、显式本地媒体清理及 Discord 普通任务通知已实现；PostgreSQL迁移、自助配对/多节点管理及双VPS部署仍未完成。不要直接将本开发配置暴露公网，也不要宣称所有产品功能已完成。
 
 验收聚焦正常主流程、重复投递不重复生成和已生成文件不丢失。非阻塞的复杂故障矩阵后置，不因尚未登录真实工具停下其他可实施开发。
 
 当前代码范围、明确后置项和实机验收的统一分类见 [最终开发范围](FINAL_DEVELOPMENT_SCOPE.md)。历史阶段记录不代表最终修订验收。
+
+
+新增账户健康探测默认关闭，与默认无副作用的 doctor 不同。顶层 `account_health_probe_enabled=true` 只能在本机操作者同意使用已有 CLI 账号查询状态后开启；CLI 可能内部刷新已有登录，Bridge 不复制认证文件、不建立新授权、不付费生图。不开启时 auth/quota 恢复需操作者针对原原因确认；完整字段、来源及迁移顺序见 [Agent 说明](CONFIGURED_AGENT.md#健康报告账户状态与显式工具策略)和 [Windows 同机联调](WINDOWS_LOCAL_LOOPBACK.md)。

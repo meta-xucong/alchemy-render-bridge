@@ -8,7 +8,7 @@ An optional API-based bridge between Alchemy applications and local rendering to
 
 **当前：可配置 Bridge / 通用 Agent 开发版与离线执行器。模拟链路可运行；真实工具登录、生图与生产部署尚未验收。**
 
-- 文档基线：分端开发方案 v1.2，2026-10-20。
+- 文档基线：分端开发方案 v1.2；2026-10-21 新增自动回退契约与同机 Windows 首轮验收安排。
 - 新增：[单节点撤销与有界事件记录](docs/implementation/NODE_OPERATIONS_SCOPE.md)。
 - 新增：[节点就绪、待处理与停新任务](docs/implementation/NODE_READINESS_AND_ATTENTION.md)、[完整蓝图缺口审计](docs/implementation/DELIVERY_GAP_AUDIT.md)。
 - 新增：[有界图片选项合同](docs/implementation/TYPED_IMAGE_OPTIONS_SCOPE.md)、[本地就绪诊断](docs/implementation/LOCAL_READINESS_DOCTOR.md)、[可配置服务与 Node API](docs/implementation/CONFIGURED_BRIDGE_RUNTIME.md)、[离线执行器](docs/implementation/OFFLINE_EXECUTORS.md)、[云端开发与本地迁移说明](docs/implementation/LOCAL_MIGRATION.md)。
@@ -28,7 +28,7 @@ An optional API-based bridge between Alchemy applications and local rendering to
 2. **Alchemy 可选接入模块**：默认关闭，使用 API 通信，管理模块自己的任务映射与恢复。
 3. **共享 API 合同**：创建、查询、取消、输入上传、产物下载与接收确认。
 
-Alchemy与Render Bridge分别部署在不同VPS，严格独立发布；本地Agent运行在用户电脑。双方不共享数据库、文件目录、内部对象或执行队列。Render Bridge 不直接写 Alchemy 的 output/candidate，不执行其计费和审核。Alchemy 原有功能与默认链路保持不变；缺少安全扩展接缝时先提交最小方案，不擅自改核心。
+Alchemy与Render Bridge是独立服务、严格独立发布；最新首轮验收按用户要求把本地Alchemy、Bridge/Agent和用户已登录Codex CLI部署在同一台Windows电脑，通过loopback HTTP互通、各自独立数据目录。双VPS部署保留为后续选项，不是本轮测试前提。非loopback/远程连接仍要求TLS与原安全门禁。双方不共享数据库、文件目录、内部对象或执行队列。Render Bridge 不直接写 Alchemy 的 output/candidate，不执行其计费和审核。Alchemy 原有功能与默认链路保持不变；缺少安全扩展接缝时先提交最小方案，不擅自改核心。
 
 ## 开发文档
 
@@ -52,6 +52,8 @@ Bridge不区分Alchemy V1/V2/V3/Lab/Video OS；各版本在Alchemy侧适配成�
 
 ## 首批场景与独立部署
 
-- [双VPS与版本独立边界](docs/shared-contract/04_双VPS与版本独立约束.md)
+- [同机首测、双VPS与版本独立边界](docs/shared-contract/04_双VPS与版本独立约束.md)
 - [Codex CLI适配方案](docs/render-bridge/adapters/05_Codex_CLI适配方案.md)
 - [Midjourney与Discord API适配方案](docs/render-bridge/adapters/06_Midjourney_Discord适配方案.md)
+
+- [自动回退代码落地与兼容契约](docs/shared-contract/08_自动回退代码落地与兼容契约.md)：冻结健康信号、pre-start撤回、路由身份和V3传统provider接缝；设计/实施计划不等于运行验收。

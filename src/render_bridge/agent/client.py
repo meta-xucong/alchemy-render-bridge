@@ -57,8 +57,11 @@ class HttpNodeClient:
             raise NodeHTTPError(response.status_code, code)
         return response
 
-    def heartbeat(self, state, profiles):
-        return self.request('POST', '/heartbeat', json={'state': state, 'profiles': profiles}, timeout=5).json()
+    def heartbeat(self, state, profiles, *, profile_health=None):
+        payload = {'state': state, 'profiles': profiles}
+        if profile_health is not None:
+            payload['profile_health'] = profile_health
+        return self.request('POST', '/heartbeat', json=payload, timeout=5).json()
 
     def attention(self, task_id, attempt_id, code):
         return self.request('POST', f'/tasks/{self.key(task_id)}/attention',

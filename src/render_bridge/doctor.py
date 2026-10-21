@@ -88,6 +88,8 @@ def inspect_local(bridge_path: Path, agent_path: Path, *, probe: bool = False) -
              'Select the model used in your separate local acceptance; configuration is not model capability evidence.'),
             ('codex_image_acceptance', config.image_capability_verified, 'codex_image_acceptance',
              'This flag is only an operator declaration of local image acceptance, never an observed doctor result.'),
+            ('codex_approval_policy', config.approval_policy == 'on-request', 'codex_approval_policy',
+             'Explicitly accept supported on-request policy locally; old untrusted acceptance is not migrated.'),
             ('codex_tool_policy_acceptance', config.tool_policy_verified, 'codex_tool_policy_acceptance',
              'This flag is only an operator declaration; separately validate the dedicated local tool policy.'),
         ):

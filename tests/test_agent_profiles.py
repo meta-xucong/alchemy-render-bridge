@@ -77,7 +77,7 @@ class AgentProfilesTests(unittest.TestCase):
 
     def _completed_codex_recovery(self, *, manifest, mismatch=False):
         executor = CodexExecutor(self.state / 'executors', CodexConfig(enabled=True,
-            model='mock-model', image_capability_verified=True, tool_policy_verified=True))
+            model='mock-model', image_capability_verified=True, tool_policy_verified=True, approval_policy='on-request'))
         self.registry.executors['codex-image'] = executor
         task = self.create('codex-image', 'recovery-'+str(manifest)+str(mismatch), {
             'schema_version': '1', 'quality': 'auto', 'output_format': 'jpeg'})
@@ -141,7 +141,7 @@ class AgentProfilesTests(unittest.TestCase):
 
     def test_codex_mock_preflight_execution_receipt(self):
         executor = CodexExecutor(self.state / 'executors', CodexConfig(enabled=True,
-            model='mock-model', image_capability_verified=True, tool_policy_verified=True))
+            model='mock-model', image_capability_verified=True, tool_policy_verified=True, approval_policy='on-request'))
         self.registry.executors['codex-image'] = executor
         task = self.create('codex-image')
         fake = FakeExecutor(self.state / 'mock-output')

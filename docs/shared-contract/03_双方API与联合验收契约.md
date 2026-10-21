@@ -4,7 +4,7 @@
 
 ## 1. 通信方向
 
-Alchemy新增模块主动调用Render Bridge的HTTPS source API。Render Bridge的Agent主动调用自己的node API/任务引擎。Bridge不回调Alchemy、不登录其DB、不直接写其媒体目录。
+Alchemy新增模块主动调用Render Bridge的source API：最新同机Windows首测使用loopback HTTP，远程仍使用HTTPS。Render Bridge的Agent主动调用自己的node API/任务引擎。Bridge不回调Alchemy、不登录其DB、不直接写其媒体目录。
 
 Alchemy仅发送已授权的冻结请求与素材；Render Bridge仅返回状态、文件与回执。两端通过origin_key/task_id/receipt_id关联，不交换内部数据库主键含义或账户管理权限。
 
@@ -26,7 +26,7 @@ Alchemy仅发送已授权的冻结请求与素材；Render Bridge仅返回状态
 
 本API不包含领取节点、start-grant、续租、GPU中断、Hatchet管理、Alchemy用户余额或数据库操作。
 
-HTTP重试仅对已定义幂等操作进行；429/503尊重Retry-After并有总预算。授权失败不无限重试。超时不能推断未执行。只允许固定TLS服务地址，不跟随跨主机携密重定向。
+HTTP重试仅对已定义幂等操作进行；429/503尊重Retry-After并有总预算。授权失败不无限重试。超时不能推断未执行。只允许固定服务地址；本机受控loopback HTTP是首测例外，非loopback必须TLS。不跟随跨主机携密重定向。
 
 ## 3. 请求合同
 
@@ -99,7 +99,7 @@ Codex登录/额外审批发生在执行前时可进入awaiting_user；如果执�
 
 manual场景由用户在工具提交并导入原图；Bridge只保证自身派单、关联和回传幂等，不能保证用户没有在外部重复点击生成。人工来源标记human_asserted，不能声称平台签名认证。等待人工以单独有界pending计数管理，不占自动执行资源槽；超时不自动转换为重新生成。
 
-Alchemy与Bridge位于不同VPS；当前任务协议兼容时两端可独立升级。任何Alchemy版本都应在自己适配层转换为本协议，Bridge不按V1/V2/V3等标记选择业务实现。协议不兼容时明确拒绝新请求，原Alchemy路径保持不变。
+Alchemy与Bridge是独立服务；最新首测同在用户Windows电脑、loopback HTTP与独立目录，后续可位于不同VPS。当前任务协议兼容时两端可独立升级。任何Alchemy版本都应在自己适配层转换为本协议，Bridge不按V1/V2/V3等标记选择业务实现。协议不兼容时明确拒绝新请求，原Alchemy路径保持不变。
 
 
 ## 附加图片选项合同 v1
@@ -122,3 +122,7 @@ Alchemy与Bridge位于不同VPS；当前任务协议兼容时两端可独立升�
   不重绘、转码、改 MIME 冒充或另开执行。上传端独立核验解码格式后拒绝 422。
 
 详见 [实施范围与固定协议依据](../implementation/TYPED_IMAGE_OPTIONS_SCOPE.md)。
+
+## 2026-10-21 可选routing availability扩展
+
+精确字段与新增withdraw-before-start端点见[08](08_自动回退代码落地与兼容契约.md)。旧schema1任务payload仍routing=bridge_only，Alchemy的新prefer_bridge是来源侧策略，不传成Bridge任务routing。新增能力对象可协商，旧服务不支持则禁用自动策略；普通取消不是安全撤回证明。已开始/unknown不可回退的既有规则保持不变。

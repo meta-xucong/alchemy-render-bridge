@@ -1,0 +1,129 @@
+{
+  "$defs": {
+    "AvailabilityProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "profile_id": {
+          "enum": [
+            "fake-image",
+            "codex-image",
+            "midjourney-manual"
+          ],
+          "title": "Profile Id",
+          "type": "string"
+        },
+        "profile_revision": {
+          "const": "1",
+          "title": "Profile Revision",
+          "type": "string"
+        },
+        "health": {
+          "enum": [
+            "available",
+            "unavailable",
+            "unknown"
+          ],
+          "title": "Health",
+          "type": "string"
+        },
+        "capacity": {
+          "enum": [
+            "idle",
+            "busy"
+          ],
+          "title": "Capacity",
+          "type": "string"
+        },
+        "reason_code": {
+          "enum": [
+            "ready",
+            "tool_missing",
+            "version_unsupported",
+            "auth_unavailable",
+            "quota_exhausted",
+            "resource_unavailable",
+            "probe_failed",
+            "unverified",
+            "stale"
+          ],
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "evidence_kind": {
+          "enum": [
+            "local_probe",
+            "provider_error",
+            "operator_validation",
+            "operator_attested_preflight",
+            "account_status",
+            "none"
+          ],
+          "title": "Evidence Kind",
+          "type": "string"
+        },
+        "observed_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Observed At"
+        },
+        "valid_until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Valid Until"
+        }
+      },
+      "required": [
+        "profile_id",
+        "profile_revision",
+        "health",
+        "capacity",
+        "reason_code",
+        "evidence_kind",
+        "observed_at",
+        "valid_until"
+      ],
+      "title": "AvailabilityProfile",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "revision": {
+      "minimum": 0,
+      "title": "Revision",
+      "type": "integer"
+    },
+    "profiles": {
+      "items": {
+        "$ref": "#/$defs/AvailabilityProfile"
+      },
+      "maxItems": 3,
+      "title": "Profiles",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "revision",
+    "profiles"
+  ],
+  "title": "RoutingAvailability",
+  "type": "object"
+}

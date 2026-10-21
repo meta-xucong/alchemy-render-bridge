@@ -41,15 +41,40 @@ def probe_codex(executable: str = 'codex') -> dict:
                                      encoding='utf-8', timeout=10, env=env, check=False)
             help_result = subprocess.run([executable, 'app-server', '--help'], capture_output=True,
                                          text=True, encoding='utf-8', timeout=10, env=env, check=False)
-        except (OSError, subprocess.TimeoutExpired):
-            return {'status': 'needs_attention', 'code': 'codex_unavailable', 'image_generation_verified': False}
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            reason = 'tool_missing' if isinstance(exc, FileNotFoundError) else 'probe_failed'
+            return {'status': 'needs_attention', 'code': 'codex_unavailable',
+                    'health_reason': reason, 'image_generation_verified': False}
         value = version.stdout.strip()
         supported = version.returncode == 0 and value == PINNED_CLI_VERSION and help_result.returncode == 0
         return {'status': 'needs_attention',
                 'code': 'local_image_acceptance_required' if supported else 'codex_version_not_validated',
+                'health_reason': 'probe_failed' if version.returncode or help_result.returncode else 'ready' if supported else 'version_unsupported',
                 'cli_version': value[:120], 'schema_version_matches': supported,
                 'stdio_advertised': '--stdio' in help_result.stdout,
                 'image_generation_verified': False}
+
+
+def health_reason_from_codex_error(info):
+    """Allowlisted rust-v0.163.0 structured codes; never classify error prose."""
+    if info == 'unauthorized':
+        return 'auth_unavailable'
+    if info == 'usageLimitExceeded':
+        return 'quota_exhausted'
+    if isinstance(info, str) and info in {'rateLimitExceeded', 'serverOverloaded', 'internalServerError'}:
+        return 'probe_failed'
+    if isinstance(info, dict) and len(info) == 1:
+        variant = next(iter(info))
+        if variant in {'httpConnectionFailed', 'responseStreamConnectionFailed',
+                       'responseStreamDisconnected', 'responseTooManyFailedAttempts'}:
+            details = info[variant]
+            if isinstance(details, dict):
+                status = details.get('httpStatusCode')
+                if type(status) is int and status == 401:
+                    return 'auth_unavailable'
+                if status is None or (type(status) is int and (status == 429 or 500 <= status <= 599)):
+                    return 'probe_failed'
+    return None
 
 
 class StdioSession:
@@ -167,6 +192,7 @@ class CodexConfig:
     enabled: bool = False
     executable: str = 'codex'
     model: str = ''
+    approval_policy: str = ''
     image_capability_verified: bool = False
     tool_policy_verified: bool = False
     timeout: float = 120
@@ -177,6 +203,8 @@ class CodexConfig:
                 raise ValueError('Codex acceptance flags must be JSON booleans')
         if not isinstance(self.executable, str) or not self.executable.strip() or '\x00' in self.executable:
             raise ValueError('Codex executable must be a nonempty string')
+        if self.approval_policy not in ('', 'on-request'):
+            raise ValueError('Explicit supported Codex approval_policy must be on-request')
         if not isinstance(self.model, str):
             raise ValueError('Codex model must be a string')
         if (type(self.timeout) not in (int, float) or not math.isfinite(self.timeout)
@@ -193,7 +221,7 @@ class CodexExecutor:
         """Check local acceptance and version only; never starts a thread or turn."""
         validate_image_request(request.parameters, request.references, 'codex-image')
         config = self.config
-        if not (config.enabled and config.model and config.image_capability_verified
+        if not (config.enabled and config.model and config.approval_policy == 'on-request' and config.image_capability_verified
                 and config.tool_policy_verified):
             return ExecutionResult('needs_attention', 'codex_local_acceptance_required')
         probe = probe_codex(config.executable)
@@ -221,7 +249,7 @@ class CodexExecutor:
         files = AttemptFiles(self.root, request, 'codex-cli')
         completion = files.path / 'codex-completion.json'
         config = self.config
-        if not (config.enabled and config.model and config.image_capability_verified
+        if not (config.enabled and config.model and config.approval_policy == 'on-request' and config.image_capability_verified
                 and config.tool_policy_verified):
             return ExecutionResult('needs_attention', 'codex_local_acceptance_required', details={
                 'protocol_cli_version': PINNED_CLI_VERSION, 'image_generation_verified': False})
@@ -256,7 +284,7 @@ class CodexExecutor:
                 session.send({'method': 'initialized'})
                 response = session.request('thread/start', {
                     'model': config.model, 'cwd': cwd,
-                    'approvalPolicy': 'untrusted', 'approvalsReviewer': 'user',
+                    'approvalPolicy': config.approval_policy, 'approvalsReviewer': 'user',
                     'sandbox': 'workspace-write',
                     'developerInstructions': 'Generate exactly one image using the image generation tool. '
                         'Save the original in the current working directory. Do not substitute text, '
@@ -268,7 +296,7 @@ class CodexExecutor:
                                       json.dumps({'thread_id': thread_id}).encode())
                 response = session.request('turn/start', {
                     'threadId': thread_id, 'input': inputs, 'cwd': cwd,
-                    'approvalPolicy': 'untrusted', 'approvalsReviewer': 'user',
+                    'approvalPolicy': config.approval_policy, 'approvalsReviewer': 'user',
                     'sandboxPolicy': {'type': 'workspaceWrite', 'writableRoots': [cwd],
                         'networkAccess': False, 'excludeSlashTmp': True,
                         'excludeTmpdirEnvVar': True}})
@@ -297,7 +325,11 @@ class CodexExecutor:
                 return self.collect_completed(request, **evidence)
         except PermissionError:
             return ExecutionResult('needs_attention', 'codex_requested_user_attention')
-        except (OSError, EOFError, TimeoutError, RuntimeError, ValueError, KeyError, TypeError):
+        except (OSError, EOFError, TimeoutError) as exc:
+            reason = 'tool_missing' if isinstance(exc, FileNotFoundError) else 'probe_failed'
+            return ExecutionResult('execution_unknown', 'codex_execution_requires_reconciliation',
+                                   details={'profile_health_reason': reason})
+        except (RuntimeError, ValueError, KeyError, TypeError):
             # A request may already have reached the server. Never regenerate.
             return ExecutionResult('execution_unknown', 'codex_execution_requires_reconciliation')
 
@@ -315,6 +347,7 @@ class CodexExecutor:
             raise ValueError('Persisted thread and turn identity required')
         candidates = {}
         completed = False
+        failure_reason = None
         for event in events:
             params = event.get('params', {})
             if params.get('threadId') != thread_id:
@@ -323,6 +356,9 @@ class CodexExecutor:
                 turn = params.get('turn', {})
                 if turn.get('id') == turn_id:
                     completed = turn.get('status') == 'completed'
+                    error = turn.get('error')
+                    if turn.get('status') == 'failed' and isinstance(error, dict):
+                        failure_reason = health_reason_from_codex_error(error.get('codexErrorInfo'))
             if event.get('method') != 'item/completed' or params.get('turnId') != turn_id:
                 continue
             item = params.get('item', {})
@@ -334,7 +370,8 @@ class CodexExecutor:
                     raise ValueError('Conflicting image item identity')
                 candidates[identity] = item.get('savedPath')
         if not completed:
-            return ExecutionResult('execution_unknown', 'codex_turn_not_confirmed_complete')
+            return ExecutionResult('execution_unknown', 'codex_turn_not_confirmed_complete',
+                details={'profile_health_reason': failure_reason} if failure_reason else {})
         if len(candidates) != 1:
             return ExecutionResult('needs_attention', 'codex_single_image_event_required')
         saved = next(iter(candidates.values()))

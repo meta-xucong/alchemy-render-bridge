@@ -1,3 +1,5 @@
+> Historical liveness slice: profile-aware health, actual executor errors, optional account status and safe withdrawal were added later. See [PROFILE_HEALTH_RUNTIME](PROFILE_HEALTH_RUNTIME.md), [08 contract](../shared-contract/08_自动回退代码落地与兼容契约.md) and [current acceptance](AUTO_FALLBACK_ACCEPTANCE.md). Liveness alone still never proves real generation.
+
 # Single-node readiness, task attention and admission control
 
 This additive API slice keeps schema/profile revision 1, the fake-only default,

@@ -30,7 +30,7 @@ for line in sys.stdin:
  elif stage==1:
   assert method=='initialized' and 'id' not in r
  elif stage==2:
-  assert method=='thread/start' and p['approvalPolicy']=='untrusted'
+  assert method=='thread/start' and p['approvalPolicy']=='on-request'
   assert p['sandbox']=='workspace-write' and p['model']=='local-accepted-model'
   emit({'id':r['id'],'result':{'thread':{'id':'thread-fixture'}}})
  elif stage==3:
@@ -55,7 +55,7 @@ for line in sys.stdin:
                 'schema_version': '1', 'quality': 'auto', 'output_format': requested_format}}
             request = ExecutionRequest('task', 'attempt', '原始完整 prompt', parameters)
             config = CodexConfig(enabled=True, model='local-accepted-model',
-                                 image_capability_verified=True, tool_policy_verified=True, timeout=3)
+                                 image_capability_verified=True, tool_policy_verified=True, approval_policy='on-request', timeout=3)
             executor = CodexExecutor(root / 'data', config)
             with patch('render_bridge.executors.codex.probe_codex', return_value={
                     'schema_version_matches': True, 'stdio_advertised': True}), patch(

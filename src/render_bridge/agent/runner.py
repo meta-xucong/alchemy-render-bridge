@@ -26,6 +26,8 @@ class NodeAgent:
         self._current_attempt = None
         self.profile = profile
         self.registry = registry or ExecutorRegistry.from_config(self.journal.root / 'executors')
+        from .health import ProfileHealthReporter
+        self.health_reporter = ProfileHealthReporter(self.journal, self.registry) if self.registry.health_reporting_enabled else None
 
     def execute_task(self, task_id, executor=None):
         if not isinstance(task_id, str) or not _KEY.fullmatch(task_id):
@@ -53,14 +55,17 @@ class NodeAgent:
                 self.heartbeat()
 
     def heartbeat(self):
-        """Best-effort bounded metadata only; no CLI, login, or generation probe."""
+        """Best-effort liveness plus explicitly enabled, read-only local health probes."""
         if not hasattr(self.client, 'heartbeat'):
             return False
         try:
             profiles = sorted(self.registry.executors)
             state = ('busy' if self._active or self.journal.occupied_by_other('')
                      else 'available' if self._worker_running and any(p != 'codex-image' for p in profiles) else 'attention')
-            self.client.heartbeat(state, profiles)
+            if self.health_reporter is None:
+                self.client.heartbeat(state, profiles)
+            else:
+                self.client.heartbeat(state, profiles, profile_health=self.health_reporter.reports())
             return True
         except Exception:
             return False
@@ -179,6 +184,8 @@ class NodeAgent:
             return {'outcome': 'execution_unknown', 'task_id': task_id}
         try:
             result = executor.execute(request)
+            if self.health_reporter is not None:
+                self.health_reporter.record_result(profile_id, result, attempt_id)
             if result.status != 'ready' or result.artifact is None:
                 self._unknown(record)
                 return {'outcome': result.status, 'code': result.code, 'task_id': task_id}
