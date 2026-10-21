@@ -275,7 +275,7 @@ Alchemy 的 V3 Standard/general 当前项目试用入口只提交单图；先确
 1. 保持 fake 通过，确认自己的 CLI 版本/协议和图像工具策略；doctor 的可选探测只使用空 HOME/CODEX_HOME，不验证真实登录。
 2. 由用户明确授权有界真实测试，选择实际支持的 model 和图片尺寸。先在独立工具能力验收中确认实际图片事件、原文件与工具权限，而不是填写 true 来绕过检查。
 3. 通过后在私有 Agent JSON 中启用 `codex-image`、`codex.enabled=true`，填写经过验收的 model，并据实设置 `image_capability_verified` / `tool_policy_verified`。固定 Codex 0.163.0 的 app-server 不接受旧 `untrusted` 策略：必须由操作者明确确认后配置 `codex.approval_policy="on-request"`；默认空字符串继续阻断，即使旧配置的两个验收标记已经为 true，也不能静默迁移或自动解释为同意。该字段不是绕过工具审批；需要用户处理的工具请求仍须按工具策略处理。Bridge enabled_profiles、Alchemy module/native allowlists 同时显式加入 `codex-image`；保留同一节点 identity/state-dir。不要将这些字段默认置 true。
-4. 重启需要重载配置的进程并检查实际 allowlist，提交一张明确授权的真实试用。严格核对冻结尺寸、PNG/JPEG 原图、SHA-256、receipt 和 Alchemy review 状态。质量只支持 auto，input_fidelity 必须省略；不把 prompt 文本当作 Codex 原生参数。
+4. 重启需要重载配置的进程并检查实际 allowlist，提交一张明确授权的真实试用。Alchemy 若已在管理页保存设置，保存的 `admin-settings.json` 优先于环境中的 module/native allowlist；应在管理页高级设置显式加入工具并保存，仅修改环境变量不会覆盖已有设置。严格核对冻结尺寸、PNG/JPEG 原图、SHA-256、receipt 和 Alchemy review 状态。质量只支持 auto，input_fidelity 必须省略；不把 prompt 文本当作 Codex 原生参数。
 5. 可选健康报告：私有 Agent JSON 顶层 `health_reporting_enabled` 默认 false；明确开启后附带在现有心跳循环，不新增调度器。CLI 缺失/磁盘等普通故障可用对应检查恢复；版本/help 成功不能清除 auth/quota 故障，也不能证明图像能力。
    - 可选账户状态探测：顶层 `account_health_probe_enabled` 默认 false。只在本机操作者明确同意“通过自己的 CLI 查询已登录账户状态，CLI 可能内部刷新现有登录”后才设置 true，同时开启健康报告。这不是空 HOME 的 doctor 探测：它使用本机已有 CLI 身份，不复制认证文件，不新建登录/授权，不运行生图。
    - 该探测调用官方 `account/rateLimits/read`；`ordinaryUsageAllowed` 必须明确为 true 才提供 auth/quota 恢复证据，false 表示额度不可用，缺失/null/错误不能判恢复。配置仅让后续心跳可做有界状态请求，不是该账户已验证的收据。

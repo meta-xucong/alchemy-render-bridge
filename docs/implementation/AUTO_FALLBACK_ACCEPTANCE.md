@@ -1,10 +1,13 @@
 # Automatic fallback implementation and acceptance
 
 2026-10-21. This supersedes the earlier design-only status, not the real-machine
-acceptance gate. Implemented and independently reviewed at runtime revisions
+acceptance gate. The original implementation stage was independently reviewed at runtime revisions
 Bridge `89f665d3c157007fa3e6473cfaf5ef42b3b01347` and Alchemy
-`68c079bd9da247999b20e7fce5b638d6d2e99919`; subsequent receipt edits are docs only.
-Published commit identities and final GitHub CI are recorded in Alchemy PR #37.
+`68c079bd9da247999b20e7fce5b638d6d2e99919`. Its historical evidence is preserved
+below; later semantic binding and terminal-failure fixes changed runtime code.
+The latest published baseline and its separate evidence follow that history.
+Published commit identities and GitHub CI are recorded in
+[Alchemy PR #37](https://github.com/meta-xucong/alchemy-media-agent/pull/37).
 Neither repository is merged or deployed by this work.
 
 ## Delivered
@@ -33,7 +36,9 @@ Neither repository is merged or deployed by this work.
 - Same-Windows installation/configuration/startup guide and loopback-only Hatchet
   recipe. See [Windows local deployment](WINDOWS_LOCAL_LOOPBACK.md).
 
-## Final local verification
+## Historical original-stage local verification (89f665d / 68c079bd)
+
+These counts and conclusions apply only to the original stage, not later changes.
 
 - Alchemy contract + affected original-path selection: **370 passed**, 174.23s.
 - Bridge full offline suite: **211 passed**, 27.744s; schema export reproduced
@@ -53,6 +58,71 @@ Neither repository is merged or deployed by this work.
 - Browser fixtures are synthetic shipped-page tests, not live login. Final exact
   published-head Chromium/Windows/Linux CI must be read from the PR checks; this
   local receipt does not predeclare them successful.
+
+## Latest published baseline and prior acceptance (2026-10-21 09:24 UTC)
+
+- Bridge `755555e2131693f8c3ecdb3adf48f5eb82d34120`, branch
+  `feat/phase1-bridge-contracts`.
+- Alchemy `4da1cd541bc3961e29b751781995824c94da0c55`, branch
+  `feature/render-bridge-preview`.
+- Later fixes preserve sibling frozen plans through server-owned `semantic_v2`
+  binding while still enforcing genuine project changes and cancellation. Confirmed
+  Codex auth/quota terminal failures require durable evidence and idempotent Node
+  confirmation before releasing capacity; the old grant remains and the failed
+  task never rerenders or falls back. Unknown executions remain protected.
+- Prior final local suites: **394 Alchemy affected-path tests** and **220 Bridge
+  tests** passed. The actual app.main + independent Bridge HTTP + NodeAgent/Codex
+  simulated-process matrix passed **16 groups**, with 11 outputs / 11 unique
+  reviews. Auth, Brain, review, upstream transport and CLI processes were synthetic;
+  all spawned processes stopped. These results are recorded in PR #37's
+  “Final re-audit and local-machine handoff gate” section.
+- Exact-head CI was verified successful:
+  [Alchemy mock/browser](https://github.com/meta-xucong/alchemy-media-agent/actions/runs/39575606411),
+  [Alchemy legacy regressions](https://github.com/meta-xucong/alchemy-media-agent/actions/runs/39575613605),
+  [Bridge Windows/Linux contracts](https://github.com/meta-xucong/alchemy-render-bridge/actions/runs/39576048403),
+  [Bridge experimental Hatchet lifecycle](https://github.com/meta-xucong/alchemy-render-bridge/actions/runs/39576048358).
+
+The section above records the 09:24 acceptance. The separate repeat audit below
+must not be confused with that earlier 16-group matrix.
+
+## Fresh independent repeat audit (2026-10-21 17:17–17:26 UTC)
+
+Clean clones of the two published baseline commits above were installed into
+separate fresh Python 3.12 environments. No new runtime blocker was found; this
+follow-up changes only acceptance documentation and the Windows explanation that
+saved administrator allowlists take precedence over environment defaults.
+
+- Fresh Alchemy complete affected-path selection: **394 passed**, 290 existing
+  FastAPI deprecation warnings, 105.51s. Fresh Bridge full suite: **220 passed**,
+  13.533s. Both environments passed dependency compatibility checks; exported
+  schemas match the checked-in snapshots.
+- Independent Bridge recovery audit: 49 existing targeted cases and 3 additional
+  cancellation/terminal-evidence/restart combinations passed. Independent Alchemy
+  audit: 3 additional pending-review/lost-ACK, committed-response-loss/cancel,
+  and cloud-review-resume combinations passed. Targeted existing counts overlap
+  the full suite, not additional unique tests.
+- A fresh independent **8-scenario actual loopback HTTP** harness passed: normal
+  native registration and replay; lost native-commit response; unknown native
+  import refusing repeat registration/ACK; Bridge process outage and recovery;
+  pre-start queue withdrawal then cloud; unavailable node then cloud; disabled
+  integration/default-provider isolation; and retryable review timeout followed
+  by natural scheduled recovery. It uses real Alchemy module routes, native
+  gateway/persistence, a separate Bridge process and separate Agent execution.
+  Host auth/planning/review and outbound provider transport are synthetic. The
+  review scenario waits for the normal 30-second retry, without DB/clock edits.
+- During that harness, the Bridge checkout moved only through this two-document
+  update. Runtime `src` tree remained
+  `a9fd75c25436dabf8bb94be343eb55274ca20f85` and `tests` tree remained
+  `67aa5017b64daae7dd05266a41f167075c13527d`; Alchemy stayed at `4da1cd54`.
+  This is runtime-content equivalence, not a claim that checkout SHAs were equal.
+- Configuration parsers, doctor and static loopback Compose checks passed. Doctor
+  still reports real login and generation unverified. No user computer, actual
+  Codex account, paid provider, merge or production deployment was used.
+
+Fresh browser/Windows execution was not repeated locally in this documentation-only
+follow-up. The prior exact-runtime browser/platform CI links above remain evidence
+for those unchanged files; any new documentation-head CI is recorded separately
+in PR #37. Real-machine gates below remain open.
 
 ## Remaining real acceptance and bounded limitations
 
