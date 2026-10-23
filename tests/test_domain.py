@@ -68,6 +68,19 @@ class DomainTests(unittest.TestCase):
         grant = self.store.start_execution(self.scope, task["remote_task_id"], claim["claim_id"])
         return task, claim, grant
 
+    def started_codex(self, origin="codex-origin"):
+        self.store = BridgeStore(self.root / "ledger.db", self.root / "objects",
+                                 clock=lambda: self.now,
+                                 enabled_profiles=("fake-image", "codex-image"))
+        payload = self.payload(origin)
+        payload["execution_profile_id"] = "codex-image"
+        payload["execution_profile_revision"] = "1"
+        task = self.store.create_task(self.scope, payload)
+        claim = self.store.claim_task(self.scope, task["remote_task_id"],
+                                      node_id="node", executor_instance="instance")
+        grant = self.store.start_execution(self.scope, task["remote_task_id"], claim["claim_id"])
+        return task, claim, grant
+
     def ready_upload(self):
         task, claim, grant = self.started()
         data = self.png()
@@ -276,6 +289,34 @@ class DomainTests(unittest.TestCase):
         receipt = self.store.commit_upload(self.scope, upload["upload_id"], recovery["claim_id"])
         self.assertEqual(task["attempt_id"], receipt["attempt_id"])
         self.assertEqual(data, self.store.get_artifact_content(self.scope, receipt["artifact_id"])[0])
+
+    def test_unknown_codex_attempt_requires_upload_only_claim(self):
+        task, execute_claim, grant = self.started_codex()
+        self.store.mark_execution_unknown(self.scope, task["remote_task_id"], execute_claim["claim_id"])
+        data = self.png()
+        payload = {"attempt_id": grant["attempt_id"], "slot_id": "primary", **self.metadata(data)}
+        self.assert_error("upload_only_claim_required", self.store.create_upload, self.scope,
+                          task["remote_task_id"], execute_claim["claim_id"], payload)
+
+        self.now += 61
+        recovery = self.store.claim_task(self.scope, task["remote_task_id"], node_id="node",
+                                         executor_instance="instance", mode="upload_only")
+        upload = self.store.create_upload(self.scope, task["remote_task_id"], recovery["claim_id"], payload)
+        self.store.put_upload_content(self.scope, upload["upload_id"], recovery["claim_id"], data)
+        receipt = self.store.commit_upload(self.scope, upload["upload_id"], recovery["claim_id"])
+        self.assertEqual(task["attempt_id"], receipt["attempt_id"])
+
+    def test_unknown_codex_attempt_rejects_old_execute_during_existing_upload(self):
+        task, execute_claim, grant = self.started_codex()
+        data = self.png()
+        payload = {"attempt_id": grant["attempt_id"], "slot_id": "primary", **self.metadata(data)}
+        upload = self.store.create_upload(self.scope, task["remote_task_id"], execute_claim["claim_id"], payload)
+        self.store.put_upload_content(self.scope, upload["upload_id"], execute_claim["claim_id"], data)
+        self.store.mark_execution_unknown(self.scope, task["remote_task_id"], execute_claim["claim_id"])
+        self.assert_error("upload_only_claim_required", self.store.put_upload_content, self.scope,
+                          upload["upload_id"], execute_claim["claim_id"], data)
+        self.assert_error("upload_only_claim_required", self.store.commit_upload, self.scope,
+                          upload["upload_id"], execute_claim["claim_id"])
 
     def test_output_slot_attempt_hash_and_dimensions(self):
         task, claim, grant = self.started()

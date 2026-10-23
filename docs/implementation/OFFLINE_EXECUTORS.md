@@ -60,11 +60,14 @@ are recorded in `CODEX_SCHEMA_PROBE.json`; the actual command is recorded there.
 
 The generated schema confirms `item/completed` with `threadId`, `turnId`, and an
 `imageGeneration` item containing `id`, `status`, `result`, and optional `savedPath`.
-The collector requires one completed image item, a completed matching turn, and
-an exact original path within that attempt. Text saying “image generated”, latest
-file timestamps, or another turn's image cannot satisfy it. `result` is not guessed
-as a file path or base64 payload. These protocol fields are evidence of schema,
-not evidence that the current account/model can generate images.
+The collector requires one completed image item and a completed matching turn.
+It accepts an original already inside the bound attempt, or a direct file under
+`CODEX_HOME/generated_images/<matching-thread-id>/`; the latter is copied into the
+Bridge attempt and retention registry. Symlink/junction paths, other thread folders,
+and all other locations are rejected. Text saying “image generated”, latest file
+timestamps, or another turn's image cannot satisfy it. `result` is not guessed as a
+file path or base64 payload. These protocol fields are evidence of schema, not
+evidence that the current account/model can generate images.
 
 `StdioSession(argv, cwd)` implements bounded JSONL request/response transport and
 server notifications without a shell. Server requests for approval/input are
@@ -93,6 +96,8 @@ config = CodexConfig(
     enabled=True,
     executable="codex",
     model="<model accepted in your local image smoke test>",
+    accepted_cli_version="codex-cli 0.163.0",
+    approval_policy="on-request",
     image_capability_verified=True,
     tool_policy_verified=True,
 )
@@ -102,9 +107,17 @@ result = executor.execute(frozen_request)
 ```
 
 Every new execution additionally checks the installed version exactly matches
-0.163.0 and advertises stdio. The lifecycle uses untrusted approvals routed to the
-user, workspace-write limited to the attempt, excludes temporary writable roots,
-and denies sandbox network access. It never approves server requests. Ordered
+one of `codex-cli 0.157.1` or `codex-cli 0.163.0` and advertises stdio. The
+private Agent config must set `accepted_cli_version` to the exact version whose
+local image and tool acceptance the flags represent; the probed version must
+match before a turn can start. Static wire review found parity for the methods
+and events used here; it does not prove
+login or image generation. Each exact version needs separate local real-image
+acceptance before its capability flags may be enabled. The lifecycle requires
+`approval_policy=on-request`;
+server approval and tool requests are never automatically approved, and human
+attention is required when they arise. It uses workspace-write limited to the
+attempt, excludes temporary writable roots, and denies sandbox network access. Ordered
 references are hash-checked and sent as schema-defined localImage inputs. The
 original prompt is preserved as the first text input; rendering parameters are
 additional instructions, not invented structured image API arguments.
@@ -116,9 +129,9 @@ Concrete remaining local acceptance gaps:
   intended tools available before setting tool_policy_verified. Developer
   instructions are guidance, not a tool isolation guarantee.
 - The schema confirms imageGeneration/savedPath but does not confirm any specific
-  account/model can invoke it or will save exactly one original under cwd. Local
-  smoke acceptance must establish that. Missing savedPath/text-only completion
-  returns needs_attention, never fake success.
+  account/model can invoke it or will save exactly one original. Local smoke
+  acceptance must establish that. Missing savedPath/text-only completion returns
+  needs_attention, never fake success.
 - Reference roles and rendering dimensions are preserved as request evidence but
   are not asserted to be hard guarantees of the Codex image model.
 

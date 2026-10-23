@@ -30,8 +30,9 @@ Neither repository is merged or deployed by this work.
   current V3 uses its zero-credit development adapter.
 - Simple administrator toggle/folded threshold; separate trial consent and actual
   route display. Ordinary Generate and old bridge_only requests remain unchanged.
-- Explicit supported Codex on-request policy instead of unsupported untrusted;
-  old declarations are not silently migrated, sandbox/network and no-auto-approval
+- Explicit supported Codex on-request policy; both reviewed upstream wire
+  schemas include an `untrusted` value, but Bridge does not accept it or migrate old
+  declarations. Sandbox/network and no-auto-approval
   remain. Fake/configuration defaults do not enable real execution.
 - Same-Windows installation/configuration/startup guide and loopback-only Hatchet
   recipe. See [Windows local deployment](WINDOWS_LOCAL_LOOPBACK.md).

@@ -4,6 +4,7 @@
     "enabled": false,
     "executable": "codex",
     "model": "",
+    "accepted_cli_version": "",
     "image_capability_verified": false,
     "tool_policy_verified": false,
     "timeout": 120

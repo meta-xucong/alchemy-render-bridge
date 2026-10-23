@@ -12,7 +12,7 @@ import re
 import shutil
 
 from .agent.config import AgentConfig
-from .executors.codex import PINNED_CLI_VERSION, probe_codex
+from .executors.codex import SUPPORTED_CLI_VERSIONS, probe_codex
 from .profiles import get_profile
 from .runtime import RuntimeConfig
 
@@ -84,6 +84,9 @@ def inspect_local(bridge_path: Path, agent_path: Path, *, probe: bool = False) -
         for check_id, accepted, code, instruction in (
             ('codex_execution_enabled', config.enabled, 'codex_execution',
              'Codex execution remains opt-in; enable only after separate local acceptance.'),
+            ('codex_cli_version_acceptance', config.accepted_cli_version in SUPPORTED_CLI_VERSIONS,
+             'codex_cli_version_acceptance',
+             'Select one exact supported CLI version and complete local real-image acceptance for that version.'),
             ('codex_model', bool(config.model.strip()), 'codex_model',
              'Select the model used in your separate local acceptance; configuration is not model capability evidence.'),
             ('codex_image_acceptance', config.image_capability_verified, 'codex_image_acceptance',
@@ -114,17 +117,19 @@ def inspect_local(bridge_path: Path, agent_path: Path, *, probe: bool = False) -
     if probe and bridge and agent and executable_present:
         result = probe_codex(agent.codex.executable)
         observed = result.get('cli_version')
-        version_ok = observed == PINNED_CLI_VERSION
+        version_ok = (observed in SUPPORTED_CLI_VERSIONS
+                      and observed == agent.codex.accepted_cli_version)
         version_note = (' Observed installed version: ' + observed + '.'
                         if isinstance(observed, str) and re.fullmatch(r'codex-cli [0-9A-Za-z.+_-]{1,64}', observed)
                         else '')
-        protocol_ok = bool(result.get('schema_version_matches') and result.get('stdio_advertised'))
+        protocol_ok = bool(version_ok and result.get('schema_version_matches')
+                            and result.get('stdio_advertised'))
         add('codex_version', 'pass' if version_ok else 'attention', 'local_probe',
             'codex_version_matches' if version_ok else 'codex_version_not_validated',
-            'Use the pinned codex-cli 0.163.0 for this adapter; version output is not account or generation evidence.' + version_note)
+            'Configure the exact accepted Codex version (0.157.1 or 0.163.0) and complete separate local real-image acceptance for it; the installed version must match. Version output is not account or generation evidence.' + version_note)
         add('codex_protocol', 'pass' if protocol_ok else 'attention', 'local_probe',
             'codex_stdio_advertised' if protocol_ok else 'codex_stdio_not_validated',
-            'The pinned version must advertise app-server --stdio; help text does not verify a live protocol session.')
+            'The allowlisted version must advertise app-server --stdio; help text does not verify a live protocol session.')
     else:
         code = ('codex_probe_not_requested' if not probe else
                 'valid_configs_required' if not (bridge and agent) else 'codex_executable_missing')

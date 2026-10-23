@@ -1,9 +1,13 @@
 """No credentials, external tools or services: all subprocesses are fixtures."""
 import hashlib
+import io
 import json
 from pathlib import Path
+import queue
 import sys
 import tempfile
+import threading
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -98,8 +102,10 @@ class OfflineExecutorTests(unittest.TestCase):
     def test_codex_event_cannot_select_another_attempt_file(self):
         original = self.root / 'unrelated.png'
         original.write_bytes(fixture_png())
-        with self.assertRaises(ValueError):
-            CodexExecutor(self.root).collect_completed(self.request, thread_id='thread-1', turn_id='turn-1', events=self.events(original))
+        result = CodexExecutor(self.root).collect_completed(
+            self.request, thread_id='thread-1', turn_id='turn-1', events=self.events(original))
+        self.assertEqual(result.status, 'needs_attention')
+        self.assertEqual(result.code, 'codex_original_path_outside_owned_scope')
 
     def test_stdio_fixed_mock_and_server_request_not_autoapproved(self):
         script = self.root / 'mock.py'
@@ -110,6 +116,50 @@ class OfflineExecutorTests(unittest.TestCase):
         with StdioSession([sys.executable, '-u', str(script)], self.root) as session:
             with self.assertRaises(PermissionError):
                 session.request('initialize', {})
+
+    def test_stdio_accepts_bounded_image_event_larger_than_one_mib(self):
+        script = self.root / 'mock.py'
+        script.write_text("import sys,json\nr=json.loads(sys.stdin.readline())\n"
+                          "print(json.dumps({'id':r['id'],'result':{'image':'x'*2000000}}),flush=True)\n")
+        with StdioSession([sys.executable, '-u', str(script)], self.root) as session:
+            result = session.request('initialize', {})
+        self.assertEqual(len(result['image']), 2_000_000)
+
+    def test_stdio_enforces_cumulative_byte_budget(self):
+        wire = (json.dumps({'event': 'x' * 300}).encode() + b'\n'
+                + json.dumps({'event': 'y' * 300}).encode() + b'\n')
+        with patch('render_bridge.executors.codex.MAX_SESSION_BYTES', 500):
+            session = object.__new__(StdioSession)
+            session.process = SimpleNamespace(stdout=io.BytesIO(wire))
+            session.closed = threading.Event()
+            session.messages = queue.Queue(maxsize=8)
+            session.bytes_read = 0
+            session.structural_tokens = 0
+            session._read()
+            self.assertEqual(len(session.receive(timeout=3)['event']), 300)
+            with self.assertRaisesRegex(ValueError, 'session exceeds limit'):
+                session.receive(timeout=3)
+
+    def test_stdio_rejects_excessive_json_nesting_and_structure(self):
+        nested = b'[' * 65 + b'0' + b']' * 65 + b'\n'
+        crowded = b'[' + (b'0,' * 100_001) + b'0]\n'
+        self.assertIsNone(StdioSession._json_structure_token_count(nested))
+        self.assertIsNone(StdioSession._json_structure_token_count(crowded))
+
+    def test_stdio_enforces_cumulative_json_structure_budget(self):
+        wire = (json.dumps({'values': list(range(60))}).encode() + b'\n'
+                + json.dumps({'values': list(range(40))}).encode() + b'\n')
+        with patch('render_bridge.executors.codex.MAX_SESSION_STRUCTURAL_TOKENS', 100):
+            session = object.__new__(StdioSession)
+            session.process = SimpleNamespace(stdout=io.BytesIO(wire))
+            session.closed = threading.Event()
+            session.messages = queue.Queue(maxsize=8)
+            session.bytes_read = 0
+            session.structural_tokens = 0
+            session._read()
+            self.assertEqual(len(session.receive(timeout=3)['values']), 60)
+            with self.assertRaisesRegex(ValueError, 'JSON complexity exceeds limit'):
+                session.receive(timeout=3)
 
     def test_probe_missing_cli_does_not_claim_auth_or_image_support(self):
         self.assertEqual(probe_codex(str(self.root / 'nonexistent'))['image_generation_verified'], False)

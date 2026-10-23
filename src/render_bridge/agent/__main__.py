@@ -22,6 +22,11 @@ def main(argv=None):
     manual.add_argument('file', type=Path)
     manual.add_argument('--request-sha256', required=True)
     manual.add_argument('--confirm-single-original', action='store_true', required=True)
+    reconcile = sub.add_parser('reconcile-codex-interrupted',
+        help='Verify a completed image from the same aborted Codex turn; upload the original attempt only')
+    reconcile.add_argument('task_id')
+    reconcile.add_argument('rollout_file', type=Path,
+        help='Codex local rollout JSONL containing the bound image item and terminal turn_aborted event')
     notice = sub.add_parser('manual-notify', help='Explicitly send an ordinary Discord task notice, NOT /imagine')
     notice.add_argument('task_id')
     notice.add_argument('--request-sha256', required=True)
@@ -49,6 +54,8 @@ def main(argv=None):
             result = agent.manual_import(args.task_id, args.file,
                 confirmed_request_sha256=args.request_sha256,
                 confirmed_single_original=args.confirm_single_original)
+        elif args.command == 'reconcile-codex-interrupted':
+            result = agent.reconcile_codex_interrupted(args.task_id, args.rollout_file)
         else:
             result = agent.execute_task(args.task_id)
         print(json.dumps(result))

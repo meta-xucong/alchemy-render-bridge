@@ -105,6 +105,21 @@ class ProfileTests(unittest.TestCase):
         reopened=BridgeStore(self.root/'db',self.root/'artifacts')
         self.assertEqual(reopened.get_receipt(self.scope,receipt['receipt_id'])['execution_profile_id'],'codex-image')
 
+    def test_codex_upload_only_claim_is_bound_to_original_start_identity(self):
+        tid, execute_claim = self.claimed('codex-image', key='identity-bound-upload')
+        grant = self.store.start_execution(self.scope, tid, execute_claim['claim_id'])
+        self.assertTrue(grant['start_grant_id'])
+        self.now += 61
+        upload_claim = self.store.claim_task(self.scope, tid, node_id='node',
+            executor_instance='executor', mode='upload_only')
+        self.assertEqual(upload_claim['mode'], 'upload_only')
+        self.assertEqual(upload_claim['attempt_id'], execute_claim['attempt_id'])
+        self.now += 61
+        with self.assertRaises(DomainError) as caught:
+            self.store.claim_task(self.scope, tid, node_id='node',
+                executor_instance='different-executor', mode='upload_only')
+        self.assertEqual(caught.exception.code, 'upload_only_identity_mismatch')
+
     def test_manual_deadline_blocks_late_import_and_releases_pending_capacity(self):
         for i in range(3):
             tid, claim = self.claimed(key='expired-'+str(i))

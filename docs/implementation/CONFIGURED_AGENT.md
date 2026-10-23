@@ -61,7 +61,7 @@ python -m render_bridge.agent --state-dir ./local-agent-state --config ./agent.l
 python -m render_bridge.agent.hatchet_sidecar worker --state-dir ./local-agent-state --config ./agent.local.json
 ```
 
-- 默认配置不启用 Codex 或人工 MJ。加入 `codex-image` 后，还必须在本地完成真实能力验证并显式配置 `codex.enabled`、`model`、`image_capability_verified`、`tool_policy_verified`，并显式选择 `codex.approval_policy="on-request"`。空策略或旧 `untrusted` 不作为已接受配置。Agent 在 server start 前只做版本/help preflight；不通过返回 needs_attention，不占物理执行槽。真正 thread/turn 生命周期仍受本地配置控制，本轮仅 mock 验证。
+- 默认配置不启用 Codex 或人工 MJ。加入 `codex-image` 后，还必须在本地完成真实能力验证并显式配置 `codex.enabled`、`model`、`accepted_cli_version`、`image_capability_verified`、`tool_policy_verified`，并显式选择 `codex.approval_policy="on-request"`。空策略或旧 `untrusted` 不作为已接受配置。Agent 在 server start 前只做版本/help preflight；不通过返回 needs_attention，不占物理执行槽。真正 thread/turn 生命周期仍受本地配置控制，本轮仅 mock 验证。
 - 加入 `midjourney-manual` 后，任务导出 prompt.txt/task.json，服务通过 manual-ready 建立同 attempt 的 awaiting_user。返回 request_sha256 与导出文件路径，Hatchet 回调即结束，人工等待不占自动物理槽。此导出步骤不发送 Discord，也不调用 /imagine。已有独立、显式确认的 manual-notify 官方 Discord 普通消息功能，见 [Discord 任务通知](DISCORD_TASK_NOTICES.md)；消息不等于提交生成。人工 profile 不支持参考图，创建阶段即拒绝，不退化为纯文生图。
 - 每个真实 profile 请求必须显式给 width/height；原图需与冻结尺寸一致。用户自行在 Midjourney 生成，并明确选定一张原图，不是网格截图。使用导出时返回的 request_sha256：
 
@@ -80,9 +80,9 @@ python -m render_bridge.agent --state-dir ./local-agent-state --config ./agent.l
 - `account_health_probe_enabled: false`：独立、默认关闭。只有本机操作者明确同意通过用户自己的 CLI 查询现有账号状态后才可开启；同时需要健康报告开启。CLI **可能在内部刷新已有登录凭据**，不能把它描述为无网络、绝不写认证状态的 doctor 探测。
 - `health_revalidation_generation: 0`：可选的人工恢复确认序号；只在操作者核实原 auth/quota 故障已解除后递增一次。序号保存在同一 Agent journal；重复启动不能延长证据窗口，不用删除 journal 或自动递增来清除故障。
 
-`codex.approval_policy` 是 **codex 对象内**字段，默认 `""` 阻断真实执行。固定 0.163.0 的 app-server 不支持旧 `untrusted`，必须由操作者明确配置 `"on-request"`，并据实完成 `tool_policy_verified`、`image_capability_verified` 及 model/enabled 配置，不能自动把旧验收标记解释为新策略许可。该策略不是批准所有工具请求，仍须遵守本机工具审批与适配器的保守处理。
+`codex.accepted_cli_version` 和 `codex.approval_policy` 都是 **codex 对象内**字段；版本默认空，策略默认 `""`，任一缺少都阻断真实执行。仅精确版本 `codex-cli 0.157.1` 与 `codex-cli 0.163.0` 在此适配器的静态 wire review 中通过；这不证明登录或生图。操作者必须把 `accepted_cli_version` 设为唯一完成过本机真实图片与工具策略验收的精确版本；运行时探测必须与它相同，换版本需重新验收并更新配置。两版本官方 wire schema 均包含 `untrusted` 审批枚举，但 Bridge 只接受显式 `on-request`，不会把旧 `untrusted` 声明迁移为许可。操作者还须据实完成 `tool_policy_verified`、`image_capability_verified` 及 model/enabled 配置，不能自动把旧验收标记解释为新策略许可。该策略不是批准所有工具请求，仍须遵守本机工具审批与适配器的保守处理。
 
-账户探测使用既有 CLI app-server 协议初始化后调用 `account/rateLimits/read`，请求 `excludeResetCreditDetails=true`、`supportsLunaReserve=false`。Bridge 不直接读/复制认证文件、不返回凭据、不进行新登录/新授权、不用付费图像作为探测。探测失败或未知结果不伪造健康；`ordinaryUsageAllowed === true` 才是账户已验证的恢复证据，false 表示额度不可用，缺失/null/错误不能解除 auth/quota 故障。开启这个只读业务接口并不意味着 CLI 的内部认证刷新绝无副作用。
+账户探测仅对 `accepted_cli_version="codex-cli 0.163.0"` 使用既有 CLI app-server 协议初始化后调用 `account/rateLimits/read`，请求 `excludeResetCreditDetails=true`、`supportsLunaReserve=false`；0.157.1 不调用此 RPC，账户健康保持 unknown。Bridge 不直接读/复制认证文件、不返回凭据、不进行新登录/新授权、不用付费图像作为探测。探测失败或未知结果不伪造健康；`ordinaryUsageAllowed === true` 才是账户已验证的恢复证据，false 表示额度不可用，缺失/null/错误不能解除 auth/quota 故障。开启这个只读业务接口并不意味着 CLI 的内部认证刷新绝无副作用。
 
 固定官方来源：[0.163.0 响应类型](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/app-server-protocol/schema/typescript/v2/GetAccountRateLimitsResponse.ts)、[请求类型](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/app-server-protocol/schema/typescript/v2/GetAccountRateLimitsParams.ts)、[账户请求实现](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/app-server/src/request_processors/account_processor.rs)。这是协议依据，不是本机已登录或真实图像验收记录。
 

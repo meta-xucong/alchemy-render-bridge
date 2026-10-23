@@ -37,11 +37,11 @@ class AccountProbeTests(unittest.TestCase):
     def test_probe_opt_in_and_actual_cause_recovery(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); journal = AgentJournal(root)
-            config = CodexConfig(enabled=True,model='accepted',image_capability_verified=True,
+            config = CodexConfig(enabled=True,model='accepted',accepted_cli_version='codex-cli 0.163.0',image_capability_verified=True,
                                  tool_policy_verified=True,approval_policy='on-request')
             executor = CodexExecutor(root/'exec',config)
             registry = ExecutorRegistry({'codex-image':executor},health_reporting_enabled=True)
-            good = lambda _: {'schema_version_matches':True,'stdio_advertised':True}
+            good = lambda _: {'cli_version':'codex-cli 0.163.0','schema_version_matches':True,'stdio_advertised':True}
             def reporter(account_probe):
                 return ProfileHealthReporter(journal,registry,codex_probe=good,account_probe=account_probe)
             with patch('render_bridge.agent.account_health.StdioSession', side_effect=AssertionError('not enabled')):
@@ -57,6 +57,21 @@ class AccountProbeTests(unittest.TestCase):
             unknown = reporter(lambda *_:None).reports()[0]
             self.assertEqual(('unknown','unverified','none'), (unknown['health'],unknown['reason_code'],unknown['evidence_kind']))
             self.assertFalse(AgentConfig().account_health_probe_enabled)
+
+    def test_0157_image_acceptance_never_invokes_0163_account_health_rpc(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); journal = AgentJournal(root)
+            config = CodexConfig(enabled=True, model='accepted', accepted_cli_version='codex-cli 0.157.1',
+                image_capability_verified=True, tool_policy_verified=True, approval_policy='on-request')
+            executor = CodexExecutor(root/'exec', config)
+            registry = ExecutorRegistry({'codex-image': executor}, health_reporting_enabled=True,
+                account_health_probe_enabled=True)
+            probe = lambda _: {'cli_version':'codex-cli 0.157.1','schema_version_matches':True,'stdio_advertised':True}
+            reporter = ProfileHealthReporter(journal, registry, codex_probe=probe,
+                account_probe=lambda *_:self.fail('0.157.1 account/rateLimits must not be invoked'))
+            report = reporter.reports()[0]
+            self.assertEqual(('unknown','unverified','none'),
+                (report['health'],report['reason_code'],report['evidence_kind']))
 
 
 class RevalidationFenceTests(unittest.TestCase):

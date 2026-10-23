@@ -25,12 +25,12 @@ class CodexHealthErrorTests(unittest.TestCase):
     def test_terminal_failed_turn_records_health_and_releases_slot_without_replay(self):
         for index, (info, expected) in enumerate([('unauthorized','auth_unavailable'),('usageLimitExceeded','quota_exhausted')]):
             task_id = self.create('codex-image', 'failure'+str(index))
-            config = CodexConfig(enabled=True, model='accepted', image_capability_verified=True,
+            config = CodexConfig(enabled=True, model='accepted', accepted_cli_version='codex-cli 0.163.0', image_capability_verified=True,
                                  tool_policy_verified=True, approval_policy='on-request')
             executor = CodexExecutor(self.state/'executors', config)
             registry = ExecutorRegistry({'codex-image':executor}, health_reporting_enabled=True)
             agent = NodeAgent(self.client, self.state/'health-agent', registry=registry)
-            good = lambda _:dict(schema_version_matches=True, stdio_advertised=True)
+            good = lambda _:dict(cli_version='codex-cli 0.163.0', schema_version_matches=True, stdio_advertised=True)
             agent.health_reporter = ProfileHealthReporter(agent.journal, registry, clock=lambda:self.now,
                                                          wall_clock=lambda:self.now, codex_probe=good)
             def execute(request):

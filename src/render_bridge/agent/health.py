@@ -52,19 +52,27 @@ class ProfileHealthReporter:
                         health, reason = 'unavailable', probe.get('health_reason', 'tool_missing')
                     elif not (probe.get('schema_version_matches') and probe.get('stdio_advertised')):
                         health, reason = 'unavailable', probe.get('health_reason', 'version_unsupported')
+                    elif probe.get('cli_version') != config.accepted_cli_version:
+                        if config.accepted_cli_version:
+                            health, reason = 'unavailable', 'version_unsupported'
+                        else:
+                            health, reason = 'unknown', 'unverified'
                     elif not (config.enabled and config.model and config.approval_policy == 'on-request' and config.image_capability_verified and config.tool_policy_verified):
                         health, reason = 'unknown', 'unverified'
                     else:
                         evidence = 'operator_validation' if revalidated else 'operator_attested_preflight'
                     if health == 'available' and self.registry.account_health_probe_enabled:
-                        allowed = self.account_probe(config.executable, self.journal.root)
-                        if allowed is True:
-                            evidence = 'account_status'
-                        elif allowed is False:
-                            health, reason, evidence = 'unavailable', 'probe_failed', 'account_status'
-                            self.journal.record_health_fault(name, reason, 'status-'+str(self.clock()), self.registry.health_revalidation_generation)
-                        elif self.journal.health_fault(name) is None:
+                        if config.accepted_cli_version != 'codex-cli 0.163.0':
                             health, reason, evidence = 'unknown', 'unverified', 'none'
+                        else:
+                            allowed = self.account_probe(config.executable, self.journal.root)
+                            if allowed is True:
+                                evidence = 'account_status'
+                            elif allowed is False:
+                                health, reason, evidence = 'unavailable', 'probe_failed', 'account_status'
+                                self.journal.record_health_fault(name, reason, 'status-'+str(self.clock()), self.registry.health_revalidation_generation)
+                            elif self.journal.health_fault(name) is None:
+                                health, reason, evidence = 'unknown', 'unverified', 'none'
                     # These flags are only pre-existing local acceptance gates, not
                     # proof of account validity, quota or production acceptance.
                 fault = self.journal.health_fault(name)

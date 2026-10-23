@@ -13,7 +13,7 @@ from render_bridge.agent.config import AgentConfig
 from render_bridge.agent.registry import ExecutorRegistry
 from render_bridge.doctor import EXIT_CODES, inspect_local, main, render_human
 from render_bridge.domain import BridgeStore, SourceScope
-from render_bridge.executors.codex import CodexConfig, PINNED_CLI_VERSION, probe_codex
+from render_bridge.executors.codex import CodexConfig, SUPPORTED_CLI_VERSIONS, probe_codex
 from render_bridge.profiles import get_profile
 from render_bridge.runtime import RuntimeConfig
 
@@ -23,7 +23,7 @@ class AgentConfigTests(unittest.TestCase):
         self.assertEqual(AgentConfig.load().enabled_profiles, ('fake-image',))
         self.assertEqual(AgentConfig.from_mapping({}).codex, CodexConfig())
         config = AgentConfig.from_mapping({'enabled_profiles': ['fake-image', 'codex-image', 'midjourney-manual'],
-            'codex': {'enabled': True, 'model': 'accepted-model', 'timeout': 0.5,
+            'codex': {'enabled': True, 'model': 'accepted-model', 'accepted_cli_version': 'codex-cli 0.163.0', 'timeout': 0.5,
                       'image_capability_verified': True, 'tool_policy_verified': True}})
         self.assertEqual(len(config.enabled_profiles), 3)
         self.assertTrue(config.codex.enabled)
@@ -40,6 +40,8 @@ class AgentConfigTests(unittest.TestCase):
                       {'codex': {'unknown': True}}, {'codex': {'executable': ''}},
                       {'codex': {'model': 42}}, {'codex': {'timeout': 0}},
                       {'codex': {'timeout': True}}, {'codex': {'timeout': float('nan')}},
+                      {'codex': {'accepted_cli_version': 'codex-cli 0.163.0-alpha.11'}},
+                      {'codex': {'enabled': True}},
                       {'codex': {'timeout': float('inf')}}]
         for field in ('enabled', 'image_capability_verified', 'tool_policy_verified'):
             for value in ('false', 'true', 0, 1, None):
@@ -177,7 +179,8 @@ class DoctorTests(unittest.TestCase):
         self.bridge['enabled_profiles'] = ['codex-image']
         self.agent = {'enabled_profiles': ['codex-image'], 'codex': {
             'enabled': accepted, 'model': 'do-not-print', 'image_capability_verified': accepted,
-            'tool_policy_verified': accepted, 'executable': '/do-not-print/codex'}}
+            'tool_policy_verified': accepted, 'executable': '/do-not-print/codex',
+            'accepted_cli_version': 'codex-cli 0.163.0' if accepted else ''}}
         self.save()
 
     def test_declarations_and_executable_are_not_real_verification(self):
@@ -204,21 +207,35 @@ class DoctorTests(unittest.TestCase):
 
     def test_explicit_probe_uses_configured_executable_but_keeps_real_unverified(self):
         self.codex_config()
+        for version in sorted(SUPPORTED_CLI_VERSIONS):
+            self.agent['codex']['accepted_cli_version'] = version
+            self.save()
+            with self.subTest(version=version), \
+                 patch('render_bridge.doctor.shutil.which', return_value='/local/codex'), \
+                 patch('render_bridge.doctor.probe_codex', return_value={
+                     'cli_version': version, 'schema_version_matches': True, 'stdio_advertised': True}) as probe:
+                report = self.inspect(probe=True)
+            probe.assert_called_once_with('/do-not-print/codex')
+            self.assertEqual(report['outcome'], 'attention')
+            self.assertIn('Observed installed version: ' + version + '.', self.checks(report)['codex_version']['next_step'])
+            for key in ('codex_version', 'codex_protocol'):
+                self.assertEqual(self.checks(report)[key]['status'], 'pass')
+                self.assertEqual(self.checks(report)[key]['evidence'], 'local_probe')
+        self.agent['codex']['accepted_cli_version'] = 'codex-cli 0.163.0'
+        self.save()
         with patch('render_bridge.doctor.shutil.which', return_value='/local/codex'), \
              patch('render_bridge.doctor.probe_codex', return_value={
-                 'cli_version': PINNED_CLI_VERSION, 'schema_version_matches': True, 'stdio_advertised': True}) as probe:
+                 'cli_version': 'codex-cli 0.157.1', 'schema_version_matches': True, 'stdio_advertised': True}):
             report = self.inspect(probe=True)
-        probe.assert_called_once_with('/do-not-print/codex')
-        self.assertEqual(report['outcome'], 'attention')
-        self.assertIn('Observed installed version: codex-cli 0.163.0.', self.checks(report)['codex_version']['next_step'])
-        for key in ('codex_version', 'codex_protocol'):
-            self.assertEqual(self.checks(report)[key]['status'], 'pass')
-            self.assertEqual(self.checks(report)[key]['evidence'], 'local_probe')
+        self.assertEqual('attention', self.checks(report)['codex_version']['status'])
+        self.assertEqual('attention', self.checks(report)['codex_protocol']['status'])
 
     def test_probe_failure_and_stdio_absence_do_not_pass(self):
         for result in ({'code': 'codex_unavailable'}, {'cli_version': 'do-not-print'},
-                       {'cli_version': 'codex-cli 0.163.0\ndo-not-print'},
-                       {'cli_version': PINNED_CLI_VERSION, 'schema_version_matches': True, 'stdio_advertised': False}):
+                       {'cli_version': 'codex-cli 0.163.0-alpha.11', 'schema_version_matches': True,
+                        'stdio_advertised': True},
+                       {'cli_version': 'codex-cli 0.157.1\ndo-not-print'},
+                       {'cli_version': 'codex-cli 0.163.0', 'schema_version_matches': True, 'stdio_advertised': False}):
             with patch('render_bridge.doctor.shutil.which', return_value='/local/codex'), \
                  patch('render_bridge.doctor.probe_codex', return_value=result):
                 report = self.inspect(probe=True)
@@ -255,7 +272,7 @@ class ProbeAndDescriptorTests(unittest.TestCase):
             self.assertNotIn('CODEX_API_KEY', env)
             self.assertEqual(kwargs['timeout'], 10)
             self.assertIn(argv, [['trusted-codex', '--version'], ['trusted-codex', 'app-server', '--help']])
-            return types.SimpleNamespace(returncode=0, stdout=PINNED_CLI_VERSION if argv[-1] == '--version' else '--stdio')
+            return types.SimpleNamespace(returncode=0, stdout='codex-cli 0.163.0' if argv[-1] == '--version' else '--stdio')
         with patch.dict(os.environ, {'OPENAI_API_KEY': 'do-not-print', 'CODEX_API_KEY': 'do-not-print',
                                      'BRIDGE_SOURCE_TOKEN': 'do-not-print'}), \
              patch('render_bridge.executors.codex.subprocess.run', side_effect=run) as process:
@@ -265,6 +282,19 @@ class ProbeAndDescriptorTests(unittest.TestCase):
         self.assertFalse(homes[0].exists())
         self.assertFalse(result['image_generation_verified'])
         self.assertTrue(result['schema_version_matches'])
+
+    def test_probe_accepts_only_exact_official_allowlist_versions(self):
+        for version in ('codex-cli 0.157.1', 'codex-cli 0.163.0',
+                        'codex-cli 0.163.0-alpha.11', 'codex-cli 0.163.1'):
+            with self.subTest(version=version), patch(
+                    'render_bridge.executors.codex.subprocess.run', side_effect=[
+                        types.SimpleNamespace(returncode=0, stdout=version),
+                        types.SimpleNamespace(returncode=0, stdout='app-server --stdio')]):
+                result = probe_codex('trusted-codex')
+            accepted = version in SUPPORTED_CLI_VERSIONS
+            self.assertEqual(result['schema_version_matches'], accepted)
+            self.assertEqual(result['code'], 'local_image_acceptance_required' if accepted else 'codex_version_not_validated')
+            self.assertFalse(result['image_generation_verified'])
 
     def test_capabilities_derive_fresh_descriptor_without_changing_revisions(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -17,6 +17,17 @@ from .registry import ExecutorRegistry
 _KEY = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$')
 
 
+def _bridge_reference_payloads(references):
+    if not isinstance(references, (list, tuple)):
+        return None
+    result = []
+    for reference in references:
+        if not isinstance(reference, dict):
+            return None
+        result.append({key: value for key, value in reference.items() if key != 'path'})
+    return result
+
+
 class NodeAgent:
     def __init__(self, client, state_dir: Path, *, profile='fake-image', registry=None):
         self.client = client
@@ -103,6 +114,8 @@ class NodeAgent:
         profile_id = task['request']['execution_profile_id']
         validate_image_request(task['request']['parameters'], task['request']['references'], profile_id)
         if record and record['state'] == 'artifact_ready':
+            if profile_id == 'codex-image' and not self._revalidate_codex_artifact(record, task):
+                return {'outcome': 'execution_unknown', 'task_id': task_id}
             return self._upload(record)
         profile = get_profile(profile_id)
         # Legacy explicit injection is limited to the configured legacy profile.
@@ -118,6 +131,22 @@ class NodeAgent:
                         if recovered.status == 'terminal_failure':
                             return self._save_terminal_failure(record, recovered)
                         if recovered.status == 'ready' and recovered.artifact is not None:
+                            proof = None
+                            if recovered.details.get('review_only') is True:
+                                proof = recovered.details.get('reconciliation')
+                                if (not self._codex_review_proof_matches(
+                                            record, proof, recovered.artifact, task)
+                                        or (record.get('review_only_reconciliation') is not None
+                                            and record['review_only_reconciliation'] != proof)):
+                                    self._unknown(record)
+                                    return {'outcome': 'execution_unknown', 'task_id': task_id}
+                                record['review_only_reconciliation'] = proof
+                                self.journal.save(record)
+                            elif (record.get('review_only_reconciliation') is not None
+                                  or record.get('artifact_provenance')
+                                  == 'codex_aborted_turn_review_only'):
+                                self._unknown(record)
+                                return {'outcome': 'execution_unknown', 'task_id': task_id}
                             self._save_artifact(record, recovered.artifact, profile)
                             return self._upload(record)
                         self._unknown(record)
@@ -195,6 +224,13 @@ class NodeAgent:
         if grant.get('may_execute') is not True or grant.get('attempt_id') != attempt_id:
             self._unknown(record)
             return {'outcome': 'execution_unknown', 'task_id': task_id}
+        if profile_id == 'codex-image':
+            if (not isinstance(grant.get('start_grant_id'), str)
+                    or not grant['start_grant_id']):
+                self._unknown(record)
+                return {'outcome': 'execution_unknown', 'task_id': task_id}
+            record['start_grant_id'] = grant['start_grant_id']
+            self.journal.save(record)
         try:
             result = executor.execute(request)
             if self.health_reporter is not None:
@@ -224,8 +260,78 @@ class NodeAgent:
             raise ValueError('Executor original does not match requested output format')
         self._save_bytes(saved, content)
         record.update(state='artifact_ready', artifact=str(saved.relative_to(self.journal.root)),
-                      sha256=checked.sha256, size=checked.size, mime_type=checked.mime_type)
+                      sha256=checked.sha256, size=checked.size, mime_type=checked.mime_type,
+                      artifact_provenance=artifact.provenance)
         self.journal.save(record)
+
+    def _codex_review_proof_matches(self, record, proof, artifact, task):
+        if not isinstance(proof, dict) or not isinstance(task, dict):
+            return False
+        binding = proof.get('bridge_binding')
+        server_request = task.get('request') or {}
+        try:
+            request = ExecutionRequest(**record['request'])
+        except (KeyError, TypeError, ValueError):
+            return False
+        task_digest = task.get('task_digest')
+        profile_revision = server_request.get('execution_profile_revision')
+        return bool(
+            isinstance(binding, dict)
+            and proof.get('contract') == 'codex-aborted-image-reconcile/v1'
+            and proof.get('task_id') == record.get('task_id') == task.get('remote_task_id')
+            and proof.get('attempt_id') == record.get('attempt_id') == task.get('attempt_id')
+            and proof.get('request_sha256') == request.digest == record.get('request_sha256')
+            and proof.get('original_sha256') == artifact.sha256
+            and proof.get('review_only') is True
+            and binding.get('task_digest') == task_digest
+            and isinstance(task_digest, str) and len(task_digest) == 64
+            and all(char in '0123456789abcdef' for char in task_digest)
+            and binding.get('profile_id') == server_request.get('execution_profile_id') == 'codex-image'
+            and binding.get('profile_revision') == profile_revision == get_profile('codex-image').revision
+            and binding.get('output_slot') == server_request.get('output_slot')
+            == {'count': 1, 'slot_id': 'primary'}
+            and binding.get('start_grant_id') == record.get('start_grant_id')
+            and isinstance(record.get('start_grant_id'), str) and bool(record['start_grant_id'])
+            and server_request.get('prompt') == request.prompt
+            and server_request.get('parameters') == request.parameters
+            and server_request.get('references', []) == _bridge_reference_payloads(request.references)
+        )
+
+    def _revalidate_codex_artifact(self, record, task=None):
+        """Recheck Codex evidence before replaying an artifact_ready upload."""
+        executor = self.registry.get('codex-image')
+        if executor is None or not hasattr(executor, 'recover_completed'):
+            self._unknown(record)
+            return False
+        try:
+            task = task or self.client.task(record['task_id'])
+            recovered = executor.recover_completed(ExecutionRequest(**record['request']))
+        except Exception:
+            task = None
+            recovered = None
+        artifact = getattr(recovered, 'artifact', None)
+        if (getattr(recovered, 'status', None) != 'ready' or artifact is None
+                or artifact.sha256 != record.get('sha256')
+                or artifact.size != record.get('size')
+                or artifact.mime_type != record.get('mime_type')):
+            self._unknown(record)
+            return False
+        proof = recovered.details.get('reconciliation') if recovered.details.get('review_only') is True else None
+        if recovered.details.get('review_only') is True:
+            if (not self._codex_review_proof_matches(record, proof, artifact, task)
+                    or proof.get('original_sha256') != record.get('sha256')
+                    or (record.get('review_only_reconciliation') is not None
+                        and record['review_only_reconciliation'] != proof)):
+                self._unknown(record)
+                return False
+            record['review_only_reconciliation'] = proof
+        elif (record.get('review_only_reconciliation') is not None
+              or record.get('artifact_provenance') == 'codex_aborted_turn_review_only'):
+            self._unknown(record)
+            return False
+        record['artifact_provenance'] = artifact.provenance
+        self.journal.save(record)
+        return True
 
     def manual_notify(self, task_id, notifier, *, confirmed_request_sha256):
         """Explicit ordinary task notice; never changes generation/attempt state."""
@@ -250,6 +356,77 @@ class NodeAgent:
             if request.digest != confirmed_request_sha256:
                 raise ValueError('Saved request no longer matches its confirmation')
             return {'task_id': task_id, **notifier.send(request, self.journal, record)}
+
+    def reconcile_codex_interrupted(self, task_id, rollout_path):
+        """Bind one explicit Codex aborted-turn image to its existing attempt.
+
+        This operator path can only verify local evidence and upload the same
+        attempt's original. It never calls executor.execute or starts a turn.
+        """
+        if not isinstance(task_id, str) or not _KEY.fullmatch(task_id):
+            raise ValueError('Invalid task identifier')
+        with InstanceLock(self.journal.root / 'agent.lock'):
+            task = self.client.task(task_id)
+            record = self.journal.get(task_id)
+            if not record or record.get('attempt_id') != task.get('attempt_id'):
+                raise ValueError('Matching exported local attempt required')
+            if task.get('receipt_id'):
+                record.update(state='complete', receipt_id=task['receipt_id'])
+                self.journal.save(record)
+                return {'outcome': 'already_committed', 'task_id': task_id,
+                        'receipt_id': task['receipt_id']}
+            if record.get('state') == 'artifact_ready':
+                if not self._revalidate_codex_artifact(record, task):
+                    return {'outcome': 'execution_unknown', 'task_id': task_id}
+                proof = record.get('review_only_reconciliation')
+                if (not proof or proof.get('contract') != 'codex-aborted-image-reconcile/v1'
+                        or proof.get('original_sha256') != record.get('sha256')
+                        or proof.get('attempt_id') != record.get('attempt_id')
+                        or proof.get('task_id') != task_id or proof.get('review_only') is not True):
+                    self._unknown(record)
+                    return {'outcome': 'execution_unknown', 'task_id': task_id}
+                return self._upload(record)
+            if (task.get('state') != 'execution_unknown'
+                    or record.get('state') not in ('start_requested', 'execution_unknown')
+                    or record.get('profile_id') != 'codex-image'
+                    or not record.get('claim_id')
+                    or not isinstance(record.get('start_grant_id'), str)
+                    or not record['start_grant_id']):
+                raise ValueError('Only a started unknown Codex attempt can be reconciled')
+            attempt_work = self.journal.root / 'attempts' / task_id / record['attempt_id']
+            if not attempt_work.is_dir():
+                raise ValueError('Original Agent attempt directory is missing')
+            request = ExecutionRequest(**record['request'])
+            if (request.task_id != task_id or request.attempt_id != record['attempt_id']
+                    or request.digest != record.get('request_sha256')):
+                raise ValueError('Frozen request does not match the original attempt')
+            server_request = task.get('request') or {}
+            if (server_request.get('execution_profile_id') != 'codex-image'
+                    or server_request.get('prompt') != request.prompt
+                    or server_request.get('parameters') != request.parameters
+                    or server_request.get('references', []) != _bridge_reference_payloads(request.references)
+                    or server_request.get('output_slot') != {'count': 1, 'slot_id': 'primary'}):
+                raise ValueError('Bridge frozen request differs from the original Agent request')
+            task_digest = task.get('task_digest')
+            profile_revision = server_request.get('execution_profile_revision')
+            if (not isinstance(task_digest, str)
+                    or profile_revision != get_profile('codex-image').revision):
+                raise ValueError('Bridge task digest/profile revision binding is missing')
+            executor = self.registry.get('codex-image')
+            if executor is None or not hasattr(executor, 'reconcile_interrupted_image'):
+                return {'outcome': 'needs_attention', 'code': 'codex_profile_not_enabled',
+                        'task_id': task_id}
+            result = executor.reconcile_interrupted_image(request, Path(rollout_path),
+                bridge_binding={'task_digest': task_digest,
+                    'start_grant_id': record['start_grant_id'],
+                    'output_slot': {'count': 1, 'slot_id': 'primary'},
+                    'profile_id': 'codex-image', 'profile_revision': profile_revision})
+            if result.status != 'ready' or result.artifact is None:
+                return {'outcome': result.status, 'code': result.code, 'task_id': task_id}
+            record['review_only_reconciliation'] = result.details['reconciliation']
+            self.journal.save(record)
+            self._save_artifact(record, result.artifact, get_profile('codex-image'))
+            return self._upload(record)
 
     def manual_import(self, task_id, source, *, confirmed_request_sha256, confirmed_single_original):
         if not isinstance(task_id, str) or not _KEY.fullmatch(task_id):
@@ -354,6 +531,34 @@ class NodeAgent:
             return {'outcome': 'needs_attention', 'code': 'output_format_mismatch', 'task_id': record['task_id']}
         payload = {'attempt_id': record['attempt_id'], 'slot_id': 'primary',
                    'original_sha256': record['sha256'], 'size': record['size'], 'mime_type': record['mime_type']}
+        proof = record.get('review_only_reconciliation')
+        review_only_artifact = (record.get('artifact_provenance')
+                                == 'codex_aborted_turn_review_only')
+        if review_only_artifact and (not isinstance(proof, dict)
+                or proof.get('contract') != 'codex-aborted-image-reconcile/v1'
+                or proof.get('task_id') != record.get('task_id')
+                or proof.get('attempt_id') != record.get('attempt_id')
+                or proof.get('original_sha256') != record.get('sha256')
+                or proof.get('review_only') is not True):
+            self._unknown(record)
+            return {'outcome': 'execution_unknown', 'task_id': record['task_id']}
+        require_upload_only = (review_only_artifact or
+            (isinstance(proof, dict)
+             and proof.get('contract') == 'codex-aborted-image-reconcile/v1'))
+        if require_upload_only:
+            try:
+                claim = self.client.claim(record['task_id'], 'upload_only')
+            except Exception as exc:
+                return {'outcome': 'upload_pending',
+                        'code': getattr(exc, 'code', 'upload_only_claim_unavailable'),
+                        'task_id': record['task_id']}
+            if (claim.get('mode') != 'upload_only'
+                    or claim.get('attempt_id') != record['attempt_id']
+                    or not isinstance(claim.get('claim_id'), str) or not claim['claim_id']):
+                self._unknown(record)
+                return {'outcome': 'execution_unknown', 'task_id': record['task_id']}
+            record.update(claim_id=claim['claim_id'], claim_mode='upload_only')
+            self.journal.save(record)
         try:
             try:
                 upload = self.client.create_upload(record['task_id'], record['claim_id'], payload)
@@ -361,16 +566,23 @@ class NodeAgent:
                 if exc.code not in ('claim_expired', 'stale_claim'):
                     raise
                 claim = self.client.claim(record['task_id'], 'upload_only')
-                if claim['attempt_id'] != record['attempt_id']:
+                if (claim['attempt_id'] != record['attempt_id']
+                        or (require_upload_only and claim.get('mode') != 'upload_only')
+                        or not isinstance(claim.get('claim_id'), str)
+                        or not claim['claim_id']):
                     raise ValueError('Recovery changed attempt identity')
                 record['claim_id'] = claim['claim_id']
+                if require_upload_only:
+                    record['claim_mode'] = 'upload_only'
                 self.journal.save(record)
                 upload = self.client.create_upload(record['task_id'], record['claim_id'], payload)
             record['upload_id'] = upload['upload_id']
             self.journal.save(record)
             self.client.put_upload(upload['upload_id'], record['claim_id'], content, record['mime_type'])
             receipt = self.client.commit(upload['upload_id'], record['claim_id'])
-            if receipt['attempt_id'] != record['attempt_id'] or receipt['original_sha256'] != record['sha256']:
+            if (receipt.get('task_id') != record['task_id']
+                    or receipt.get('attempt_id') != record['attempt_id']
+                    or receipt.get('original_sha256') != record['sha256']):
                 raise ValueError('Receipt does not match saved artifact')
             record.update(state='complete', receipt_id=receipt['receipt_id'])
             self.journal.save(record)

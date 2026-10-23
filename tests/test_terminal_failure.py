@@ -30,12 +30,13 @@ class TerminalFailureTests(unittest.TestCase):
 
     def configured(self):
         executor = CodexExecutor(self.state/'executors', CodexConfig(enabled=True, model='fixture',
+            accepted_cli_version='codex-cli 0.163.0',
             approval_policy='on-request', image_capability_verified=True, tool_policy_verified=True))
         registry = ExecutorRegistry({'codex-image': executor, 'fake-image': FakeExecutor(self.state/'executors')},
             health_reporting_enabled=True)
         agent = NodeAgent(self.client, self.state, registry=registry)
         agent.health_reporter = ProfileHealthReporter(agent.journal, registry, clock=lambda:self.now,
-            codex_probe=lambda _:dict(schema_version_matches=True, stdio_advertised=True),
+            codex_probe=lambda _:dict(cli_version='codex-cli 0.163.0', schema_version_matches=True, stdio_advertised=True),
             account_probe=lambda *_:True)
         return agent, executor
 

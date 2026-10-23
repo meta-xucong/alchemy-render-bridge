@@ -66,7 +66,7 @@ class AvailabilityTests(unittest.TestCase):
         journal = AgentJournal(self.root/'agent')
         executor = CodexExecutor(self.root/'exec', CodexConfig())
         registry = ExecutorRegistry({'codex-image': executor}, health_reporting_enabled=True)
-        probe = lambda executable: dict(schema_version_matches=True, stdio_advertised=True)
+        probe = lambda executable: dict(cli_version='codex-cli 0.163.0', schema_version_matches=True, stdio_advertised=True)
         reporter = ProfileHealthReporter(journal, registry, clock=lambda: self.now, codex_probe=probe)
         first = reporter.reports(); self.assertEqual('unknown', first[0]['health'])
         self.assertEqual(first, reporter.reports())
@@ -99,9 +99,10 @@ class AvailabilityTests(unittest.TestCase):
 
     def test_accepted_config_health_has_attested_evidence_and_missing_policy_blocks(self):
         from render_bridge.executors.base import ExecutionRequest
-        probe = lambda _: dict(schema_version_matches=True, stdio_advertised=True)
+        probe = lambda _: dict(cli_version='codex-cli 0.163.0', schema_version_matches=True, stdio_advertised=True)
         for policy, expected in (('', 'unknown'), ('on-request', 'available')):
             config = CodexConfig(enabled=True, model='model', image_capability_verified=True,
+                                 accepted_cli_version='codex-cli 0.163.0',
                                  tool_policy_verified=True, approval_policy=policy)
             executor = CodexExecutor(self.root/'exec', config)
             reporter = ProfileHealthReporter(AgentJournal(self.root/'agent'),
@@ -114,4 +115,12 @@ class AvailabilityTests(unittest.TestCase):
                 with patch('render_bridge.executors.codex.probe_codex') as called:
                     self.assertEqual('codex_local_acceptance_required', executor.preflight(ExecutionRequest('task','attempt','prompt', {'width':32,'height':32})).code)
                     called.assert_not_called()
+        accepted = CodexConfig(enabled=True, model='model', accepted_cli_version='codex-cli 0.163.0',
+            image_capability_verified=True, tool_policy_verified=True, approval_policy='on-request')
+        reporter = ProfileHealthReporter(AgentJournal(self.root/'agent'),
+            ExecutorRegistry({'codex-image': CodexExecutor(self.root/'exec', accepted)}, health_reporting_enabled=True),
+            codex_probe=lambda _: dict(cli_version='codex-cli 0.157.1', schema_version_matches=True, stdio_advertised=True))
+        mismatch_report = reporter.reports()[0]
+        self.assertEqual('unavailable', mismatch_report['health'])
+        self.assertEqual('version_unsupported', mismatch_report['reason_code'])
         with self.assertRaises(ValueError): CodexConfig(approval_policy='untrusted')

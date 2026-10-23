@@ -50,7 +50,7 @@ python -m render_bridge.doctor --bridge-config config/bridge.example.json --agen
 
 ## 仍需开发或配置的范围
 
-默认服务和 Agent 只启用 `fake-image`。`codex-image` 与 `midjourney-manual` 的配置路由、执行前检查、人工等待及原图导入接线已经实现，必须在服务和 Agent 配置中分别显式启用。启用 Codex 还需要本地账号/model/工具策略验收标记，以及操作者显式确认的 `codex.approval_policy="on-request"`（固定 0.163.0 不支持旧 `untrusted`，空策略仍阻断，旧标记不自动迁移）；当前仅通过模拟子进程测试，不代表真实生图已验收。非 fake 请求必须显式提供目标宽高，回传原图严格核验尺寸，不自动缩放。
+默认服务和 Agent 只启用 `fake-image`。`codex-image` 与 `midjourney-manual` 的配置路由、执行前检查、人工等待及原图导入接线已经实现，必须在服务和 Agent 配置中分别显式启用。Codex 仅允许精确 `codex-cli 0.157.1` 和 `codex-cli 0.163.0`；静态 wire review 不代表已登录或真实生图验收，每个版本必须分别完成本机真实图片能力验收后，才能将该版本写入 `accepted_cli_version` 并设置能力标记，运行时探测必须与之相同。两版本官方 wire schema 均包含 `untrusted` 审批枚举，但 Bridge 只接受显式的 `codex.approval_policy="on-request"`（空策略仍阻断，旧标记不自动迁移）。当前仅通过模拟子进程测试，不代表真实生图已验收。非 fake 请求必须显式提供目标宽高，回传原图严格核验尺寸，不自动缩放。
 
 SQLite 是单机开发后端，不等于设计中的 PostgreSQL 生产持久层。Alchemy 独立模块的预览、原生登记/审核恢复、显式真实开发 profile 适配、管理员界面和 V3 Standard/general 单图试用入口已在对应仓库实现，不属于本仓库代码；不是普通 Generate、正式选图/导出或计费接入。Bridge 已实现有界的嵌套 image_options：quality 仅接受 auto（未指定档位），output_format 仅校验原图 PNG/JPEG，input_fidelity 必须省略；Codex 0.163.0 没有这些原生结构化控制。Alchemy 独立适配已有模拟合同/HTTP验收，最终修订回归与本机真实生图仍须分别记录，不能只靠登录或把文本指令当成原生控制。单节点持久撤销/恢复、就绪报告、显式本地媒体清理及 Discord 普通任务通知已实现；PostgreSQL迁移、自助配对/多节点管理及双VPS部署仍未完成。不要直接将本开发配置暴露公网，也不要宣称所有产品功能已完成。
 

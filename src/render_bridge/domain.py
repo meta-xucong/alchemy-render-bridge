@@ -307,6 +307,16 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             _fail("claim_expired", 409)
         return claim
 
+    def _require_upload_claim_mode(self, task, claim):
+        # Once a Codex attempt is marked unknown, only a fresh same-attempt
+        # upload_only claim may reconcile already-produced bytes. An active
+        # execute lease must not be reused to upload while its outcome is
+        # unresolved.
+        if (self._profile(task).id == "codex-image"
+                and task["state"] == "execution_unknown"
+                and claim["mode"] != "upload_only"):
+            _fail("upload_only_claim_required", 409)
+
     def report_heartbeat(self, scope, node_id, executor_instance, state, profiles, profile_health=None):
         source, workspace = self._scope(scope)
         if state not in {"available", "busy", "attention"}:
@@ -855,6 +865,11 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             self._check_node_active(con, scope, node_id, executor_instance)
             task = self._scoped(con, "tasks", task_id, scope)
             attempt = con.execute("SELECT * FROM attempts WHERE task_id=?", (task_id,)).fetchone()
+            if (mode == "upload_only" and self._profile(task).id == "codex-image"
+                    and attempt["start_grant_id"]
+                    and (attempt["original_node"] != node_id
+                         or attempt["original_executor"] != executor_instance)):
+                _fail("upload_only_identity_mismatch", 409)
             if task["state"] == "expired":
                 _fail("task_expired", 409)
             if task["state"] in _TERMINAL or task["cancel_requested"]:
@@ -1004,7 +1019,8 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
         with self._transaction() as con:
             task = self._scoped(con, "tasks", task_id, scope)
             self._media_metadata(payload, output=True, profile=self._profile(task))
-            self._check_claim(con, task, claim_id)
+            claim = self._check_claim(con, task, claim_id)
+            self._require_upload_claim_mode(task, claim)
             if payload["attempt_id"] != task["attempt_id"] or payload["slot_id"] != "primary":
                 _fail("upload_binding_mismatch", 409)
             attempt = con.execute("SELECT * FROM attempts WHERE task_id=?", (task_id,)).fetchone()
@@ -1032,7 +1048,8 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
     def put_upload_content(self, scope, upload_id, claim_id, content):
         with self._transaction() as con:
             row, task = self._upload_row(con, upload_id, scope)
-            self._check_claim(con, task, claim_id)
+            claim = self._check_claim(con, task, claim_id)
+            self._require_upload_claim_mode(task, claim)
             payload = json.loads(row["payload"])
             dimensions = self._verify_media(content, payload, profile=self._profile(task))
             request = json.loads(task["payload"])
@@ -1057,7 +1074,8 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
     def commit_upload(self, scope, upload_id, claim_id):
         with self._transaction() as con:
             upload, task = self._upload_row(con, upload_id, scope)
-            self._check_claim(con, task, claim_id)
+            claim = self._check_claim(con, task, claim_id)
+            self._require_upload_claim_mode(task, claim)
             old = con.execute("SELECT * FROM receipts WHERE upload_id=?", (upload_id,)).fetchone()
             if old:
                 return self._receipt_view(con, old)

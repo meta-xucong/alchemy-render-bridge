@@ -77,7 +77,8 @@ class AgentProfilesTests(unittest.TestCase):
 
     def _completed_codex_recovery(self, *, manifest, mismatch=False):
         executor = CodexExecutor(self.state / 'executors', CodexConfig(enabled=True,
-            model='mock-model', image_capability_verified=True, tool_policy_verified=True, approval_policy='on-request'))
+            model='mock-model', accepted_cli_version='codex-cli 0.163.0', image_capability_verified=True,
+            tool_policy_verified=True, approval_policy='on-request'))
         self.registry.executors['codex-image'] = executor
         task = self.create('codex-image', 'recovery-'+str(manifest)+str(mismatch), {
             'schema_version': '1', 'quality': 'auto', 'output_format': 'jpeg'})
@@ -98,13 +99,13 @@ class AgentProfilesTests(unittest.TestCase):
                     return result
             raise RuntimeError('Simulated interruption before Agent saves the completed result')
         with patch('render_bridge.executors.codex.probe_codex', return_value={
-                'schema_version_matches': True, 'stdio_advertised': True}) as probe, \
+                'cli_version': 'codex-cli 0.163.0', 'schema_version_matches': True, 'stdio_advertised': True}) as probe, \
              patch.object(executor, 'execute', side_effect=completed) as execute, \
              patch.object(self.client, 'start', wraps=self.client.start) as start, \
              patch('render_bridge.executors.codex.StdioSession', side_effect=AssertionError('unexpected turn')):
             result = self.agent.execute_task(task)
             self.assertEqual(result['outcome'], 'needs_attention' if mismatch else 'execution_unknown')
-            self.now += 61  # Recovery renews only the upload claim, never a start grant.
+            self.now += 3601  # The fixed node claim lease expires before upload-only recovery.
             reopened = NodeAgent(self.client, self.state, registry=self.registry)
             recovered = reopened.execute_task(task)
             self.assertEqual(recovered['outcome'], 'needs_attention' if mismatch else 'artifact_committed')
@@ -141,12 +142,13 @@ class AgentProfilesTests(unittest.TestCase):
 
     def test_codex_mock_preflight_execution_receipt(self):
         executor = CodexExecutor(self.state / 'executors', CodexConfig(enabled=True,
-            model='mock-model', image_capability_verified=True, tool_policy_verified=True, approval_policy='on-request'))
+            model='mock-model', accepted_cli_version='codex-cli 0.163.0', image_capability_verified=True,
+            tool_policy_verified=True, approval_policy='on-request'))
         self.registry.executors['codex-image'] = executor
         task = self.create('codex-image')
         fake = FakeExecutor(self.state / 'mock-output')
         with patch('render_bridge.executors.codex.probe_codex', return_value={
-                'schema_version_matches': True, 'stdio_advertised': True}) as probe, \
+                'cli_version': 'codex-cli 0.163.0', 'schema_version_matches': True, 'stdio_advertised': True}) as probe, \
                 patch.object(executor, 'execute', side_effect=fake.execute) as execute:
             self.assertEqual(self.agent.execute_task(task)['outcome'], 'artifact_committed')
             self.assertEqual(self.agent.execute_task(task)['outcome'], 'already_committed')
@@ -154,6 +156,18 @@ class AgentProfilesTests(unittest.TestCase):
             execute.assert_called_once()
         receipt = self.store.get_receipt(self.scope, self.store.get_task(self.scope, task)['receipt_id'])
         self.assertEqual(receipt['execution_profile_id'], 'codex-image')
+
+    def test_receipt_with_wrong_task_binding_is_not_marked_complete(self):
+        task = self.create('fake-image', 'receipt-binding')
+        original_commit = self.client.commit
+
+        def mismatched_commit(*args):
+            return {**original_commit(*args), 'task_id': 'another-task'}
+
+        with patch.object(self.client, 'commit', side_effect=mismatched_commit):
+            result = self.agent.execute_task(task)
+        self.assertEqual(result['outcome'], 'upload_pending')
+        self.assertNotEqual(self.agent.journal.get(task)['state'], 'complete')
 
     def test_manual_export_restart_import_receipt_and_parallel_fake(self):
         task = self.create('midjourney-manual')

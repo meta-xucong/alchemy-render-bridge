@@ -266,6 +266,8 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:8787/bridge/v1/capabilities' -Headers $
 
 手动命令不扫描队列。它验证 API/产物/收据，不验收自动引擎。也可单独运行 `scripts/run_configured_demo.py --output-dir <全新输出目录>`，但那是独立模拟器，不是用户正在运行的 Alchemy 服务。
 
+若已有 Codex attempt 仍为 `execution_unknown`，且本地 rollout 明确记录同一 turn 的单张图片已完成、随后该 turn 中止，可在复核 task/attempt/thread/turn 绑定后使用 `reconcile-codex-interrupted <task_id> <rollout.jsonl>`。该命令只验证原图并沿用原 attempt 上传；不调用 Codex、不创建 turn，也不允许从目录中另选图片。最终收据仅用于 review-only。证据不匹配时任务继续保持 `execution_unknown` 并占用原执行槽。
+
 Alchemy 的 V3 Standard/general 当前项目试用入口只提交单图；先确认 fake 产物、相同 receipt、原生审核状态及重复查询不重生。保留两端 revision、配置摘要（无秘密）、任务 ID/receipt/hash、执行方式与结果，不把 fake 图称作 AI 图。
 
 ## 7. 从 fake 转真实 Codex，最后才测试自动回退
@@ -274,10 +276,10 @@ Alchemy 的 V3 Standard/general 当前项目试用入口只提交单图；先确
 
 1. 保持 fake 通过，确认自己的 CLI 版本/协议和图像工具策略；doctor 的可选探测只使用空 HOME/CODEX_HOME，不验证真实登录。
 2. 由用户明确授权有界真实测试，选择实际支持的 model 和图片尺寸。先在独立工具能力验收中确认实际图片事件、原文件与工具权限，而不是填写 true 来绕过检查。
-3. 通过后在私有 Agent JSON 中启用 `codex-image`、`codex.enabled=true`，填写经过验收的 model，并据实设置 `image_capability_verified` / `tool_policy_verified`。固定 Codex 0.163.0 的 app-server 不接受旧 `untrusted` 策略：必须由操作者明确确认后配置 `codex.approval_policy="on-request"`；默认空字符串继续阻断，即使旧配置的两个验收标记已经为 true，也不能静默迁移或自动解释为同意。该字段不是绕过工具审批；需要用户处理的工具请求仍须按工具策略处理。Bridge enabled_profiles、Alchemy module/native allowlists 同时显式加入 `codex-image`；保留同一节点 identity/state-dir。不要将这些字段默认置 true。
+3. 仅精确 `codex-cli 0.157.1` 与 `codex-cli 0.163.0` 通过此适配器的静态 wire review；这不证明登录或真实生图。每个版本必须单独完成有界本机真实图片验收后，才可为该版本设置能力标记。通过后在私有 Agent JSON 中启用 `codex-image`、`codex.enabled=true`，设置 `codex.accepted_cli_version` 为已验收的精确版本，填写经过验收的 model，并据实设置 `image_capability_verified` / `tool_policy_verified`；运行时探测必须匹配该版本，换版本需重新验收。两版本官方 wire schema 均包含 `untrusted` 审批枚举，但 Bridge 只接受操作者明确选择的 `codex.approval_policy="on-request"`；默认空字符串继续阻断，即使旧配置的两个验收标记已经为 true，也不能静默迁移或自动解释为同意。该字段不是绕过工具审批；需要用户处理的工具请求仍须按工具策略处理。Bridge enabled_profiles、Alchemy module/native allowlists 同时显式加入 `codex-image`；保留同一节点 identity/state-dir。不要将这些字段默认置 true。
 4. 重启需要重载配置的进程并检查实际 allowlist，提交一张明确授权的真实试用。Alchemy 若已在管理页保存设置，保存的 `admin-settings.json` 优先于环境中的 module/native allowlist；应在管理页高级设置显式加入工具并保存，仅修改环境变量不会覆盖已有设置。严格核对冻结尺寸、PNG/JPEG 原图、SHA-256、receipt 和 Alchemy review 状态。质量只支持 auto，input_fidelity 必须省略；不把 prompt 文本当作 Codex 原生参数。
 5. 可选健康报告：私有 Agent JSON 顶层 `health_reporting_enabled` 默认 false；明确开启后附带在现有心跳循环，不新增调度器。CLI 缺失/磁盘等普通故障可用对应检查恢复；版本/help 成功不能清除 auth/quota 故障，也不能证明图像能力。
-   - 可选账户状态探测：顶层 `account_health_probe_enabled` 默认 false。只在本机操作者明确同意“通过自己的 CLI 查询已登录账户状态，CLI 可能内部刷新现有登录”后才设置 true，同时开启健康报告。这不是空 HOME 的 doctor 探测：它使用本机已有 CLI 身份，不复制认证文件，不新建登录/授权，不运行生图。
+   - 可选账户状态探测：顶层 `account_health_probe_enabled` 默认 false。仅 `accepted_cli_version="codex-cli 0.163.0"` 支持该探测；0.157.1 不会调用账户 RPC，状态保持 unknown。只在本机操作者明确同意“通过自己的 CLI 查询已登录账户状态，CLI 可能内部刷新现有登录”后才设置 true，同时开启健康报告。这不是空 HOME 的 doctor 探测：它使用本机已有 CLI 身份，不复制认证文件，不新建登录/授权，不运行生图。
    - 该探测调用官方 `account/rateLimits/read`；`ordinaryUsageAllowed` 必须明确为 true 才提供 auth/quota 恢复证据，false 表示额度不可用，缺失/null/错误不能判恢复。配置仅让后续心跳可做有界状态请求，不是该账户已验证的收据。
    - 不愿开启账户探测或接口不提供可靠证据：保持 false；操作者确认**原** auth/quota 原因解除后才手动递增顶层 `health_revalidation_generation`（默认 0）一次。不能定时/每次启动递增，也不能把 starter 配置写成非零。该确认只产生短时恢复证据，不能用于绕过真实工具验收。
    - Alchemy 仍要求两个新报告与稳定恢复窗口；报告/操作者声明都不等于生产验证。详见 [Agent 健康与账户探测](CONFIGURED_AGENT.md#健康报告账户状态与显式工具策略)。
