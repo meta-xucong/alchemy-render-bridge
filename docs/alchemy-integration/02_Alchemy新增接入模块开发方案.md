@@ -6,7 +6,7 @@
 
 现有文本/图片/视频生成、Sub2API、模型默认值、Job恢复、队列、重试/fallback、审核、选图、交付、记忆、收藏、历史和计费规则均不重写。
 
-新增模块只服务明确选择Bridge的请求，与另一VPS上的独立Render Bridge通过HTTPS API通信。不能依赖Hatchet SDK、Bridge数据库、共享目录或内部包。Bridge关闭/不可达时现有功能必须正常。
+新增模块只服务明确选择Bridge的请求，与独立Render Bridge通过版本化HTTP API通信。最新首轮测试同在用户Windows电脑、loopback HTTP、独立目录；双VPS保留为后续选项，远程仍要求HTTPS。不能依赖Hatchet SDK、Bridge数据库、共享目录或内部包。Bridge关闭/不可达时现有功能必须正常。
 
 v1.0曾建议新增原生pending/resume接缝或调整原容量生命周期，本版收回为默认实施项：pending与恢复由新增模块自己的integration_job负责；原业务缺少必要扩展点时先提交最小差异审批。
 
@@ -70,14 +70,14 @@ v1.0曾建议新增原生pending/resume接缝或调整原容量生命周期，�
 
 ## 7. 故障与兼容规则
 
-- Bridge断线：只影响integration_jobs，显示可重试查询或远端不可达；不自动转Sub2API。
+- Bridge断线：原bridge_only只影响integration_jobs，显示可重试查询或远端不可达；新增prefer_bridge仅可对从未尝试提交的新请求依07/08选云端，已发出任务不得凭断线推断未执行。
 - pending/unknown：不是新的生成失败，不把它转交旧Provider重试链。
 - 原生导入失败：保存receipt与暂存文件，重试同导入键；不可确认时停在import_unknown，禁止第二次写入，等查明。
 - 删除/取消：模块取消与远端取消分别记录。远端已产出不意味着允许恢复已取消Job。
 - 配置切换：停止新入口采用draining；完全disabled暂停恢复且明确告知，不得无提示丢弃未决任务。
 - 安全撤销：重新校验当前权限，禁止以旧绑定继续展示或导入已无权访问的素材。
 
-初版bridge_only，不做自动fallback。本地模型失败是否转云、上传私人素材是否允许及费用预算以后单独设计，不能修改原Sub2API行为。
+初版及旧请求保持bridge_only，不做自动fallback。2026-10-21新增显式prefer_bridge按07/08实现，由Alchemy独占健康/排队统一选路，仍受原素材外发、费用预算和业务权限约束，不能修改原Sub2API行为。
 
 ## 8. 各Alchemy版本边界
 
@@ -107,3 +107,5 @@ AL-07 原功能保护回归及联合验收。
 ## 10. 回滚
 
 只关闭新入口/配置，原API继续。保留专属表与未决收据，恢复模式处理旧任务或明确人工暂停；不得删旧业务数据或批量改旧Job。新UI资源独立命名避免覆盖旧脚本。发布先隔离环境、最终SHA审计、用户验收；不因Bridge本端通过就认定Alchemy回归通过。
+
+新增策略的实际代码计划见[08](../shared-contract/08_自动回退代码落地与兼容契约.md)：先限定V3 Standard单图、耐久路由绑定、取得原子未开始撤回证明后才转传统provider；不删除native marker绕过普通Generate门禁，不改变原review-only/开发计量/正式交付限制。默认关闭，只有显式选择新策略的请求进入。

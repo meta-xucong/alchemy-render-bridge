@@ -4,7 +4,7 @@
 
 ## 一、不可跨越的边界
 
-Render Bridge是独立程序，与Alchemy部署在不同VPS；Alchemy只外加一个可关闭的接入模块。两端通过版本化HTTPS API交互，不共享数据库、文件目录、内部Python对象或任务队列。
+Render Bridge是独立程序；最新首轮验收与Alchemy同在用户Windows电脑，独立目录、loopback HTTP。双VPS是后续部署选项；远程连接保留HTTPS要求。Alchemy只外加一个可关闭的接入模块。两端通过版本化HTTP API交互，不共享数据库、文件目录、内部Python对象或任务队列。
 
 - Bridge开发者只修改Bridge仓库，不能改Alchemy业务规则。
 - Alchemy开发者只实现新增接入模块，以及必要的显式挂载/配置/可选入口；不得重写原生成、重试、计费、审核、历史或调度逻辑。
@@ -21,7 +21,7 @@ Render Bridge是独立程序，与Alchemy部署在不同VPS；Alchemy只外加�
 2. `alchemy-integration/02_Alchemy新增接入模块开发方案.md`：新增模块、API客户端、桥接任务记录、可选界面与原生结果导入；原功能保护与回滚。
 3. `shared-contract/03_双方API与联合验收契约.md`：双方共同冻结的请求、状态、回执、权限、幂等和错误语义。
 
-4. `shared-contract/04_双VPS与版本独立约束.md`：不同VPS、版本中立与升级边界。
+4. `shared-contract/04_双VPS与版本独立约束.md`：最新同机首测、后续双VPS、版本中立与升级边界。
 5. `render-bridge/adapters/05_Codex_CLI适配方案.md`：本机登录场景及能力验证。
 6. `render-bridge/adapters/06_Midjourney_Discord适配方案.md`：官方消息API+人工提交/导入。
 
@@ -44,7 +44,7 @@ Render Bridge是独立程序，与Alchemy部署在不同VPS；Alchemy只外加�
 
 先冻结共享API → Bridge用模拟Alchemy客户端开发 → Alchemy模块用Mock Bridge独立开发 → 两端联调FakeRenderer → 原功能回归 → 用户验收。Hatchet可行性只阻塞Bridge的引擎选择，不应阻塞Alchemy模块的Mock开发。
 
-先用FakeRenderer过通用桥技术门禁，再优先接本机Codex CLI与Midjourney人工执行闭环；ComfyUI后置。不自动回退Sub2API、不改模型目录核心、不扩展全站账单。后续真实Adapter只改Bridge端；确有新增业务能力时再单独扩展API与Alchemy模块。
+先用FakeRenderer过通用桥技术门禁，再优先接本机Codex CLI与Midjourney人工执行闭环；ComfyUI后置。原bridge_only任务不自动回退Sub2API；新增显式prefer_bridge策略按07/08实现，不能覆盖已执行/unknown保护。不改模型目录核心、不扩展全站账单。后续真实Adapter只改Bridge端；确有新增业务能力时再单独扩展API与Alchemy模块。
 
 ## 五、范围解释
 
@@ -52,10 +52,21 @@ v1.0中“原模块pending恢复”具体落到新增模块自己的integration_
 
 如果原生接口只支持同步返回，禁止拉长HTTP等待、挪用原队列或把新状态塞回旧状态机。先做独立Bridge任务视图，只有既有受支持的幂等导入入口能正确绑定时才开放原生结果导入；若没有入口，本阶段联合验收标记阻断，提交最小扩展点方案给用户确认。
 
-## 六、本轮文档复核
+## 六、历史设计阶段文档复核
 
-独立只读复核确认两个程序和共享合同的责任边界已清晰，未发现需要重拆架构的越界。复核提出的input_key响应丢失、引用固定防清理、内部/API状态映射及disabled/draining区分已补入。此为设计文档结论；未验证真实仓库接缝、未实施或部署。
+独立只读复核确认两个程序和共享合同的责任边界已清晰，未发现需要重拆架构的越界。复核提出的input_key响应丢失、引用固定防清理、内部/API状态映射及disabled/draining区分已补入。此为当时的设计文档结论，不是当前代码状态；后续接缝实现与模拟联调见[实现验收](implementation/AUTO_FALLBACK_ACCEPTANCE.md)，真实用户环境仍未验收。
 
 ## 七、v1.2新增决定
 
-Bridge与Alchemy在不同VPS，API是唯一业务交界；Alchemy版本适配全部留在Alchemy侧。项目许可证暂缓，不阻塞实验开发，仍保留第三方许可声明。首批真实场景是Codex CLI和Midjourney。Discord用官方API/Webhook投送普通任务消息，不模拟键鼠；实际/imagine及原图获取由用户完成。新增双VPS约束和两个Adapter文档；旧调研中的平台排序不覆盖此决定。
+历史v1.2选择不同VPS；最新首轮测试改为同一Windows电脑、独立服务和数据目录，API仍是唯一业务交界；Alchemy版本适配全部留在Alchemy侧。项目许可证暂缓，不阻塞实验开发，仍保留第三方许可声明。首批真实场景是Codex CLI和Midjourney。Discord用官方API/Webhook投送普通任务消息，不模拟键鼠；实际/imagine及原图获取由用户完成。新增双VPS约束和两个Adapter文档；旧调研中的平台排序不覆盖此决定。
+
+
+## 2026-10-21 新增实现：可用性与排队自动回退
+
+见 [07：可用性与排队自动回退设计](shared-contract/07_可用性与排队自动回退设计.md)。
+用户新增要求为本地工具不可用或排队过久时暂时使用 Sub2API，恢复后新请求回到本地。
+该路由阶段已有代码和模拟联调证据，仅为显式开启策略的任务扩展原 bridge_only 边界；
+旧默认、原生审核/计费权威及已执行/不明任务禁止重复生成的约束不变。
+实现与验证范围见[自动回退实现验收](implementation/AUTO_FALLBACK_ACCEPTANCE.md)，不以旧心跳或排队状态推定自动切换。当前Alchemy接缝限V3 Standard/general单图、开发与review-only，不代表全版本或生产交付；用户Windows实机能力与恢复仍需按[同机指南](implementation/WINDOWS_LOCAL_LOOPBACK.md)验收。
+
+具体wire字段、兼容/撤回证明与V3单图传统执行接缝见[08实施契约](shared-contract/08_自动回退代码落地与兼容契约.md)。07/08仅扩展显式新模式；代码、模拟、最终发布版本回归与用户实机验收须分别记录，不能用设计文字或模拟通过替代真实账户、生图及生产验收。

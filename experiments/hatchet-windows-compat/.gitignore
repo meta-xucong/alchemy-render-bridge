@@ -1,0 +1,9 @@
+.venv/
+.candidate/
+.baseline/
+__pycache__/
+*.pyc
+*.whl
+*.log
+dist/
+.cache/

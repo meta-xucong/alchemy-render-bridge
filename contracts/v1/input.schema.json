@@ -1,0 +1,38 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "input_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Input Key",
+      "type": "string"
+    },
+    "original_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Original Sha256",
+      "type": "string"
+    },
+    "size": {
+      "maximum": 1048576,
+      "minimum": 1,
+      "title": "Size",
+      "type": "integer"
+    },
+    "mime_type": {
+      "enum": [
+        "image/png",
+        "image/jpeg"
+      ],
+      "title": "Mime Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "input_key",
+    "original_sha256",
+    "size",
+    "mime_type"
+  ],
+  "title": "InputCreate",
+  "type": "object"
+}
