@@ -388,9 +388,19 @@ class CodexExecutor:
                     bridge_binding=evidence.get('bridge_binding'))
             except (OSError, RuntimeError, ValueError, KeyError, TypeError):
                 return ExecutionResult('execution_unknown', 'codex_interrupted_image_evidence_invalid')
+        completed_rollout = files.path / 'codex-completed-rollout-image.json'
+        if completed_rollout.exists():
+            try:
+                evidence = json.loads(completed_rollout.read_text(encoding='utf-8'))
+                return self.reconcile_completed_rollout_image(
+                    request, Path(evidence['rollout_path']), _expected_evidence=evidence,
+                    bridge_binding=evidence.get('bridge_binding'))
+            except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+                return ExecutionResult('execution_unknown', 'codex_completed_rollout_evidence_invalid')
         cached = files.cached()
         if (cached is not None and cached.artifact is not None
-                and cached.artifact.provenance == 'codex_aborted_turn_review_only'):
+                and cached.artifact.provenance in {
+                    'codex_aborted_turn_review_only', 'codex_completed_rollout_reconciled'}):
             return ExecutionResult('execution_unknown',
                                    'codex_interrupted_image_evidence_missing')
         if cached:
@@ -404,10 +414,35 @@ class CodexExecutor:
     def reconcile_interrupted_image(self, request: ExecutionRequest, rollout_path: Path,
                                     *, _expected_evidence: dict | None = None,
                                     bridge_binding: dict | None = None) -> ExecutionResult:
-        """Accept one event-bound original only after a same-turn abort is durable.
+        return self._reconcile_terminal_image(
+            request, rollout_path, terminal_event='turn_aborted', terminal_reason='interrupted',
+            contract='codex-aborted-image-reconcile/v1', evidence_name='codex-aborted-image.json',
+            provenance='codex_aborted_turn_review_only', review_only=True,
+            _expected_evidence=_expected_evidence,
+            bridge_binding=bridge_binding)
 
-        This path never starts, resumes, or retries a Codex turn. Its local
-        evidence manifest is separate from the normal turn/completed proof.
+    def reconcile_completed_rollout_image(self, request: ExecutionRequest, rollout_path: Path,
+                                          *, _expected_evidence: dict | None = None,
+                                          bridge_binding: dict | None = None) -> ExecutionResult:
+        """Recover one original from a durable completed turn after stream loss."""
+        return self._reconcile_terminal_image(
+            request, rollout_path, terminal_event='task_complete', terminal_reason=None,
+            contract='codex-completed-rollout-reconcile/v1',
+            evidence_name='codex-completed-rollout-image.json',
+            provenance='codex_completed_rollout_reconciled', review_only=False,
+            _expected_evidence=_expected_evidence,
+            bridge_binding=bridge_binding)
+
+    def _reconcile_terminal_image(self, request: ExecutionRequest, rollout_path: Path, *,
+                                  terminal_event: str, terminal_reason: str | None,
+                                  contract: str, evidence_name: str, provenance: str, review_only: bool,
+                                  _expected_evidence: dict | None,
+                                  bridge_binding: dict | None) -> ExecutionResult:
+        """Accept one event-bound original only after its same-turn terminal event is durable.
+
+        This path never starts, resumes, or retries a Codex turn. It is used
+        only when the Agent lost its own event stream and must verify a saved
+        local Codex rollout before uploading the existing original.
         """
         validate_image_request(request.parameters, request.references, 'codex-image')
         if (not isinstance(bridge_binding, dict)
@@ -478,20 +513,22 @@ class CodexExecutor:
                         and payload.get('thread_id') != thread_id):
                     raise ValueError('Lifecycle event belongs to another Codex thread')
             terminal = [(i, p) for i, t, p in events
-                        if t == 'event_msg' and p.get('type') == 'turn_aborted'
+                        if t == 'event_msg' and p.get('type') == terminal_event
                         and p.get('turn_id') == turn_id]
-            if (len(terminal) != 1 or terminal[0][0] != len(records) - 1
-                    or terminal[0][1].get('reason') != 'interrupted'):
-                raise ValueError('Matching terminal interrupted turn event is required at end of rollout')
+            if len(terminal) != 1 or terminal[0][0] != len(records) - 1:
+                raise ValueError('Matching terminal turn event is required at end of rollout')
+            if terminal_reason is not None and terminal[0][1].get('reason') != terminal_reason:
+                raise ValueError('Terminal turn reason differs from the required recovery state')
             if not any(t == 'event_msg' and p.get('type') == 'task_started'
                        and p.get('turn_id') == turn_id for _, t, p in events):
                 raise ValueError('Rollout does not contain the bound started turn')
             if not any(t == 'turn_context' and p.get('turn_id') == turn_id
                        for _, t, p in events):
                 raise ValueError('Rollout does not contain the bound turn context')
-            if any(t == 'event_msg' and p.get('type') == 'turn/completed'
+            conflicting_terminal = 'task_complete' if terminal_event == 'turn_aborted' else 'turn_aborted'
+            if any(t == 'event_msg' and p.get('type') in ('turn/completed', conflicting_terminal)
                    and p.get('turn_id') == turn_id for _, t, p in events):
-                raise ValueError('Contradictory turn completion event')
+                raise ValueError('Contradictory turn terminal event')
             image_items = []
             for index, record_type, payload in events:
                 markers = _image_activity_markers(payload)
@@ -532,25 +569,26 @@ class CodexExecutor:
                 raise ValueError('Event-bound original path is outside the exact Codex thread/item')
             attempt_root = files.path.resolve(strict=True)
             content = self._read_scoped_original(source, attempt_root, thread_id, resolved)
-            verified = inspect_image(content, provenance='codex_aborted_turn_review_only',
+            verified = inspect_image(content, provenance=provenance,
                                      path=files.path / 'artifact.original')
             if ((requested := requested_output_mime(request.parameters))
                     and verified.mime_type != requested):
-                return ExecutionResult('execution_unknown', 'codex_interrupted_image_output_mismatch')
+                return ExecutionResult('execution_unknown', 'codex_terminal_image_output_mismatch')
             evidence = {
-                'schema_version': '1', 'contract': 'codex-aborted-image-reconcile/v1',
+                'schema_version': '1', 'contract': contract,
                 'task_id': request.task_id, 'attempt_id': request.attempt_id,
                 'request_sha256': request.digest, 'thread_id': thread_id, 'turn_id': turn_id,
                 'image_item_id': item['id'], 'rollout_path': str(rollout),
-                'rollout_sha256': digest, 'terminal_event': 'turn_aborted',
-                'terminal_reason': 'interrupted', 'source_path': str(resolved),
+                'rollout_sha256': digest, 'terminal_event': terminal_event,
+                **({'terminal_reason': terminal_reason} if terminal_reason is not None else {}),
+                'source_path': str(resolved),
                 'original_sha256': verified.sha256, 'size': verified.size,
                 'mime_type': verified.mime_type,
                 'dimensions': {'width': verified.width, 'height': verified.height},
                 'bridge_binding': bridge_binding,
-                'review_only': True,
+                'review_only': review_only,
             }
-            evidence_path = files.path / 'codex-aborted-image.json'
+            evidence_path = files.path / evidence_name
             if _expected_evidence is not None and _expected_evidence != evidence:
                 raise ValueError('Persisted interrupted-image evidence changed')
             try:
@@ -558,15 +596,15 @@ class CodexExecutor:
                     evidence, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
             except FileExistsError:
                 if json.loads(evidence_path.read_text(encoding='utf-8')) != evidence:
-                    raise ValueError('Interrupted-image evidence conflicts with persisted proof')
-            artifact = files.save(content, 'codex_aborted_turn_review_only')
+                    raise ValueError('Terminal-image evidence conflicts with persisted proof')
+            artifact = files.save(content, provenance)
             if artifact.status != 'ready' or artifact.artifact is None:
                 return artifact
             return ExecutionResult(artifact.status, artifact.code, artifact.artifact,
-                                   {**artifact.details, 'review_only': True,
+                                   {**artifact.details, 'review_only': review_only,
                                     'reconciliation': evidence})
         except (OSError, RuntimeError, ValueError, KeyError, TypeError, RecursionError):
-            return ExecutionResult('execution_unknown', 'codex_interrupted_image_evidence_invalid')
+            return ExecutionResult('execution_unknown', 'codex_terminal_image_evidence_invalid')
 
     def execute(self, request: ExecutionRequest) -> ExecutionResult:
         recovered = self.recover_completed(request)

@@ -83,6 +83,39 @@ class CodexAbortedImageReconciliationTests(unittest.TestCase):
                 self.assertEqual(recovered.status, 'ready')
                 self.assertEqual(recovered.artifact.sha256, result.artifact.sha256)
 
+    def test_one_bound_completed_rollout_reconciles_without_restarting_codex(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home, request, executor, rollout, output = self.setup_case(root)
+            rows = [json.loads(line) for line in rollout.read_text(encoding='utf-8').splitlines()]
+            rows[-1]['payload'] = {'type': 'task_complete', 'turn_id': self.TURN}
+            rollout.write_text(''.join(json.dumps(row) + '\n' for row in rows), encoding='utf-8')
+            with patch.dict(os.environ, {'CODEX_HOME': str(home)}):
+                result = executor.reconcile_completed_rollout_image(
+                    request, rollout, bridge_binding=self.bridge_binding())
+                self.assertEqual(result.status, 'ready')
+                self.assertFalse(result.details['review_only'])
+                self.assertEqual(result.artifact.path.read_bytes(), output.read_bytes())
+                evidence = json.loads((executor.root / request.task_id / request.attempt_id /
+                                       'codex-completed-rollout-image.json').read_text(encoding='utf-8'))
+                self.assertEqual(evidence['contract'], 'codex-completed-rollout-reconcile/v1')
+                self.assertEqual(evidence['terminal_event'], 'task_complete')
+                self.assertNotIn('terminal_reason', evidence)
+                with patch('render_bridge.executors.codex.StdioSession',
+                           side_effect=AssertionError('no CLI')):
+                    recovered = executor.recover_completed(request)
+                self.assertEqual(recovered.status, 'ready')
+                self.assertEqual(recovered.artifact.sha256, result.artifact.sha256)
+
+    def test_completed_rollout_rejects_aborted_terminal(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home, request, executor, rollout, _ = self.setup_case(root)
+            with patch.dict(os.environ, {'CODEX_HOME': str(home)}):
+                result = executor.reconcile_completed_rollout_image(
+                    request, rollout, bridge_binding=self.bridge_binding())
+            self.assertEqual(result.status, 'execution_unknown')
+
     def test_actual_dimensions_are_evidence_and_terminal_order_is_mandatory(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

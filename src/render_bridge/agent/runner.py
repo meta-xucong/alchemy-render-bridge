@@ -131,20 +131,23 @@ class NodeAgent:
                         if recovered.status == 'terminal_failure':
                             return self._save_terminal_failure(record, recovered)
                         if recovered.status == 'ready' and recovered.artifact is not None:
-                            proof = None
-                            if recovered.details.get('review_only') is True:
-                                proof = recovered.details.get('reconciliation')
-                                if (not self._codex_review_proof_matches(
+                            proof = recovered.details.get('reconciliation')
+                            if proof is not None:
+                                proof_field = ('review_only_reconciliation' if proof.get('review_only') is True
+                                               else 'completed_rollout_reconciliation')
+                                if (not self._codex_rollout_proof_matches(
                                             record, proof, recovered.artifact, task)
-                                        or (record.get('review_only_reconciliation') is not None
-                                            and record['review_only_reconciliation'] != proof)):
+                                        or (record.get(proof_field) is not None
+                                            and record[proof_field] != proof)):
                                     self._unknown(record)
                                     return {'outcome': 'execution_unknown', 'task_id': task_id}
-                                record['review_only_reconciliation'] = proof
+                                record[proof_field] = proof
                                 self.journal.save(record)
                             elif (record.get('review_only_reconciliation') is not None
-                                  or record.get('artifact_provenance')
-                                  == 'codex_aborted_turn_review_only'):
+                                  or record.get('completed_rollout_reconciliation') is not None
+                                  or record.get('artifact_provenance') in {
+                                      'codex_aborted_turn_review_only',
+                                      'codex_completed_rollout_reconciled'}):
                                 self._unknown(record)
                                 return {'outcome': 'execution_unknown', 'task_id': task_id}
                             self._save_artifact(record, recovered.artifact, profile)
@@ -264,7 +267,7 @@ class NodeAgent:
                       artifact_provenance=artifact.provenance)
         self.journal.save(record)
 
-    def _codex_review_proof_matches(self, record, proof, artifact, task):
+    def _codex_rollout_proof_matches(self, record, proof, artifact, task):
         if not isinstance(proof, dict) or not isinstance(task, dict):
             return False
         binding = proof.get('bridge_binding')
@@ -275,14 +278,22 @@ class NodeAgent:
             return False
         task_digest = task.get('task_digest')
         profile_revision = server_request.get('execution_profile_revision')
+        contract = proof.get('contract')
+        terminal_matches = ((contract == 'codex-aborted-image-reconcile/v1'
+                             and proof.get('terminal_event') == 'turn_aborted'
+                             and proof.get('terminal_reason') == 'interrupted'
+                             and proof.get('review_only') is True)
+                            or (contract == 'codex-completed-rollout-reconcile/v1'
+                                and proof.get('terminal_event') == 'task_complete'
+                                and 'terminal_reason' not in proof
+                                and proof.get('review_only') is False))
         return bool(
             isinstance(binding, dict)
-            and proof.get('contract') == 'codex-aborted-image-reconcile/v1'
+            and terminal_matches
             and proof.get('task_id') == record.get('task_id') == task.get('remote_task_id')
             and proof.get('attempt_id') == record.get('attempt_id') == task.get('attempt_id')
             and proof.get('request_sha256') == request.digest == record.get('request_sha256')
             and proof.get('original_sha256') == artifact.sha256
-            and proof.get('review_only') is True
             and binding.get('task_digest') == task_digest
             and isinstance(task_digest, str) and len(task_digest) == 64
             and all(char in '0123456789abcdef' for char in task_digest)
@@ -330,17 +341,22 @@ class NodeAgent:
                 or max(checked.width, checked.height) > profile.max_dimension):
             self._unknown(record)
             return False
-        proof = recovered.details.get('reconciliation') if recovered.details.get('review_only') is True else None
-        if recovered.details.get('review_only') is True:
-            if (not self._codex_review_proof_matches(record, proof, artifact, task)
+        proof = recovered.details.get('reconciliation')
+        if proof is not None:
+            proof_field = ('review_only_reconciliation' if proof.get('review_only') is True
+                           else 'completed_rollout_reconciliation')
+            if (not self._codex_rollout_proof_matches(record, proof, artifact, task)
                     or proof.get('original_sha256') != record.get('sha256')
-                    or (record.get('review_only_reconciliation') is not None
-                        and record['review_only_reconciliation'] != proof)):
+                    or (record.get(proof_field) is not None
+                        and record[proof_field] != proof)):
                 self._unknown(record)
                 return False
-            record['review_only_reconciliation'] = proof
+            record[proof_field] = proof
         elif (record.get('review_only_reconciliation') is not None
-              or record.get('artifact_provenance') == 'codex_aborted_turn_review_only'):
+              or record.get('completed_rollout_reconciliation') is not None
+              or record.get('artifact_provenance') in {
+                  'codex_aborted_turn_review_only',
+                  'codex_completed_rollout_reconciled'}):
             self._unknown(record)
             return False
         record['artifact_provenance'] = artifact.provenance
@@ -372,7 +388,20 @@ class NodeAgent:
             return {'task_id': task_id, **notifier.send(request, self.journal, record)}
 
     def reconcile_codex_interrupted(self, task_id, rollout_path):
-        """Bind one explicit Codex aborted-turn image to its existing attempt.
+        return self._reconcile_codex_rollout(
+            task_id, rollout_path, executor_method='reconcile_interrupted_image',
+            contract='codex-aborted-image-reconcile/v1',
+            proof_field='review_only_reconciliation', review_only=True)
+
+    def reconcile_codex_completed(self, task_id, rollout_path):
+        return self._reconcile_codex_rollout(
+            task_id, rollout_path, executor_method='reconcile_completed_rollout_image',
+            contract='codex-completed-rollout-reconcile/v1',
+            proof_field='completed_rollout_reconciliation', review_only=False)
+
+    def _reconcile_codex_rollout(self, task_id, rollout_path, *, executor_method,
+                                 contract, proof_field, review_only):
+        """Bind one explicit terminal Codex rollout image to its existing attempt.
 
         This operator path can only verify local evidence and upload the same
         attempt's original. It never calls executor.execute or starts a turn.
@@ -392,11 +421,11 @@ class NodeAgent:
             if record.get('state') == 'artifact_ready':
                 if not self._revalidate_codex_artifact(record, task):
                     return {'outcome': 'execution_unknown', 'task_id': task_id}
-                proof = record.get('review_only_reconciliation')
-                if (not proof or proof.get('contract') != 'codex-aborted-image-reconcile/v1'
+                proof = record.get(proof_field)
+                if (not proof or proof.get('contract') != contract
                         or proof.get('original_sha256') != record.get('sha256')
                         or proof.get('attempt_id') != record.get('attempt_id')
-                        or proof.get('task_id') != task_id or proof.get('review_only') is not True):
+                        or proof.get('task_id') != task_id or proof.get('review_only') is not review_only):
                     self._unknown(record)
                     return {'outcome': 'execution_unknown', 'task_id': task_id}
                 return self._upload(record)
@@ -427,17 +456,22 @@ class NodeAgent:
                     or profile_revision != get_profile('codex-image').revision):
                 raise ValueError('Bridge task digest/profile revision binding is missing')
             executor = self.registry.get('codex-image')
-            if executor is None or not hasattr(executor, 'reconcile_interrupted_image'):
+            if executor is None or not hasattr(executor, executor_method):
                 return {'outcome': 'needs_attention', 'code': 'codex_profile_not_enabled',
                         'task_id': task_id}
-            result = executor.reconcile_interrupted_image(request, Path(rollout_path),
+            result = getattr(executor, executor_method)(request, Path(rollout_path),
                 bridge_binding={'task_digest': task_digest,
                     'start_grant_id': record['start_grant_id'],
                     'output_slot': {'count': 1, 'slot_id': 'primary'},
                     'profile_id': 'codex-image', 'profile_revision': profile_revision})
             if result.status != 'ready' or result.artifact is None:
                 return {'outcome': result.status, 'code': result.code, 'task_id': task_id}
-            record['review_only_reconciliation'] = result.details['reconciliation']
+            proof = result.details.get('reconciliation')
+            if (not self._codex_rollout_proof_matches(record, proof, result.artifact, task)
+                    or proof.get('contract') != contract or proof.get('review_only') is not review_only):
+                self._unknown(record)
+                return {'outcome': 'execution_unknown', 'task_id': task_id}
+            record[proof_field] = proof
             self.journal.save(record)
             self._save_artifact(record, result.artifact, get_profile('codex-image'))
             return self._upload(record)
@@ -545,20 +579,25 @@ class NodeAgent:
             return {'outcome': 'needs_attention', 'code': 'output_format_mismatch', 'task_id': record['task_id']}
         payload = {'attempt_id': record['attempt_id'], 'slot_id': 'primary',
                    'original_sha256': record['sha256'], 'size': record['size'], 'mime_type': record['mime_type']}
-        proof = record.get('review_only_reconciliation')
-        review_only_artifact = (record.get('artifact_provenance')
-                                == 'codex_aborted_turn_review_only')
-        if review_only_artifact and (not isinstance(proof, dict)
-                or proof.get('contract') != 'codex-aborted-image-reconcile/v1'
+        aborted_artifact = record.get('artifact_provenance') == 'codex_aborted_turn_review_only'
+        completed_rollout_artifact = (record.get('artifact_provenance')
+                                      == 'codex_completed_rollout_reconciled')
+        rollout_artifact = aborted_artifact or completed_rollout_artifact
+        proof = (record.get('review_only_reconciliation') if aborted_artifact
+                 else record.get('completed_rollout_reconciliation') if completed_rollout_artifact
+                 else None)
+        expected_contract = ('codex-aborted-image-reconcile/v1' if aborted_artifact
+                             else 'codex-completed-rollout-reconcile/v1')
+        expected_review_only = aborted_artifact
+        if rollout_artifact and (not isinstance(proof, dict)
+                or proof.get('contract') != expected_contract
                 or proof.get('task_id') != record.get('task_id')
                 or proof.get('attempt_id') != record.get('attempt_id')
                 or proof.get('original_sha256') != record.get('sha256')
-                or proof.get('review_only') is not True):
+                or proof.get('review_only') is not expected_review_only):
             self._unknown(record)
             return {'outcome': 'execution_unknown', 'task_id': record['task_id']}
-        require_upload_only = (review_only_artifact or
-            (isinstance(proof, dict)
-             and proof.get('contract') == 'codex-aborted-image-reconcile/v1'))
+        require_upload_only = rollout_artifact
         if require_upload_only:
             try:
                 claim = self.client.claim(record['task_id'], 'upload_only')

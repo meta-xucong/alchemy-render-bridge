@@ -27,6 +27,11 @@ def main(argv=None):
     reconcile.add_argument('task_id')
     reconcile.add_argument('rollout_file', type=Path,
         help='Codex local rollout JSONL containing the bound image item and terminal turn_aborted event')
+    completed = sub.add_parser('reconcile-codex-completed',
+        help='Verify a completed image from the same Codex rollout after Agent stream loss')
+    completed.add_argument('task_id')
+    completed.add_argument('rollout_file', type=Path,
+        help='Codex local rollout JSONL containing the bound image item and terminal task_complete event')
     notice = sub.add_parser('manual-notify', help='Explicitly send an ordinary Discord task notice, NOT /imagine')
     notice.add_argument('task_id')
     notice.add_argument('--request-sha256', required=True)
@@ -56,6 +61,8 @@ def main(argv=None):
                 confirmed_single_original=args.confirm_single_original)
         elif args.command == 'reconcile-codex-interrupted':
             result = agent.reconcile_codex_interrupted(args.task_id, args.rollout_file)
+        elif args.command == 'reconcile-codex-completed':
+            result = agent.reconcile_codex_completed(args.task_id, args.rollout_file)
         else:
             result = agent.execute_task(args.task_id)
         print(json.dumps(result))
