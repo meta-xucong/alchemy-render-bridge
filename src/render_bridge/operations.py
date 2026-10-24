@@ -20,7 +20,8 @@ def main(argv=None):
             raise ValueError('Configured Bridge database must already exist')
         store = BridgeStore(database, config.data_dir / 'artifacts',
                             enabled_profiles=config.enabled_profiles,
-                            accepting_new_tasks=config.accepting_new_tasks)
+                            accepting_new_tasks=config.accepting_new_tasks,
+                            max_queued_tasks=config.max_queued_tasks)
         scope = SourceScope(config.source_id, config.workspace_id)
         if args.command == 'audit':
             result = store.audit_events(scope, args.limit)

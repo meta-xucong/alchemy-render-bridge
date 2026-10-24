@@ -129,14 +129,18 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
     therefore NOT verified or promised by this experimental store.
     """
 
-    def __init__(self, db_path, artifact_root, *, clock=None, enabled_profiles=("fake-image",), accepting_new_tasks=True):
+    def __init__(self, db_path, artifact_root, *, clock=None, enabled_profiles=("fake-image",),
+                 accepting_new_tasks=True, max_queued_tasks=10):
         self.enabled_profiles = enabled_profile_ids(enabled_profiles)
         self.db_path = str(db_path)
         if self.db_path == ":memory:":
             raise ValueError("Use a file-backed database for persistence tests")
         if type(accepting_new_tasks) is not bool:
             raise ValueError("accepting_new_tasks must be boolean")
+        if type(max_queued_tasks) is not int or not 1 <= max_queued_tasks <= 10_000:
+            raise ValueError("max_queued_tasks must be an integer from 1 through 10000")
         self.accepting_new_tasks = accepting_new_tasks
+        self.max_queued_tasks = max_queued_tasks
         raw_clock = clock or time.time
         def timestamp_clock():
             value = raw_clock()
@@ -372,6 +376,8 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
     def capabilities(self, scope):
         self._scope(scope)
         node = self.node_status(scope)
+        with self._read_transaction() as con:
+            active_count = self._active_task_count(con)
         return {
             "schema_version": "1",
             "admission": {"accepting_new_tasks": self.accepting_new_tasks,
@@ -397,8 +403,18 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             "limits": {"max_input_bytes": MAX_INPUT_BYTES,
                        "max_output_bytes": max(get_profile(p).max_output_bytes for p in self.enabled_profiles),
                        "max_image_pixels": max(get_profile(p).max_pixels for p in self.enabled_profiles), "max_references": 8,
-                       "max_queued_tasks": 10, "max_manual_pending": 3},
+                       "max_queued_tasks": self.max_queued_tasks, "max_manual_pending": 3},
+            # This is diagnostic only.  Admission still happens atomically in
+            # create_task, so a caller must not use this snapshot as a permit.
+            "queue": {"active_tasks": active_count, "max_queued_tasks": self.max_queued_tasks},
         }
+
+    def _active_task_count(self, con):
+        now = self.clock()
+        active = con.execute("""SELECT t.* FROM tasks t JOIN attempts a ON a.task_id=t.id
+            WHERE t.state NOT IN ('canceled','failed','expired','artifacts_ready')
+            AND (t.deadline>? OR a.start_grant_id IS NOT NULL)""", (now,)).fetchall()
+        return sum(self._profile(row).execution_mode != "manual" or row["deadline"] > now for row in active)
 
     @staticmethod
     def _media_metadata(payload, *, output=False, profile=None):
@@ -711,11 +727,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                 _fail("bridge_draining", 503)
             if deadline <= self.clock() or deadline > self.clock() + 7 * 86400:
                 _fail("invalid_deadline", 422)
-            active = con.execute("""SELECT t.* FROM tasks t JOIN attempts a ON a.task_id=t.id
-                WHERE t.state NOT IN ('canceled','failed','expired','artifacts_ready')
-                AND (t.deadline>? OR a.start_grant_id IS NOT NULL)""", (self.clock(),)).fetchall()
-            active_count = sum(self._profile(row).execution_mode != "manual" or row["deadline"] > self.clock() for row in active)
-            if active_count >= 10:
+            if self._active_task_count(con) >= self.max_queued_tasks:
                 _fail("queue_capacity", 429)
             for ref in payload["references"]:
                 row = self._scoped(con, "inputs", ref["input_ref"], scope)

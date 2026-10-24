@@ -113,5 +113,9 @@ class RuntimeConfigTests(unittest.TestCase):
         with self.assertRaises(ValueError): RuntimeConfig(Path('unused'),'s','w','n','e',host='0.0.0.0').validate()
         RuntimeConfig(Path('unused'),'s','w','n','e').validate()
 
+    def test_queue_limit_is_bounded(self):
+        RuntimeConfig(Path('unused'),'s','w','n','e', max_queued_tasks=1).validate()
+        with self.assertRaises(ValueError): RuntimeConfig(Path('unused'),'s','w','n','e', max_queued_tasks=0).validate()
+
 
 if __name__=='__main__': unittest.main()

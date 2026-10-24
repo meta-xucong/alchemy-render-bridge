@@ -118,6 +118,36 @@ class DomainTests(unittest.TestCase):
         self.assertEqual(1, len({result["remote_task_id"] for result in results}))
         self.assertEqual(1, len({result["attempt_id"] for result in results}))
 
+    def test_configured_queue_limit_is_atomic_and_replay_precedes_capacity(self):
+        self.store = BridgeStore(self.root / "ledger.db", self.root / "objects", clock=lambda: self.now,
+                                 max_queued_tasks=1)
+        first = self.store.create_task(self.scope, self.payload("first"))
+        self.assertEqual(first, self.store.create_task(self.scope, self.payload("first")))
+        self.assert_error("queue_capacity", self.store.create_task, self.scope, self.payload("second"))
+        caps = self.store.capabilities(self.scope)
+        self.assertEqual({"active_tasks": 1, "max_queued_tasks": 1}, caps["queue"])
+        self.assertEqual(1, caps["limits"]["max_queued_tasks"])
+
+    def test_configured_queue_limit_admits_one_of_two_concurrent_new_origins(self):
+        self.store = BridgeStore(self.root / "ledger.db", self.root / "objects", clock=lambda: self.now,
+                                 max_queued_tasks=1)
+        barrier = threading.Barrier(2)
+
+        def create(origin):
+            barrier.wait()
+            try:
+                store = BridgeStore(self.root / "ledger.db", self.root / "objects", clock=lambda: self.now,
+                                    max_queued_tasks=1)
+                return store.create_task(self.scope, self.payload(origin))
+            except DomainError as exc:
+                return exc
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(create, ("first", "second")))
+        self.assertEqual(1, sum(not isinstance(item, DomainError) for item in results))
+        failures = [item for item in results if isinstance(item, DomainError)]
+        self.assertEqual(["queue_capacity"], [item.code for item in failures])
+
     def test_input_replay_pins_and_cleanup_tombstone(self):
         ready, data, metadata = self.input()
         self.assertEqual(ready["input_id"], self.reopen().create_input(self.scope, metadata)["input_id"])

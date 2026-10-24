@@ -33,6 +33,7 @@ class RuntimeConfig:
     executor_instance: str
     enabled_profiles: tuple[str, ...] = ("fake-image",)
     accepting_new_tasks: bool = True
+    max_queued_tasks: int = 10
     host: str = '127.0.0.1'
     port: int = 8787
     source_token_env: str = 'BRIDGE_SOURCE_TOKEN'
@@ -66,6 +67,8 @@ class RuntimeConfig:
                 raise ValueError('Invalid bounded maintenance configuration')
         if type(self.accepting_new_tasks) is not bool:
             raise ValueError("accepting_new_tasks must be boolean")
+        if type(self.max_queued_tasks) is not int or not 1 <= self.max_queued_tasks <= 10_000:
+            raise ValueError("max_queued_tasks must be an integer from 1 through 10000")
         for value in (self.source_id, self.workspace_id, self.node_id, self.executor_instance):
             if not isinstance(value, str) or not 1 <= len(value) <= 128 or any(ord(c) < 32 for c in value):
                 raise ValueError('Invalid configured identity')
@@ -93,7 +96,8 @@ class RuntimeConfig:
         self.validate()
         source, node, dispatcher = self.credentials(environ)
         store = BridgeStore(self.data_dir / 'bridge.sqlite', self.data_dir / 'artifacts',
-                            enabled_profiles=self.enabled_profiles, accepting_new_tasks=self.accepting_new_tasks)
+                            enabled_profiles=self.enabled_profiles, accepting_new_tasks=self.accepting_new_tasks,
+                            max_queued_tasks=self.max_queued_tasks)
         scope = SourceScope(self.source_id, self.workspace_id)
         app = create_runtime_app(store=store, source_tokens={source: scope},
             node_tokens={node: NodeScope(self.source_id, self.workspace_id, self.node_id, self.executor_instance)},

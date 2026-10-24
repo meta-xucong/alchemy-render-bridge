@@ -14,6 +14,11 @@
 - Node token 固定绑定 source/workspace/node/executor_instance。任务请求不能更换执行身份。
 - 通用 node 路径提供查询、claim、start、unknown、已绑定参考图下载、输出上传和提交。
 - `fake-image` 是默认允许提交的 profile；已实现显式配置的 Codex/Midjourney 开发路由，见后文。配置开放不等于真实工具验收通过。
+- `max_queued_tasks` 是全 Bridge 数据库的原子新任务上限，默认 `10`，可设为
+  `1`–`10000`。同一 origin 的重放先解析既有任务，再判断上限，因此不会因
+  满队列创建第二任务或丢失既有任务。能力响应的 `queue.active_tasks` 与
+  `queue.max_queued_tasks` 仅供诊断；唯一有效准入仍是创建任务时的 SQLite
+  事务。已受理任务不会因之后队列满或上限变更而迁移到其他提供方。
 
 ## 启动步骤与进程边界
 
