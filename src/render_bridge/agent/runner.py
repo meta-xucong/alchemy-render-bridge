@@ -316,6 +316,20 @@ class NodeAgent:
                 or artifact.mime_type != record.get('mime_type')):
             self._unknown(record)
             return False
+        try:
+            checked = inspect_image(Path(artifact.path).read_bytes(),
+                                    provenance=artifact.provenance,
+                                    path=Path(artifact.path))
+            profile = get_profile('codex-image')
+        except Exception:
+            self._unknown(record)
+            return False
+        if (checked.sha256 != record.get('sha256') or checked.size != record.get('size')
+                or checked.mime_type != record.get('mime_type')
+                or checked.width * checked.height > profile.max_pixels
+                or max(checked.width, checked.height) > profile.max_dimension):
+            self._unknown(record)
+            return False
         proof = recovered.details.get('reconciliation') if recovered.details.get('review_only') is True else None
         if recovered.details.get('review_only') is True:
             if (not self._codex_review_proof_matches(record, proof, artifact, task)

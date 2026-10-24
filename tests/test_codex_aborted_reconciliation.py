@@ -1,10 +1,14 @@
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
+
+from PIL import Image
 
 from render_bridge.executors import CodexExecutor, ExecutionRequest
 from render_bridge.agent.client import NodeHTTPError
@@ -558,6 +562,51 @@ class CodexAbortedImageReconciliationTests(unittest.TestCase):
             self.assertEqual(result['outcome'], 'already_committed')
             self.assertEqual(agent.journal.get('task-fixture')['state'], 'complete')
             self.assertEqual(agent.journal.get('task-fixture')['receipt_id'], 'receipt-server')
+
+    def test_artifact_ready_replay_rejects_codex_original_over_axis_limit(self):
+        class Client:
+            def __init__(self, request):
+                self.request = request
+                self.unknown_called = False
+                self.upload_called = False
+            def task(self, task_id):
+                return {'remote_task_id': task_id, 'state': 'execution_unknown',
+                    'attempt_id': self.request.attempt_id, 'receipt_id': None,
+                    'request': {'prompt': self.request.prompt,
+                        'parameters': self.request.parameters,
+                        'references': list(self.request.references),
+                        'execution_profile_id': 'codex-image'}}
+            def unknown(self, task_id, claim_id):
+                self.unknown_called = True
+            def create_upload(self, *args):
+                self.upload_called = True
+                raise AssertionError('over-limit original must not upload')
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _, request, executor, _, _ = self.setup_case(root)
+            output = io.BytesIO()
+            Image.new('RGB', (40_001, 1), 'black').save(output, format='PNG')
+            content = output.getvalue()
+            client = Client(request)
+            agent = NodeAgent(client, root / 'private' / 'agent',
+                registry=ExecutorRegistry({'codex-image': executor}))
+            saved = agent.journal.root / 'attempts' / request.task_id / request.attempt_id / 'result.original'
+            saved.parent.mkdir(parents=True)
+            saved.write_bytes(content)
+            artifact = SimpleNamespace(path=saved, sha256=hashlib.sha256(content).hexdigest(),
+                size=len(content), mime_type='image/png', provenance='fixture')
+            agent.journal.save({'task_id': request.task_id, 'attempt_id': request.attempt_id,
+                'state': 'artifact_ready', 'claim_id': 'claim-fixture', 'profile_id': 'codex-image',
+                'request': request.payload(), 'request_sha256': request.digest,
+                'artifact': str(saved.relative_to(agent.journal.root)), 'sha256': artifact.sha256,
+                'size': artifact.size, 'mime_type': artifact.mime_type})
+            with patch.object(executor, 'recover_completed', return_value=SimpleNamespace(
+                    status='ready', artifact=artifact, details={})):
+                result = agent._execute(request.task_id, None)
+            self.assertEqual(result['outcome'], 'execution_unknown')
+            self.assertTrue(client.unknown_called)
+            self.assertFalse(client.upload_called)
 
 
 if __name__ == '__main__':
