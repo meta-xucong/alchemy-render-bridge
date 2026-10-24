@@ -59,7 +59,8 @@ choose its own execution mode.
 
 - `fake-image`: automatic; output at most 1 MiB, each dimension at most 1024,
   total at most 1,048,576 pixels. Existing omitted dimensions default to 32.
-- `codex-image`: automatic; output at most 16 MiB and 40,000,000 pixels.
+- `codex-image`: automatic; output at most 16 MiB, 40,000,000 pixels, and
+  40,000 pixels per axis.
 - `midjourney-manual`: manual; output at most 16 MiB and 40,000,000 pixels.
 - `midjourney-manual` requires explicit integer `parameters.width` and
   `parameters.height`, and its returned original must match them exactly.

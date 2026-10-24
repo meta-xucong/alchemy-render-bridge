@@ -1,8 +1,9 @@
 # Local readiness doctor: bounded implementation plan and contract
 
 This slice adds a local configuration diagnostic, not a renderer acceptance test.
-It preserves task schema v1, profile revision 1, the default fake route and exact
-output-dimension checks. It does not change Alchemy's native generation path.
+It preserves task schema v1, profile revision 1, the default fake route and
+each profile's output-dimension contract. It does not change Alchemy's native
+generation path.
 
 ## Scope
 

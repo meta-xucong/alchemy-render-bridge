@@ -46,7 +46,7 @@ class ExecutionProfile:
 _PROFILES = {
     'fake-image': ExecutionProfile('fake-image', '1', 'automatic', 1_048_576, 1_048_576, 1024,
         'deterministic_fixture', 'accepted_not_applied', 'hash_checked_not_conditioning'),
-    'codex-image': ExecutionProfile('codex-image', '1', 'automatic', 16_777_216, 40_000_000, 40_000_000,
+    'codex-image': ExecutionProfile('codex-image', '1', 'automatic', 16_777_216, 40_000_000, 40_000,
         'text_instruction_only', 'text_instruction_only', 'local_image_input_unverified'),
     'midjourney-manual': ExecutionProfile('midjourney-manual', '1', 'manual', 16_777_216, 40_000_000, 40_000_000,
         'manual_user_selected', 'manual_user_selected', 'not_supported'),

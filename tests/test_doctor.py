@@ -311,14 +311,18 @@ class ProbeAndDescriptorTests(unittest.TestCase):
                 self.assertEqual(item['execution_profile_revision'], '1')
                 self.assertEqual(contract['schema_version'], '1')
                 self.assertEqual(contract['accepted_parameters'], ['width', 'height', 'seed', 'image_options'])
-                self.assertEqual(contract['dimension_semantics'], 'exact_output_match')
-                self.assertEqual(contract['required_parameters'], [] if profile.id == 'fake-image' else ['width', 'height'])
+                self.assertEqual(contract['dimension_semantics'],
+                                 'original_dimensions_recorded' if profile.id == 'codex-image'
+                                 else 'exact_output_match')
+                self.assertEqual(contract['required_parameters'],
+                                 ['width', 'height'] if profile.id == 'midjourney-manual' else [])
                 self.assertEqual(contract['unsupported_parameters'], ['quality', 'output_format', 'input_fidelity'])
                 self.assertFalse(item['production_verified'])
                 contract['accepted_parameters'].append('bad')
                 self.assertNotIn('bad', profile.parameter_contract()['accepted_parameters'])
             self.assertEqual(get_profile('fake-image').seed_semantics, 'accepted_not_applied')
             self.assertEqual(get_profile('codex-image').executor_control, 'text_instruction_only')
+            self.assertEqual(get_profile('codex-image').max_dimension, 40_000)
             self.assertEqual(get_profile('midjourney-manual').reference_semantics, 'not_supported')
 
 
