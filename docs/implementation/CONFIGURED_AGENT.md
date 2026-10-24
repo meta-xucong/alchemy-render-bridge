@@ -63,7 +63,7 @@ python -m render_bridge.agent.hatchet_sidecar worker --state-dir ./local-agent-s
 
 - 默认配置不启用 Codex 或人工 MJ。加入 `codex-image` 后，还必须在本地完成真实能力验证并显式配置 `codex.enabled`、`model`、`accepted_cli_version`、`image_capability_verified`、`tool_policy_verified`，并显式选择 `codex.approval_policy="on-request"`。空策略或旧 `untrusted` 不作为已接受配置。Agent 在 server start 前只做版本/help preflight；不通过返回 needs_attention，不占物理执行槽。真正 thread/turn 生命周期仍受本地配置控制，本轮仅 mock 验证。
 - 加入 `midjourney-manual` 后，任务导出 prompt.txt/task.json，服务通过 manual-ready 建立同 attempt 的 awaiting_user。返回 request_sha256 与导出文件路径，Hatchet 回调即结束，人工等待不占自动物理槽。此导出步骤不发送 Discord，也不调用 /imagine。已有独立、显式确认的 manual-notify 官方 Discord 普通消息功能，见 [Discord 任务通知](DISCORD_TASK_NOTICES.md)；消息不等于提交生成。人工 profile 不支持参考图，创建阶段即拒绝，不退化为纯文生图。
-- 每个真实 profile 请求必须显式给 width/height；原图需与冻结尺寸一致。用户自行在 Midjourney 生成，并明确选定一张原图，不是网格截图。使用导出时返回的 request_sha256：
+- `midjourney-manual` 请求必须显式给 width/height；原图需与冻结尺寸一致。`codex-image` 的尺寸仅作冻结请求证据，Bridge 接收经校验的原始实际尺寸，不缩放或重渲染。用户自行在 Midjourney 生成，并明确选定一张原图，不是网格截图。使用导出时返回的 request_sha256：
 
 ```sh
 python -m render_bridge.agent --state-dir ./local-agent-state --config ./agent.local.json manual-import TASK_ID /path/to/original.png --request-sha256 HASH --confirm-single-original

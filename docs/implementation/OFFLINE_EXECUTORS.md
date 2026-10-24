@@ -23,9 +23,10 @@ and the fake profile's 1 MiB upload limit still applies.
 
 The local artifact collector supports PNG/JPEG up to 16 MiB / 40 MP. That is only
 also the configured Codex/manual server profile limit; the default fake profile
-still has its own smaller limit. Non-fake requests require explicit width/height,
-and the server rejects originals whose dimensions differ. This validates an
-original, not the external tool's ability to produce a requested size.
+still has its own smaller limit. Manual requests require explicit width/height
+and reject originals whose dimensions differ. Codex dimensions are request
+evidence only: the server records and accepts the one validated original at its
+actual dimensions, without resizing or rerendering it.
 
 ## Explicit local commands
 

@@ -79,18 +79,16 @@ class CodexAbortedImageReconciliationTests(unittest.TestCase):
                 self.assertEqual(recovered.status, 'ready')
                 self.assertEqual(recovered.artifact.sha256, result.artifact.sha256)
 
-    def test_requested_dimensions_and_terminal_order_are_mandatory(self):
+    def test_actual_dimensions_are_evidence_and_terminal_order_is_mandatory(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             home, request, executor, rollout, _ = self.setup_case(root, width=64, height=64)
             with patch.dict(os.environ, {'CODEX_HOME': str(home)}):
-                mismatch = executor.reconcile_interrupted_image(
+                accepted = executor.reconcile_interrupted_image(
                     request, rollout, bridge_binding=self.bridge_binding())
-                self.assertEqual(mismatch.status, 'execution_unknown')
-                self.assertFalse((executor.root / request.task_id / request.attempt_id /
-                                  'codex-aborted-image.json').exists())
-                self.assertFalse((executor.root / request.task_id / request.attempt_id /
-                                  'artifact.original').exists())
+                self.assertEqual(accepted.status, 'ready')
+                evidence = accepted.details['reconciliation']
+                self.assertEqual(evidence['dimensions'], {'width': 32, 'height': 32})
 
                 rows = [json.loads(line) for line in rollout.read_text(encoding='utf-8').splitlines()]
                 rows[-1], rows[-2] = rows[-2], rows[-1]

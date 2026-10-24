@@ -61,9 +61,11 @@ choose its own execution mode.
   total at most 1,048,576 pixels. Existing omitted dimensions default to 32.
 - `codex-image`: automatic; output at most 16 MiB and 40,000,000 pixels.
 - `midjourney-manual`: manual; output at most 16 MiB and 40,000,000 pixels.
-- Both non-fake profiles require explicit integer `parameters.width` and
-  `parameters.height`. Returned originals must match those dimensions exactly;
-  Bridge never silently resizes a real original. PNG/JPEG, one image only.
+- `midjourney-manual` requires explicit integer `parameters.width` and
+  `parameters.height`, and its returned original must match them exactly.
+  `codex-image` may omit them; when present they are frozen request evidence
+  and text guidance only. Bridge records and uploads the returned Codex original
+  at its actual dimensions without silently resizing it. PNG/JPEG, one image only.
 - Input uploads still have the existing 1 MiB / 1,048,576-pixel ceiling.
   Enabling an output profile does not increase input limits or imply that its
   reference-image workflow has been validated.

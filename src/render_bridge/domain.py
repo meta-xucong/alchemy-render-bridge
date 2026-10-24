@@ -660,7 +660,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             validate_image_request(payload["parameters"], payload["references"], profile.id)
         except ValueError:
             _fail("unsupported_image_options_or_references", 422)
-        if profile.id != "fake-image" and not {"width", "height"} <= payload["parameters"].keys():
+        if profile.id == "midjourney-manual" and not {"width", "height"} <= payload["parameters"].keys():
             _fail("explicit_dimensions_required", 422)
         width = _integer(payload["parameters"].get("width", 32), 1, profile.max_dimension)
         height = _integer(payload["parameters"].get("height", 32), 1, profile.max_dimension)
@@ -1058,8 +1058,9 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             # _verify_media has already matched the MIME against the decoded format.
             if expected_mime and payload["mime_type"] != expected_mime:
                 _fail("output_format_mismatch", 422)
-            if dimensions != {"width": parameters.get("width", 32),
-                              "height": parameters.get("height", 32)}:
+            if (self._profile(task).id != "codex-image" and dimensions != {
+                    "width": parameters.get("width", 32),
+                    "height": parameters.get("height", 32)}):
                 _fail("output_dimensions_mismatch", 422)
             if row["state"] in {"ready", "committed"}:
                 self._read_bytes(row["file_name"], payload)

@@ -95,12 +95,13 @@ class ProfileTests(unittest.TestCase):
         with self.assertRaises(DomainError): self.store.commit_upload(self.scope,up['upload_id'],claim['claim_id'])
         self.store.begin_manual(self.scope,fourth,fc['claim_id'])
 
-    def test_codex_larger_output_receipt_and_reopen(self):
-        tid,claim=self.claimed('codex-image',size=(2048,2048))
+    def test_codex_original_dimensions_are_recorded_not_constrained(self):
+        tid,claim=self.claimed('codex-image',size=(32,24))
         self.store.start_execution(self.scope,tid,claim['claim_id'])
-        up=self.upload(tid,claim,(2048,2048),noisy=True)
+        up=self.upload(tid,claim,(1254,1254))
         receipt=self.store.commit_upload(self.scope,up['upload_id'],claim['claim_id'])
         self.assertEqual(receipt['execution_profile_id'],'codex-image')
+        self.assertEqual(receipt['dimensions'], {'width': 1254, 'height': 1254})
         # Existing requests retain their frozen profile even after config disables new admissions.
         reopened=BridgeStore(self.root/'db',self.root/'artifacts')
         self.assertEqual(reopened.get_receipt(self.scope,receipt['receipt_id'])['execution_profile_id'],'codex-image')
@@ -135,6 +136,10 @@ class ProfileTests(unittest.TestCase):
         new, nc = self.claimed(key='new')
         self.store.begin_manual(self.scope, new, nc['claim_id'])
         payload = self.payload('codex-image', key='missing-dimensions')
+        payload['parameters'] = {}
+        TaskCreate.model_validate(payload)
+        self.store.create_task(self.scope, payload)
+        payload = self.payload('midjourney-manual', key='manual-missing-dimensions')
         payload['parameters'] = {}
         with self.assertRaises(ValueError): TaskCreate.model_validate(payload)
         with self.assertRaises(DomainError): self.store.create_task(self.scope, payload)

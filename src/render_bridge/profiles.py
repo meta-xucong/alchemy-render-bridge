@@ -32,8 +32,9 @@ class ExecutionProfile:
         return {
             'schema_version': '1',
             'accepted_parameters': ['width', 'height', 'seed', 'image_options'],
-            'required_parameters': [] if self.id == 'fake-image' else ['width', 'height'],
-            'dimension_semantics': 'exact_output_match',
+            'required_parameters': ['width', 'height'] if self.id == 'midjourney-manual' else [],
+            'dimension_semantics': ('original_dimensions_recorded'
+                                    if self.id == 'codex-image' else 'exact_output_match'),
             'executor_control': self.executor_control,
             'seed_semantics': self.seed_semantics,
             'reference_semantics': self.reference_semantics,

@@ -101,7 +101,7 @@ class TaskCreate(StrictRequest):
     @model_validator(mode="before")
     @classmethod
     def explicit_real_dimensions(cls, value):
-        if isinstance(value, dict) and value.get("execution_profile_id") != "fake-image":
+        if isinstance(value, dict) and value.get("execution_profile_id") == "midjourney-manual":
             parameters = value.get("parameters")
             if not isinstance(parameters, dict) or not {"width", "height"} <= parameters.keys():
                 raise ValueError("Real profiles require explicit width and height")

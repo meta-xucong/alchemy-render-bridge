@@ -534,10 +534,7 @@ class CodexExecutor:
             content = self._read_scoped_original(source, attempt_root, thread_id, resolved)
             verified = inspect_image(content, provenance='codex_aborted_turn_review_only',
                                      path=files.path / 'artifact.original')
-            width = request.parameters.get('width', 32)
-            height = request.parameters.get('height', 32)
-            if (verified.width != width or verified.height != height
-                    or (requested := requested_output_mime(request.parameters))
+            if ((requested := requested_output_mime(request.parameters))
                     and verified.mime_type != requested):
                 return ExecutionResult('execution_unknown', 'codex_interrupted_image_output_mismatch')
             evidence = {
