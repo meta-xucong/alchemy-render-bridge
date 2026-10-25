@@ -4,12 +4,20 @@ Validation never normalizes a frozen request. Omission keeps legacy identity.
 """
 from .profiles import get_profile
 
+CODEX_ADAPTER = 'codex_cli_imagegen_v1'
+
+
+def uses_codex_adapter(parameters: dict, profile_id: str | None) -> bool:
+    return profile_id == 'codex-image' and parameters.get('codex_adapter') == CODEX_ADAPTER
+
 
 def validate_image_options(parameters: dict, profile_id: str | None = None) -> dict | None:
     if not isinstance(parameters, dict):
         raise ValueError('Image parameters must be an object')
-    if set(parameters) - {'width', 'height', 'seed', 'image_options'}:
+    if set(parameters) - {'width', 'height', 'seed', 'image_options', 'codex_adapter'}:
         raise ValueError('Unsupported image parameter; use the nested image_options contract')
+    if 'codex_adapter' in parameters and not uses_codex_adapter(parameters, profile_id):
+        raise ValueError('Unsupported Codex adapter contract')
     if 'image_options' not in parameters:
         return None
     options = parameters['image_options']
@@ -19,7 +27,7 @@ def validate_image_options(parameters: dict, profile_id: str | None = None) -> d
         raise ValueError('Unsupported image_options schema version')
     if any(value is None for key, value in options.items() if key != 'schema_version'):
         raise ValueError('Optional image options must be omitted instead of null')
-    if profile_id == 'codex-image':
+    if uses_codex_adapter(parameters, profile_id):
         if options.get('quality') not in (None, 'auto', 'low', 'medium', 'high'):
             raise ValueError('Unsupported requested quality')
         if options.get('output_format') not in (None, 'png', 'jpeg', 'webp'):
@@ -30,7 +38,7 @@ def validate_image_options(parameters: dict, profile_id: str | None = None) -> d
             raise ValueError('transparent_background must be a boolean')
         return options
     if set(options) != {'schema_version', 'quality', 'output_format'}:
-        raise ValueError('Non-Codex profiles require schema_version, quality, output_format')
+        raise ValueError('Legacy image options require schema_version, quality, output_format')
     if options['quality'] != 'auto':
         raise ValueError('Only unspecified quality auto is supported')
     if options['output_format'] not in ('png', 'jpeg'):
@@ -41,7 +49,7 @@ def validate_image_options(parameters: dict, profile_id: str | None = None) -> d
 def validate_image_request(parameters: dict, references, profile_id: str) -> dict | None:
     options = validate_image_options(parameters, profile_id)
     profile = get_profile(profile_id)
-    maximum = 0 if profile.execution_mode == 'manual' else (5 if profile_id == 'codex-image' else 8)
+    maximum = 0 if profile.execution_mode == 'manual' else (5 if uses_codex_adapter(parameters, profile_id) else 8)
     if not isinstance(references, (list, tuple)) or len(references) > maximum:
         raise ValueError('References are unsupported for this profile or exceed its limit')
     return options
@@ -49,7 +57,7 @@ def validate_image_request(parameters: dict, references, profile_id: str) -> dic
 
 def requested_output_mime(parameters: dict, profile_id: str | None = None) -> str | None:
     options = validate_image_options(parameters, profile_id)
-    if profile_id == 'codex-image':
+    if uses_codex_adapter(parameters, profile_id):
         return None  # Codex imagegen does not expose a native output-format argument.
     return 'image/' + options['output_format'] if options else None
 

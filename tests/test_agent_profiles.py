@@ -45,11 +45,12 @@ class AgentProfilesTests(unittest.TestCase):
         self.store.close()
         self.temp.cleanup()
 
-    def create(self, profile, origin='task', image_options=None):
+    def create(self, profile, origin='task', image_options=None, *, adapted=False):
         return self.store.create_task(self.scope, {'schema_version': '1', 'origin_key': origin,
             'binding_id': 'binding', 'operation': 'image.generate', 'execution_profile_id': profile,
             'execution_profile_revision': '1', 'prompt': '冻结提示词 中文',
             'parameters': {'width': 32, 'height': 24, 'seed': 1,
+                **({'codex_adapter': 'codex_cli_imagegen_v1'} if adapted else {}),
                 **({'image_options': image_options} if image_options is not None else {})}, 'references': [],
             'output_slot': {'slot_id': 'primary', 'count': 1}, 'routing': 'bridge_only',
             'deadline': (datetime.fromtimestamp(self.now, timezone.utc) + timedelta(hours=2)).isoformat()
@@ -81,7 +82,7 @@ class AgentProfilesTests(unittest.TestCase):
             tool_policy_verified=True, approval_policy='on-request'))
         self.registry.executors['codex-image'] = executor
         task = self.create('codex-image', 'recovery-'+str(manifest)+str(mismatch), {
-            'schema_version': '1', 'quality': 'auto', 'output_format': 'jpeg'})
+            'schema_version': '1', 'quality': 'auto', 'output_format': 'jpeg'}, adapted=mismatch)
         expected = (fixture_png if mismatch else fixture_jpeg)(32, 24)
         def completed(request):
             files = AttemptFiles(executor.root, request, 'codex-cli')
