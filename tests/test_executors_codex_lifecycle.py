@@ -1,5 +1,6 @@
 """Full lifecycle through a fixed local Python fixture, never the real CLI."""
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -14,7 +15,8 @@ from render_bridge.fake import fixture_png, fixture_jpeg
 
 
 class CodexLifecycleTests(unittest.TestCase):
-    def run_fixture(self, image, requested_format=None, actual_format='png', recover=False,
+    def run_fixture(self, image, requested_format=None, actual_format='png', recover=False, transparent=False,
+                    reference=False,
                     terminal_failure=False, cli_version='codex-cli 0.157.1'):
         original_bytes = (fixture_jpeg if actual_format == 'jpeg' else fixture_png)()
         with tempfile.TemporaryDirectory() as directory:
@@ -35,6 +37,10 @@ for line in sys.stdin:
  elif stage==2:
   assert method=='thread/start' and p['approvalPolicy']=='on-request'
   assert p['sandbox']=='workspace-write' and p['model']=='local-accepted-model'
+  assert ('transparent_background=true' in p.get('developerInstructions','')) is INVOKE_TRANSPARENT
+  assert ('referenced_image_paths set to' in p.get('developerInstructions','')) is HAS_REFERENCE
+  assert REF_NAME in p.get('developerInstructions','') if HAS_REFERENCE else True
+  assert ('Do not use num_last_images_to_include' in p.get('developerInstructions','')) is HAS_REFERENCE
   emit({'id':r['id'],'result':{'thread':{'id':'thread-fixture'}}})
  elif stage==3:
   assert method=='turn/start' and p['threadId']=='thread-fixture'
@@ -53,12 +59,22 @@ for line in sys.stdin:
   emit({'method':'turn/completed','params':{'threadId':'thread-fixture','turn':{'id':'turn-fixture','status':'completed','items':[item]}}})
  else: raise AssertionError('duplicate operation')
  stage+=1
-'''.replace('if IMAGE:', 'if ' + repr(image) + ':').replace('base64.b64decode(PNG)', 'base64.b64decode(' + repr(base64.b64encode(original_bytes).decode()) + ')'), encoding='utf-8')
+'''.replace('if IMAGE:', 'if ' + repr(image) + ':').replace('base64.b64decode(PNG)', 'base64.b64decode(' + repr(base64.b64encode(original_bytes).decode()) + ')').replace('INVOKE_TRANSPARENT', repr(transparent and cli_version == 'codex-cli 0.163.0')).replace('HAS_REFERENCE', repr(reference)).replace('REF_NAME', repr('reference.png' if reference else '')), encoding='utf-8')
+            reference_path = root / 'reference.png'
+            references = ()
+            if reference:
+                reference_path.write_bytes(fixture_png())
+                references = ({'path': str(reference_path), 'hash': hashlib.sha256(reference_path.read_bytes()).hexdigest()},)
             if terminal_failure:
                 script.write_text(script.read_text(encoding='utf-8').replace("'status':'completed','items':[item]", "'status':'failed','items':[item],'error':{'codexErrorInfo':'usageLimitExceeded'}"), encoding='utf-8')
-            parameters = {} if requested_format is None else {'image_options': {
-                'schema_version': '1', 'quality': 'auto', 'output_format': requested_format}}
-            request = ExecutionRequest('task', 'attempt', '原始完整 prompt', parameters)
+            parameters = {}
+            if requested_format is not None or transparent:
+                parameters['image_options'] = {'schema_version': '1'}
+                if requested_format is not None:
+                    parameters['image_options'].update({'quality': 'high', 'output_format': requested_format})
+                if transparent:
+                    parameters['image_options']['transparent_background'] = True
+            request = ExecutionRequest('task', 'attempt', '原始完整 prompt', parameters, references)
             config = CodexConfig(enabled=True, model='local-accepted-model',
                                  accepted_cli_version=cli_version,
                                  image_capability_verified=True, tool_policy_verified=True, approval_policy='on-request', timeout=3)
@@ -76,12 +92,14 @@ for line in sys.stdin:
                 result = executor.execute(request)
                 self.assertEqual(launched.call_count, 1)
                 if image:
-                    mismatch = requested_format is not None and requested_format != actual_format
-                    self.assertEqual(result.status, 'needs_attention' if mismatch else 'ready')
-                    self.assertEqual(result.code, 'output_format_mismatch' if mismatch else 'artifact_ready')
+                    self.assertEqual(result.status, 'ready')
+                    self.assertEqual(result.code, 'artifact_ready')
                     self.assertEqual(result.artifact.path.read_bytes(), original_bytes)
                     self.assertEqual(result.details['turn_id'], 'turn-fixture')
                     self.assertEqual(result.details['cli_version'], cli_version)
+                    self.assertEqual(result.details['parameter_adaptation']['transparent_background'],
+                        'native_tool_argument' if cli_version == 'codex-cli 0.163.0' and transparent else
+                        'codex_cli_default_auto' if transparent else 'native_default')
                 elif terminal_failure:
                     self.assertEqual(result.status, 'terminal_failure')
                     self.assertEqual(result.details['terminal_failure']['reason_code'], 'quota_exhausted')
@@ -118,8 +136,15 @@ for line in sys.stdin:
             with self.subTest(fmt=fmt):
                 self.run_fixture(True, requested_format=fmt, actual_format=fmt)
 
-    def test_completed_mismatch_retains_original_without_second_turn(self):
+    def test_unsupported_format_is_defaulted_and_original_is_retained_without_second_turn(self):
         self.run_fixture(True, requested_format='jpeg', actual_format='png')
+
+    def test_transparency_is_version_gated_and_older_cli_uses_its_default(self):
+        self.run_fixture(True, transparent=True, cli_version='codex-cli 0.157.1')
+        self.run_fixture(True, transparent=True, cli_version='codex-cli 0.163.0')
+
+    def test_explicit_reference_paths_map_to_codex_native_arguments(self):
+        self.run_fixture(True, reference=True)
 
     def test_completed_original_recovers_missing_manifest_without_execution(self):
         self.run_fixture(True, requested_format='jpeg', actual_format='jpeg', recover=True)

@@ -85,6 +85,7 @@ class AttemptFiles:
     def __init__(self, root: Path, request: ExecutionRequest, executor: str):
         self.request = request
         self.digest = request.digest
+        self.profile_id = 'codex-image' if executor == 'codex-cli' else None
         self.path = Path(root) / request.task_id / request.attempt_id
         self.path.mkdir(parents=True, exist_ok=True)
         binding = {'request_sha256': self.digest, 'executor': executor}
@@ -123,7 +124,7 @@ class AttemptFiles:
         return self._artifact_result(artifact)
 
     def _artifact_result(self, artifact: Artifact) -> ExecutionResult:
-        expected = requested_output_mime(self.request.parameters)
+        expected = requested_output_mime(self.request.parameters, self.profile_id)
         if expected and artifact.mime_type != expected:
             return ExecutionResult('needs_attention', 'output_format_mismatch', artifact,
                 {'expected_mime_type': expected, 'actual_mime_type': artifact.mime_type})
