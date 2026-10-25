@@ -2,6 +2,8 @@
 
 An optional API-based bridge between Alchemy applications and local rendering tools.
 
+Remote VPS-source adaptation: [bounded storage and HTTPS runbook](docs/implementation/REMOTE_SOURCE_READINESS.md). This is optional configuration; existing local defaults remain unchanged.
+
 Current parameter-contract candidate: see the [Codex adapter contract](docs/render-bridge/adapters/05_Codex_CLI适配方案.md).
 Native-default image options are explicitly versioned; unmarked historical tasks
 retain their original recovery contract. Alchemy's four-product integration lives

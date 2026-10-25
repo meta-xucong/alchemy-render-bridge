@@ -1,0 +1,22 @@
+{
+  "data_dir": "./.runtime/remote-bridge",
+  "source_id": "vps-alchemy",
+  "workspace_id": "vps-workspace",
+  "node_id": "local-node",
+  "executor_instance": "local-executor-1",
+  "enabled_profiles": [
+    "fake-image"
+  ],
+  "accepting_new_tasks": true,
+  "max_queued_tasks": 10,
+  "host": "127.0.0.1",
+  "port": 8787,
+  "source_token_env": "BRIDGE_SOURCE_TOKEN",
+  "node_token_env": "BRIDGE_NODE_TOKEN",
+  "dispatch_token_env": "BRIDGE_DISPATCH_TOKEN",
+  "max_storage_bytes": 4294967296,
+  "retention_enabled": true,
+  "retention_seconds": 86400,
+  "maintenance_interval_seconds": 60,
+  "maintenance_batch_size": 100
+}
