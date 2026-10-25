@@ -18,6 +18,16 @@ class ExecutionProfile:
     reference_semantics: str
 
     def image_options_contract(self) -> dict:
+        if self.id == 'codex-image':
+            return {
+                'schema_version': '1',
+                'quality': {'values': ['auto'], 'semantics': 'unsupported_values_normalized_to_auto'},
+                'output_format': {'values': [], 'semantics': 'native_default_original_artifact'},
+                'input_fidelity': {'values': [], 'semantics': 'gpt_image_2_default_high'},
+                'transparent_background': {'values': [False, True], 'semantics':
+                    '0.163.0 native argument; 0.157.1 requested true normalizes to CLI default auto'},
+                'references': {'max_count': 5, 'semantics': self.reference_semantics},
+            }
         return {
             'schema_version': '1',
             'quality': {'values': ['auto'], 'semantics': 'unspecified_only'},
@@ -38,8 +48,22 @@ class ExecutionProfile:
             'executor_control': self.executor_control,
             'seed_semantics': self.seed_semantics,
             'reference_semantics': self.reference_semantics,
-            # These names remain unsupported at the top level of parameters.
+            # Codex ImageGen normalizes these source-provider controls to the
+            # native tool/model default rather than claiming a CLI argument.
             'unsupported_parameters': ['quality', 'output_format', 'input_fidelity'],
+            'adapter_id': 'codex_cli_imagegen_v1' if self.id == 'codex-image' else None,
+            'normalization': ({
+                'quality': 'auto', 'size': 'auto', 'dimensions': 'auto',
+                'aspect_ratio': 'auto', 'seed': 'omitted',
+                'output_format': 'native_default', 'output_compression': 'native_default',
+                'input_fidelity': 'gpt_image_2_default_high',
+                'count': 'one_image_per_task_unit', 'provider_hint': 'configured_profile',
+                'transparent_background': {
+                    '0.163.0': 'native_tool_argument',
+                    '0.157.1': 'codex_cli_default_auto',
+                },
+                'references': 'explicit_referenced_image_paths_max_5',
+            } if self.id == 'codex-image' else {}),
         }
 
 

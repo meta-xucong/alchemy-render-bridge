@@ -258,7 +258,7 @@ class NodeAgent:
         if (checked.mime_type != artifact.mime_type or checked.width * checked.height > profile.max_pixels
                 or max(checked.width, checked.height) > profile.max_dimension):
             raise ValueError('Executor artifact does not match profile limits')
-        expected_mime = requested_output_mime(record['request']['parameters'])
+        expected_mime = requested_output_mime(record['request']['parameters'], profile.id)
         if expected_mime and checked.mime_type != expected_mime:
             raise ValueError('Executor original does not match requested output format')
         self._save_bytes(saved, content)
@@ -573,7 +573,8 @@ class NodeAgent:
         content = path.read_bytes()
         if hashlib.sha256(content).hexdigest() != record['sha256'] or len(content) != record['size']:
             raise ValueError('Saved artifact changed; cannot upload')
-        expected_mime = requested_output_mime(record['request']['parameters'])
+        expected_mime = requested_output_mime(record['request']['parameters'],
+            record['profile_id'])
         checked = inspect_image(content, provenance='agent_saved_original', path=path)
         if expected_mime and checked.mime_type != expected_mime:
             return {'outcome': 'needs_attention', 'code': 'output_format_mismatch', 'task_id': record['task_id']}

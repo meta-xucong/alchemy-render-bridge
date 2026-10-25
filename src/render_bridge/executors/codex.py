@@ -22,7 +22,7 @@ import threading
 import time
 from collections.abc import Sequence
 
-from render_bridge.image_options import requested_output_mime, validate_image_request
+from render_bridge.image_options import codex_imagegen_arguments, requested_output_mime, validate_image_request
 from .base import AttemptFiles, ExecutionRequest, ExecutionResult, MAX_ARTIFACT_BYTES, inspect_image
 
 SUPPORTED_CLI_VERSIONS = frozenset({'codex-cli 0.157.1', 'codex-cli 0.163.0'})
@@ -369,7 +369,9 @@ class CodexExecutor:
             path = files.path / name
             if path.exists():
                 saved = json.loads(path.read_text(encoding='utf-8'))
-                return self._terminal_failure(request, files, **saved)
+                terminal_evidence = {key: saved[key] for key in
+                    ('thread_id', 'turn_id', 'events', 'cli_version') if key in saved}
+                return self._terminal_failure(request, files, **terminal_evidence)
         return None
 
     def recover_completed(self, request: ExecutionRequest) -> ExecutionResult | None:
@@ -571,7 +573,7 @@ class CodexExecutor:
             content = self._read_scoped_original(source, attempt_root, thread_id, resolved)
             verified = inspect_image(content, provenance=provenance,
                                      path=files.path / 'artifact.original')
-            if ((requested := requested_output_mime(request.parameters))
+            if ((requested := requested_output_mime(request.parameters, 'codex-image'))
                     and verified.mime_type != requested):
                 return ExecutionResult('execution_unknown', 'codex_terminal_image_output_mismatch')
             evidence = {
@@ -623,14 +625,15 @@ class CodexExecutor:
         if not (probe.get('cli_version') == config.accepted_cli_version
                 and probe.get('schema_version_matches') and probe.get('stdio_advertised')):
             return ExecutionResult('needs_attention', 'codex_version_not_validated', details=probe)
+        native_options = codex_imagegen_arguments(request.parameters, probe['cli_version'])
+        instructions = 'Generate exactly one image using the image generation tool. Save the original in the current working directory. Do not substitute text, shell rendering, browsing, or unrelated tools for image generation.'
+        if native_options['transparent_background']:
+            instructions += ' Invoke the image generation tool with transparent_background=true and preserve alpha transparency.'
+        if request.references:
+            reference_paths = [str(Path(ref['path']).resolve()) for ref in request.references]
+            instructions += (' Invoke the image generation tool with referenced_image_paths set to '
+                + json.dumps(reference_paths, ensure_ascii=False) + '. Do not use num_last_images_to_include.')
         inputs = [{'type': 'text', 'text': request.prompt}]
-        if request.parameters:
-            # These are instructions, not invented image API parameters.
-            instructions = ('Requested rendering parameters (image_options quality auto means unspecified; '
-                            'output_format is an original-artifact acceptance requirement, not a native '
-                            'control; do not convert or rerender to meet it): ')
-            inputs.append({'type': 'text', 'text': instructions +
-                           json.dumps(request.parameters, ensure_ascii=False, sort_keys=True)})
         for ref in request.references:
             path = Path(ref['path'])
             if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_ARTIFACT_BYTES:
@@ -653,9 +656,7 @@ class CodexExecutor:
                     'model': config.model, 'cwd': cwd,
                     'approvalPolicy': config.approval_policy, 'approvalsReviewer': 'user',
                     'sandbox': 'workspace-write',
-                    'developerInstructions': 'Generate exactly one image using the image generation tool. '
-                        'Save the original in the current working directory. Do not substitute text, '
-                        'shell rendering, browsing, or unrelated tools for image generation.'})
+                    'developerInstructions': instructions})
                 thread_id = response['thread']['id']
                 if not isinstance(thread_id, str) or not thread_id:
                     raise ValueError('Missing Codex thread identity')
@@ -688,7 +689,11 @@ class CodexExecutor:
                         raise ValueError('Unexpected or excessive Codex events')
                     events.append(event)
                 evidence = {'thread_id': thread_id, 'turn_id': turn_id, 'events': events,
-                            'cli_version': probe['cli_version']}
+                            'cli_version': probe['cli_version'],
+                            'parameter_adaptation': {
+                                'adapter_id': 'codex_cli_imagegen_v1',
+                                'transparent_background': native_options['transparent_background_mapping'],
+                            }}
                 files.write_exclusive(completion, json.dumps(evidence, ensure_ascii=False).encode())
                 return self.collect_completed(request, **evidence)
         except PermissionError:
@@ -703,7 +708,8 @@ class CodexExecutor:
 
     def collect_completed(self, request: ExecutionRequest, *, thread_id: str,
                           turn_id: str, events: list[dict],
-                          cli_version: str | None = None) -> ExecutionResult:
+                          cli_version: str | None = None,
+                          parameter_adaptation: dict | None = None) -> ExecutionResult:
         """Collect an already executed, precisely bound event stream.
 
         This does not start/retry a turn or grant the Agent permission to upload.
@@ -778,6 +784,8 @@ class CodexExecutor:
         return ExecutionResult(result.status, result.code, result.artifact,
                                {**result.details, 'thread_id': thread_id, 'turn_id': turn_id,
                                 **({'cli_version': cli_version} if cli_version in SUPPORTED_CLI_VERSIONS else {}),
+                                **({'parameter_adaptation': parameter_adaptation}
+                                   if parameter_adaptation else {}),
                                 'image_item_id': next(iter(candidates))})
 
     @classmethod

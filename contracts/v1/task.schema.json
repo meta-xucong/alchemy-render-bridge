@@ -9,23 +9,40 @@
           "type": "string"
         },
         "quality": {
-          "const": "auto",
+          "enum": [
+            "auto",
+            "low",
+            "medium",
+            "high"
+          ],
           "title": "Quality",
           "type": "string"
         },
         "output_format": {
           "enum": [
             "png",
-            "jpeg"
+            "jpeg",
+            "webp"
           ],
           "title": "Output Format",
           "type": "string"
+        },
+        "input_fidelity": {
+          "enum": [
+            "auto",
+            "low",
+            "high"
+          ],
+          "title": "Input Fidelity",
+          "type": "string"
+        },
+        "transparent_background": {
+          "title": "Transparent Background",
+          "type": "boolean"
         }
       },
       "required": [
-        "schema_version",
-        "quality",
-        "output_format"
+        "schema_version"
       ],
       "title": "ImageOptions",
       "type": "object"

@@ -72,7 +72,7 @@ class AgentProfilesTests(unittest.TestCase):
             with self.subTest(manifest=manifest):
                 self._completed_codex_recovery(manifest=manifest)
 
-    def test_agent_mismatch_retains_original_and_replays_attention(self):
+    def test_agent_defaults_requested_format_and_commits_original_bytes(self):
         self._completed_codex_recovery(manifest=True, mismatch=True)
 
     def _completed_codex_recovery(self, *, manifest, mismatch=False):
@@ -104,15 +104,13 @@ class AgentProfilesTests(unittest.TestCase):
              patch.object(self.client, 'start', wraps=self.client.start) as start, \
              patch('render_bridge.executors.codex.StdioSession', side_effect=AssertionError('unexpected turn')):
             result = self.agent.execute_task(task)
-            self.assertEqual(result['outcome'], 'needs_attention' if mismatch else 'execution_unknown')
+            self.assertEqual(result['outcome'], 'artifact_committed' if mismatch else 'execution_unknown')
             self.now += 3601  # The fixed node claim lease expires before upload-only recovery.
             reopened = NodeAgent(self.client, self.state, registry=self.registry)
             recovered = reopened.execute_task(task)
-            self.assertEqual(recovered['outcome'], 'needs_attention' if mismatch else 'artifact_committed')
+            self.assertIn(recovered['outcome'], ('artifact_committed', 'already_committed'))
             if mismatch:
-                self.assertEqual(result['code'], 'output_format_mismatch')
-                self.assertEqual(recovered['code'], 'output_format_mismatch')
-                self.assertIsNone(self.client.task(task)['receipt_id'])
+                self.assertEqual(self.client.task(task)['receipt_id'], recovered['receipt_id'])
             else:
                 self.assertEqual(reopened.execute_task(task)['outcome'], 'already_committed')
             execute.assert_called_once()
