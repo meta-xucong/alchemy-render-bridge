@@ -60,6 +60,7 @@ class ImageOptions(StrictRequest):
 
 
 class ImageParameters(StrictRequest):
+    codex_adapter: Literal["codex_cli_imagegen_v1"] | SkipJsonSchema[None] = Field(default_factory=lambda: None)
     width: ImageDimension = 32
     height: ImageDimension = 32
     seed: ImageSeed = 0

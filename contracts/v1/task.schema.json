@@ -50,6 +50,11 @@
     "ImageParameters": {
       "additionalProperties": false,
       "properties": {
+        "codex_adapter": {
+          "const": "codex_cli_imagegen_v1",
+          "title": "Codex Adapter",
+          "type": "string"
+        },
         "width": {
           "default": 32,
           "maximum": 40000000,

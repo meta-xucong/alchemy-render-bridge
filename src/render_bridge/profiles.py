@@ -17,17 +17,19 @@ class ExecutionProfile:
     seed_semantics: str
     reference_semantics: str
 
+    def codex_image_options_contract(self) -> dict:
+        return {
+            'schema_version': '1',
+            'quality': {'values': ['auto'], 'semantics': 'unsupported_values_normalized_to_auto'},
+            'output_format': {'values': [], 'semantics': 'native_default_original_artifact'},
+            'input_fidelity': {'values': [], 'semantics': 'gpt_image_2_default_high'},
+            'transparent_background': {'values': [False, True], 'semantics':
+                '0.163.0 native argument; 0.157.1 requested true normalizes to CLI default auto'},
+            'references': {'max_count': 5, 'semantics': self.reference_semantics},
+        }
+
     def image_options_contract(self) -> dict:
-        if self.id == 'codex-image':
-            return {
-                'schema_version': '1',
-                'quality': {'values': ['auto'], 'semantics': 'unsupported_values_normalized_to_auto'},
-                'output_format': {'values': [], 'semantics': 'native_default_original_artifact'},
-                'input_fidelity': {'values': [], 'semantics': 'gpt_image_2_default_high'},
-                'transparent_background': {'values': [False, True], 'semantics':
-                    '0.163.0 native argument; 0.157.1 requested true normalizes to CLI default auto'},
-                'references': {'max_count': 5, 'semantics': self.reference_semantics},
-            }
+        # Keep the revision-1 surface readable by clients predating opt-in.
         return {
             'schema_version': '1',
             'quality': {'values': ['auto'], 'semantics': 'unspecified_only'},
@@ -41,7 +43,11 @@ class ExecutionProfile:
         """Admission/validation semantics, never a claim of model capability."""
         return {
             'schema_version': '1',
-            'accepted_parameters': ['width', 'height', 'seed', 'image_options'],
+            'accepted_parameters': ['width', 'height', 'seed', 'image_options'] + (['codex_adapter'] if self.id == 'codex-image' else []),
+            **({'codex_adapter': {'values': ['codex_cli_imagegen_v1'],
+                'image_options_contract': self.codex_image_options_contract()},
+                'default_contract': 'legacy_unmarked',
+                'adapter_opt_in': 'parameters.codex_adapter'} if self.id == 'codex-image' else {}),
             'required_parameters': ['width', 'height'] if self.id == 'midjourney-manual' else [],
             'dimension_semantics': ('original_dimensions_recorded'
                                     if self.id == 'codex-image' else 'exact_output_match'),

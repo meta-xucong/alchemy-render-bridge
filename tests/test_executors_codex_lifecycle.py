@@ -67,7 +67,7 @@ for line in sys.stdin:
                 references = ({'path': str(reference_path), 'hash': hashlib.sha256(reference_path.read_bytes()).hexdigest()},)
             if terminal_failure:
                 script.write_text(script.read_text(encoding='utf-8').replace("'status':'completed','items':[item]", "'status':'failed','items':[item],'error':{'codexErrorInfo':'usageLimitExceeded'}"), encoding='utf-8')
-            parameters = {}
+            parameters = {'codex_adapter': 'codex_cli_imagegen_v1'}
             if requested_format is not None or transparent:
                 parameters['image_options'] = {'schema_version': '1'}
                 if requested_format is not None:

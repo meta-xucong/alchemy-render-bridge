@@ -2,6 +2,12 @@
 
 An optional API-based bridge between Alchemy applications and local rendering tools.
 
+Current parameter-contract candidate: see the [Codex adapter contract](docs/render-bridge/adapters/05_Codex_CLI适配方案.md).
+Native-default image options are explicitly versioned; unmarked historical tasks
+retain their original recovery contract. Alchemy's four-product integration lives
+in its separate repository. The historical milestone notes below are not current
+real-account, Windows, or image-generation acceptance evidence.
+
 可选的本地渲染桥接程序：让 Alchemy 通过 API 提交冻结的图片/视频任务，由本地 Agent 执行并回传结果。先完成通用桥接，再逐个适配真实工具。
 
 ## 当前状态
