@@ -310,7 +310,7 @@ class ProbeAndDescriptorTests(unittest.TestCase):
                 self.assertEqual(contract, profile.parameter_contract())
                 self.assertEqual(item['execution_profile_revision'], '1')
                 self.assertEqual(contract['schema_version'], '1')
-                self.assertEqual(contract['accepted_parameters'], ['width', 'height', 'seed', 'image_options'])
+                self.assertEqual(contract['accepted_parameters'], ['width', 'height', 'seed', 'image_options'] + (['codex_adapter'] if profile.id == 'codex-image' else []))
                 self.assertEqual(contract['dimension_semantics'],
                                  'original_dimensions_recorded' if profile.id == 'codex-image'
                                  else 'exact_output_match')
