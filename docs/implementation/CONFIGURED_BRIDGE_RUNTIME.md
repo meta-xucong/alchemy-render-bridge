@@ -77,8 +77,11 @@ choose its own execution mode.
   reference-image workflow has been validated.
 - Capabilities advertise each enabled profile's limits. Global output limits
   are maxima across enabled profiles, not permission to exceed a chosen profile.
-- Local object storage is bounded at 16 MiB for the default fake-only store,
-  and 256 MiB when non-fake profiles are configured. This remains a development
+- Local object storage defaults to 16 MiB for the fake-only store,
+  and 256 MiB when non-fake profiles are configured. An explicit validated
+  `max_storage_bytes` can configure the object budget (up to 1 TiB); authenticated
+  capabilities expose capacity diagnostics. See [remote readiness](REMOTE_SOURCE_READINESS.md)
+  for safe retention, limits and source-only HTTPS configuration. This remains a development
   SQLite/filesystem service, not a production PostgreSQL deployment.
 
 Manual flow: claim the task, then POST

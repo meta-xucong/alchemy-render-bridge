@@ -130,7 +130,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
     """
 
     def __init__(self, db_path, artifact_root, *, clock=None, enabled_profiles=("fake-image",),
-                 accepting_new_tasks=True, max_queued_tasks=10):
+                 accepting_new_tasks=True, max_queued_tasks=10, max_storage_bytes=None):
         self.enabled_profiles = enabled_profile_ids(enabled_profiles)
         self.db_path = str(db_path)
         if self.db_path == ":memory:":
@@ -141,6 +141,9 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             raise ValueError("max_queued_tasks must be an integer from 1 through 10000")
         self.accepting_new_tasks = accepting_new_tasks
         self.max_queued_tasks = max_queued_tasks
+        if max_storage_bytes is not None and (type(max_storage_bytes) is not int or not 1 <= max_storage_bytes <= 1024 ** 4):
+            raise ValueError("max_storage_bytes must be an integer from 1 through 1 TiB")
+        self._configured_max_storage_bytes = max_storage_bytes
         raw_clock = clock or time.time
         def timestamp_clock():
             value = raw_clock()
@@ -378,6 +381,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
         node = self.node_status(scope)
         with self._read_transaction() as con:
             active_count = self._active_task_count(con)
+            storage = self._storage_status(con)
         return {
             "schema_version": "1",
             "admission": {"accepting_new_tasks": self.accepting_new_tasks,
@@ -407,6 +411,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             # This is diagnostic only.  Admission still happens atomically in
             # create_task, so a caller must not use this snapshot as a permit.
             "queue": {"active_tasks": active_count, "max_queued_tasks": self.max_queued_tasks},
+            "storage": storage,
         }
 
     def _active_task_count(self, con):
@@ -466,6 +471,46 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
         finally:
             os.close(directory_fd)
 
+    @property
+    def max_storage_bytes(self):
+        if self._configured_max_storage_bytes is not None:
+            return self._configured_max_storage_bytes
+        return MAX_STORAGE_BYTES if self.enabled_profiles == ("fake-image",) else 16 * MAX_PROFILE_OUTPUT_BYTES
+
+    def _storage_status(self, con, *, include_disk=False):
+        # Strict write checks include orphan files; frequent diagnostics use DB totals.
+        # This bounds object bytes, not SQLite metadata or the entire filesystem.
+        used = con.execute("""SELECT
+            COALESCE((SELECT SUM(size) FROM inputs WHERE file_name IS NOT NULL), 0) +
+            COALESCE((SELECT SUM(size) FROM uploads WHERE file_name IS NOT NULL), 0)""").fetchone()[0]
+        if not include_disk:
+            # Frequent capability/health polling must not walk the artifact tree.
+            # The authoritative write path below still includes crash leftovers.
+            capacity = self.max_storage_bytes
+            return {"used_bytes": used, "max_bytes": capacity,
+                    "available_bytes": max(0, capacity - used),
+                    "near_capacity": used * 100 >= capacity * 80,
+                    "at_capacity": used >= capacity,
+                    "includes_orphan_files": False}
+        disk_used = 0
+        try:
+            for path in self.root.iterdir():
+                try:
+                    info = path.lstat()
+                except FileNotFoundError:
+                    # A completed retention pass may unlink after its DB commit.
+                    continue
+                if stat.S_ISREG(info.st_mode):
+                    disk_used += info.st_size
+        except OSError:
+            _fail("storage_unavailable", 503)
+        used = max(used, disk_used)
+        capacity = self.max_storage_bytes
+        return {"used_bytes": used, "max_bytes": capacity,
+                "available_bytes": max(0, capacity - used),
+                "near_capacity": used * 100 >= capacity * 80,
+                "at_capacity": used >= capacity}
+
     def _store_bytes(self, con, object_id, content):
         file_name = object_id + ".blob"
         target = self.root / file_name
@@ -484,14 +529,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             # Retrying the same bytes must not bypass the durability barrier.
             self._sync_artifact_directory()
             return file_name
-        used = con.execute("""SELECT
-            COALESCE((SELECT SUM(size) FROM inputs WHERE file_name IS NOT NULL), 0) +
-            COALESCE((SELECT SUM(size) FROM uploads WHERE file_name IS NOT NULL), 0)"""
-                           ).fetchone()[0]
-        # Include orphaned files from an interrupted transaction in the disk budget.
-        disk_used = sum(info.st_size for path in self.root.iterdir()
-                        if stat.S_ISREG((info := path.lstat()).st_mode))
-        if max(used, disk_used) + len(content) > (MAX_STORAGE_BYTES if self.enabled_profiles == ("fake-image",) else 16 * MAX_PROFILE_OUTPUT_BYTES):
+        if self._storage_status(con, include_disk=True)["used_bytes"] + len(content) > self.max_storage_bytes:
             _fail("storage_capacity", 503)
         fd, temp_name = tempfile.mkstemp(prefix=".pending-", dir=self.root)
         try:
