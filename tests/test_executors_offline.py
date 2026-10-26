@@ -85,7 +85,7 @@ class OfflineExecutorTests(unittest.TestCase):
     def test_codex_exact_event_collects_original_and_replay(self):
         executor = CodexExecutor(self.root)
         executor.execute(self.request)
-        original = self.root / 'task-1' / 'attempt-1' / 'codex-output.png'
+        original = self.root / 'task-1' / 'attempt-1' / 'image-1.png'
         original.write_bytes(fixture_png())
         result = executor.collect_completed(self.request, thread_id='thread-1', turn_id='turn-1', events=self.events(original))
         self.assertEqual(result.status, 'ready')
@@ -100,7 +100,7 @@ class OfflineExecutorTests(unittest.TestCase):
         self.assertEqual(executor.collect_completed(self.request, thread_id='thread-1', turn_id='turn-1', events=self.events('/wrong.png', turn='other')).status, 'execution_unknown')
 
     def test_codex_event_cannot_select_another_attempt_file(self):
-        original = self.root / 'unrelated.png'
+        original = self.root / 'image-1.png'
         original.write_bytes(fixture_png())
         result = CodexExecutor(self.root).collect_completed(
             self.request, thread_id='thread-1', turn_id='turn-1', events=self.events(original))
