@@ -36,6 +36,7 @@ MAX_JSON_NESTING = 64
 MAX_JSON_STRUCTURAL_TOKENS = 100_000
 MAX_SESSION_STRUCTURAL_TOKENS = 100_000
 MAX_ROLLOUT_LINES = 10_000
+MAX_CAPTURED_LIFECYCLE_EVENTS = 256
 
 
 def probe_codex(executable: str = 'codex') -> dict:
@@ -126,6 +127,10 @@ class StdioSession:
         self.timeout = timeout
         self.sequence = 0
         self.events = []
+        self.event_counts = {'item/completed': 0, 'turn/completed': 0,
+                             'item/commandExecution/outputDelta': 0,
+                             'other_notification': 0}
+        self.ignored_notifications = 0
         self.messages = queue.Queue(maxsize=MAX_QUEUED_MESSAGES)
         self.bytes_read = 0
         self.structural_tokens = 0
@@ -161,10 +166,15 @@ class StdioSession:
                         else:
                             self.structural_tokens += tokens
                             message = json.loads(raw.decode('utf-8'))
-                try:
-                    self.messages.put(message, timeout=.5)
-                except queue.Full:
-                    self.closed.set()
+                while not self.closed.is_set():
+                    try:
+                        self.messages.put(message, timeout=.1)
+                        break
+                    except queue.Full:
+                        # Apply backpressure to the subprocess pipe instead of
+                        # converting a harmless event burst into execution loss.
+                        continue
+                else:
                     return
                 if isinstance(message, Exception):
                     return
@@ -241,9 +251,37 @@ class StdioSession:
                 if 'error' in value or 'result' not in value:
                     raise RuntimeError('Codex protocol request failed')
                 return value['result']
-            if 'method' not in value or len(self.events) >= 256:
-                raise ValueError('Unexpected or excessive subprocess events')
+            self.capture_notification(value)
+
+    def capture_notification(self, value: dict) -> None:
+        method = value.get('method')
+        if not isinstance(method, str):
+            raise ValueError('Unexpected subprocess message')
+        counter = method if method in self.event_counts else 'other_notification'
+        self.event_counts[counter] += 1
+        params = value.get('params')
+        item = params.get('item') if isinstance(params, dict) else None
+        image_item = (method == 'item/completed' and isinstance(item, dict)
+                      and (item.get('type') == 'imageGeneration'
+                           or (item.get('type') == 'Extension'
+                               and item.get('kind') == 'image_gen.generation')))
+        if method == 'turn/completed' or image_item:
+            if len(self.events) >= MAX_CAPTURED_LIFECYCLE_EVENTS:
+                raise ValueError('Too many Codex lifecycle events')
             self.events.append(value)
+        else:
+            # Stream deltas and unrelated notifications are deliberately not
+            # retained: their count is enough for diagnostics; payloads may
+            # contain prompt-adjacent text and are not execution proof.
+            self.ignored_notifications += 1
+
+    def diagnostic_summary(self) -> dict:
+        return {'event_counts': dict(self.event_counts),
+                'captured_lifecycle_events': len(self.events),
+                'ignored_notifications': self.ignored_notifications,
+                'bytes_read': self.bytes_read,
+                'structural_tokens': self.structural_tokens,
+                'process_exit_code': self.process.poll()}
 
     def close(self):
         self.closed.set()
@@ -651,6 +689,8 @@ class CodexExecutor:
         if not files.begin():
             return ExecutionResult('execution_unknown', 'codex_prior_start_requires_reconciliation')
         cwd = str(files.path.resolve())
+        session = None
+        stage = 'initialize'
         try:
             with StdioSession([config.executable, '-c', 'mcp_servers={}',
                                '-c', 'plugins={}', '--enable', 'image_generation',
@@ -659,6 +699,7 @@ class CodexExecutor:
                 session.request('initialize', {'clientInfo': {
                     'name': 'alchemy-render-bridge', 'version': '1'}})
                 session.send({'method': 'initialized'})
+                stage = 'thread_start'
                 response = session.request('thread/start', {
                     'model': config.model, 'cwd': cwd,
                     'approvalPolicy': config.approval_policy, 'approvalsReviewer': 'user',
@@ -669,6 +710,7 @@ class CodexExecutor:
                     raise ValueError('Missing Codex thread identity')
                 files.write_exclusive(files.path / 'codex-thread.json',
                                       json.dumps({'thread_id': thread_id}).encode())
+                stage = 'turn_start'
                 response = session.request('turn/start', {
                     'threadId': thread_id, 'input': inputs, 'cwd': cwd,
                     'approvalPolicy': config.approval_policy, 'approvalsReviewer': 'user',
@@ -680,7 +722,8 @@ class CodexExecutor:
                     raise ValueError('Missing Codex turn identity')
                 files.write_exclusive(files.path / 'codex-turn.json',
                                       json.dumps({'thread_id': thread_id, 'turn_id': turn_id}).encode())
-                events = list(session.events)
+                events = session.events
+                stage = 'turn_wait'
                 deadline = time.monotonic() + config.timeout
                 def ended():
                     return any(event.get('method') == 'turn/completed' and
@@ -692,11 +735,10 @@ class CodexExecutor:
                     if remaining <= 0:
                         raise TimeoutError('Codex turn deadline exceeded')
                     event = session.receive(timeout=remaining)
-                    if 'method' not in event or len(events) >= 256:
-                        raise ValueError('Unexpected or excessive Codex events')
-                    events.append(event)
+                    session.capture_notification(event)
                 evidence = {'thread_id': thread_id, 'turn_id': turn_id, 'events': events,
                             'cli_version': probe['cli_version'],
+                            'event_summary': session.diagnostic_summary(),
                             **({'parameter_adaptation': {
                                 'adapter_id': 'codex_cli_imagegen_v1',
                                 'transparent_background': native_options['transparent_background_mapping'],
@@ -707,16 +749,39 @@ class CodexExecutor:
             return ExecutionResult('needs_attention', 'codex_requested_user_attention')
         except (OSError, EOFError, TimeoutError) as exc:
             reason = 'tool_missing' if isinstance(exc, FileNotFoundError) else 'probe_failed'
+            self._write_execution_diagnostic(files, stage, exc, session)
             return ExecutionResult('execution_unknown', 'codex_execution_requires_reconciliation',
-                                   details={'profile_health_reason': reason})
-        except (RuntimeError, ValueError, KeyError, TypeError):
+                                   details={'profile_health_reason': reason,
+                                            **({'event_summary': session.diagnostic_summary()} if session else {})})
+        except (RuntimeError, ValueError, KeyError, TypeError) as exc:
             # A request may already have reached the server. Never regenerate.
-            return ExecutionResult('execution_unknown', 'codex_execution_requires_reconciliation')
+            self._write_execution_diagnostic(files, stage, exc, session)
+            return ExecutionResult('execution_unknown', 'codex_execution_requires_reconciliation',
+                                   details={'failure_class': type(exc).__name__,
+                                            **({'event_summary': session.diagnostic_summary()} if session else {})})
+
+    @staticmethod
+    def _write_execution_diagnostic(files: AttemptFiles, stage: str, exc: Exception,
+                                    session: StdioSession | None) -> None:
+        """Persist only bounded, allowlisted lifecycle metadata, never payload text."""
+        if session is None:
+            return
+        evidence = {'schema_version': '1', 'stage': stage,
+                    'failure_class': type(exc).__name__,
+                    'event_summary': session.diagnostic_summary()}
+        try:
+            files.write_exclusive(files.path / 'codex-execution-diagnostic.json',
+                                  json.dumps(evidence, sort_keys=True, separators=(',', ':')).encode())
+        except (OSError, FileExistsError, ValueError):
+            # The original execution result remains unknown even if diagnostics
+            # cannot be persisted; never replace or rewrite existing evidence.
+            return
 
     def collect_completed(self, request: ExecutionRequest, *, thread_id: str,
                           turn_id: str, events: list[dict],
                           cli_version: str | None = None,
-                          parameter_adaptation: dict | None = None) -> ExecutionResult:
+                          parameter_adaptation: dict | None = None,
+                          event_summary: dict | None = None) -> ExecutionResult:
         """Collect an already executed, precisely bound event stream.
 
         This does not start/retry a turn or grant the Agent permission to upload.
@@ -747,7 +812,10 @@ class CodexExecutor:
             if event.get('method') != 'item/completed' or params.get('turnId') != turn_id:
                 continue
             item = params.get('item', {})
-            if item.get('type') == 'imageGeneration' and item.get('status') == 'completed':
+            native_image = (item.get('type') == 'imageGeneration'
+                            or (item.get('type') == 'Extension'
+                                and item.get('kind') == 'image_gen.generation'))
+            if native_image and item.get('status') == 'completed':
                 identity = item.get('id')
                 if not isinstance(identity, str) or not identity:
                     continue
@@ -759,10 +827,12 @@ class CodexExecutor:
                 details={'profile_health_reason': failure_reason} if failure_reason else {})
         if len(candidates) != 1:
             return ExecutionResult('needs_attention', 'codex_single_image_event_required')
-        saved = next(iter(candidates.values()))
+        image_item_id, saved = next(iter(candidates.items()))
         if not isinstance(saved, str) or not Path(saved).is_absolute():
             return ExecutionResult('needs_attention', 'codex_original_path_missing')
         path = Path(saved)
+        if path.stem != image_item_id:
+            return ExecutionResult('needs_attention', 'codex_image_item_identity_mismatch')
         try:
             resolved = path.resolve(strict=True)
             attempt_root = files.path.resolve(strict=True)
@@ -791,6 +861,7 @@ class CodexExecutor:
         return ExecutionResult(result.status, result.code, result.artifact,
                                {**result.details, 'thread_id': thread_id, 'turn_id': turn_id,
                                 **({'cli_version': cli_version} if cli_version in SUPPORTED_CLI_VERSIONS else {}),
+                                **({'event_summary': event_summary} if event_summary else {}),
                                 **({'parameter_adaptation': parameter_adaptation}
                                    if parameter_adaptation else {}),
                                 'image_item_id': next(iter(candidates))})

@@ -87,7 +87,7 @@ class AgentProfilesTests(unittest.TestCase):
         def completed(request):
             files = AttemptFiles(executor.root, request, 'codex-cli')
             files.begin()
-            original = files.path / 'original.image'
+            original = files.path / 'image.png'
             original.write_bytes(expected)
             evidence = {'thread_id': 'thread', 'turn_id': 'turn', 'events': [
                 {'method': 'item/completed', 'params': {'threadId': 'thread', 'turnId': 'turn', 'item': {
