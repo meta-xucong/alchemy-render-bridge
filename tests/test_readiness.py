@@ -131,6 +131,20 @@ class ReadinessTests(unittest.TestCase):
             'original_hash': receipt['original_sha256']})
         self.assertEqual(ack['delivery_ack'], 'accepted')
 
+    def test_failed_heartbeat_retries_quickly_and_success_restores_normal_interval(self):
+        class StopAfterThreeWaits:
+            def __init__(self):
+                self.delays = []
+
+            def wait(self, delay):
+                self.delays.append(delay)
+                return len(self.delays) == 3
+
+        loop = HeartbeatLoop(self.agent)
+        loop.stop = StopAfterThreeWaits()
+        with patch.object(self.agent, 'heartbeat', side_effect=[False, True]):
+            loop._run(5)
+        self.assertEqual(loop.stop.delays, [5, 5, 30])
     def test_configuration_boolean_and_heartbeat_interval_are_bounded(self):
         cfg = RuntimeConfig(self.root, 'source', 'workspace', 'node', 'instance', accepting_new_tasks='false')
         with self.assertRaises(ValueError):
