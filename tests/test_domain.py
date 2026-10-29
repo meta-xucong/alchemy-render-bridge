@@ -195,7 +195,7 @@ class DomainTests(unittest.TestCase):
         invalid = b"not an image"
         bad = self.store.create_input(self.scope, {"input_key": "invalid", **self.metadata(invalid)})
         self.assert_error("invalid_media", self.store.put_input_content, self.scope, bad["input_id"], invalid)
-        oversized = self.png((1025, 1024))
+        oversized = self.png((1450, 1450))
         large = self.store.create_input(self.scope, {"input_key": "large", **self.metadata(oversized)})
         self.assert_error("image_too_large", self.store.put_input_content, self.scope, large["input_id"], oversized)
 
