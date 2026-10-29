@@ -57,6 +57,23 @@ class AgentRuntimeTests(unittest.TestCase):
             'deadline': (datetime.fromtimestamp(self.now, timezone.utc) + timedelta(hours=2)).isoformat(),
         })['remote_task_id']
 
+    def test_pull_recovery_reselects_only_saved_artifacts_during_reconnect(self):
+        self.agent.journal.save({'task_id':'upload-task','attempt_id':'attempt-a','state':'artifact_ready'})
+        self.agent.journal.save({'task_id':'unknown-task','attempt_id':'attempt-b','state':'execution_unknown'})
+        self.assertEqual([row['task_id'] for row in self.agent.journal.pending_artifact_records()], ['upload-task'])
+
+    def test_node_pull_offer_executes_once_through_existing_receipt_flow(self):
+        self.store.dispatch_mode = 'node_pull'
+        self.agent._worker_running = True
+        self.assertTrue(self.agent.heartbeat())
+        task_id = self.create('pull-task')
+        self.assertEqual(self.client.next_task(), task_id)
+        self.assertEqual(self.client.next_task(), task_id)
+        self.assertEqual(self.agent.execute_task(task_id, self.fake)['outcome'], 'artifact_committed')
+        self.assertIsNone(self.client.next_task())
+        self.assertEqual(self.fake.calls, 1)
+        self.assertEqual(self.store.get_task(self.scope, task_id)['state'], 'artifacts_ready')
+
     def test_dynamic_task_complete_and_reopen_replay(self):
         task_id = self.create()
         self.assertEqual(self.agent.execute_task(task_id, self.fake)['outcome'], 'artifact_committed')

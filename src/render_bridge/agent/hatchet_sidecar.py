@@ -1,7 +1,7 @@
-"""Pinned SDK sidecar: dispatch handoff or one-slot Agent worker.
+"""Agent entry points for Hatchet handoff/worker and outbound HTTPS pull mode.
 
-Run in the separate SDK interpreter, not the Bridge/FastAPI interpreter. This
-module never creates a Hatchet account or token and never logs supplied tokens.
+Hatchet commands run in the separate SDK interpreter. Pull mode needs no SDK.
+This module never creates a Hatchet account or token and never logs supplied tokens.
 """
 import argparse
 from datetime import timedelta
@@ -123,11 +123,15 @@ def main(argv=None):
     worker = sub.add_parser('worker')
     worker.add_argument('--state-dir', type=Path, required=True)
     worker.add_argument('--config', type=Path)
+    pull = sub.add_parser('pull-worker')
+    pull.add_argument('--state-dir', type=Path, required=True)
+    pull.add_argument('--config', type=Path)
+    pull.add_argument('--interval', type=float, default=2)
     args = parser.parse_args(argv)
     client = None
     try:
-        hatchet = configured_hatchet()
         if args.command == 'dispatcher':
+            hatchet = configured_hatchet()
             token = os.environ.get('BRIDGE_DISPATCH_TOKEN')
             if not token:
                 raise ValueError('BRIDGE_DISPATCH_TOKEN is required')
@@ -147,7 +151,8 @@ def main(argv=None):
                 if args.once:
                     return 0
                 time.sleep(args.interval)
-        else:
+        elif args.command == 'worker':
+            hatchet = configured_hatchet()
             token = os.environ.get('BRIDGE_NODE_TOKEN')
             if not token:
                 raise ValueError('BRIDGE_NODE_TOKEN is required')
@@ -157,6 +162,36 @@ def main(argv=None):
             from .heartbeat import HeartbeatLoop
             with HeartbeatLoop(node):
                 make_worker(hatchet, node).start()
+        else:
+            if not 0.2 <= args.interval <= 60:
+                raise ValueError('Invalid pull interval')
+            token = os.environ.get('BRIDGE_NODE_TOKEN')
+            if not token:
+                raise ValueError('BRIDGE_NODE_TOKEN is required')
+            client = HttpNodeClient(args.url, token)
+            registry = ExecutorRegistry.from_config(args.state_dir / 'executors', args.config)
+            node = NodeAgent(client, args.state_dir, registry=registry)
+            node._worker_running = True
+            from .heartbeat import HeartbeatLoop
+            with HeartbeatLoop(node):
+                for record in node.journal.poll_recovery_records():
+                    try:
+                        node.execute_task(record['task_id'])
+                    except Exception:
+                        pass  # Original local journal remains the recovery authority.
+                while True:
+                    for record in node.journal.pending_artifact_records():
+                        try:
+                            node.execute_task(record['task_id'])
+                        except Exception:
+                            pass  # Retry only the same saved artifact and task identity.
+                    try:
+                        task_id = client.next_task()
+                        if task_id:
+                            node.execute_task(task_id)
+                    except Exception:
+                        pass  # Outbound HTTPS polling retries after the interval.
+                    time.sleep(args.interval)
     except KeyboardInterrupt:
         return 0
     except Exception as exc:

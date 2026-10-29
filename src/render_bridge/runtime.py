@@ -46,6 +46,7 @@ class RuntimeConfig:
     maintenance_interval_seconds: int = 60
     maintenance_batch_size: int = 100
     max_storage_bytes: int | None = None
+    dispatch_mode: str = 'hatchet'
 
     @classmethod
     def load(cls, path):
@@ -70,6 +71,8 @@ class RuntimeConfig:
                 raise ValueError('Invalid bounded maintenance configuration')
         if type(self.accepting_new_tasks) is not bool:
             raise ValueError("accepting_new_tasks must be boolean")
+        if self.dispatch_mode not in ('hatchet', 'node_pull'):
+            raise ValueError('dispatch_mode must be hatchet or node_pull')
         if type(self.max_queued_tasks) is not int or not 1 <= self.max_queued_tasks <= 10_000:
             raise ValueError("max_queued_tasks must be an integer from 1 through 10000")
         for value in (self.source_id, self.workspace_id, self.node_id, self.executor_instance):
@@ -89,22 +92,26 @@ class RuntimeConfig:
 
     def credentials(self, environ=None):
         env = os.environ if environ is None else environ
-        names = (self.source_token_env, self.node_token_env, self.dispatch_token_env)
+        names = ((self.source_token_env, self.node_token_env) if self.dispatch_mode == 'node_pull'
+                 else (self.source_token_env, self.node_token_env, self.dispatch_token_env))
         values = [env.get(name) for name in names]
-        if any(not isinstance(value, str) or not value for value in values) or len(set(values)) != 3:
-            raise ValueError('Three distinct explicitly supplied credentials are required')
+        if any(not isinstance(value, str) or not value for value in values) or len(set(values)) != len(names):
+            raise ValueError('Distinct explicitly supplied credentials are required')
         return values
 
     def build_app(self, environ=None):
         self.validate()
-        source, node, dispatcher = self.credentials(environ)
+        credentials = self.credentials(environ)
+        source, node = credentials[:2]
+        dispatcher = credentials[2] if self.dispatch_mode == 'hatchet' else None
         store = BridgeStore(self.data_dir / 'bridge.sqlite', self.data_dir / 'artifacts',
                             enabled_profiles=self.enabled_profiles, accepting_new_tasks=self.accepting_new_tasks,
-                            max_queued_tasks=self.max_queued_tasks, max_storage_bytes=self.max_storage_bytes)
+                            max_queued_tasks=self.max_queued_tasks, max_storage_bytes=self.max_storage_bytes,
+                            dispatch_mode=self.dispatch_mode)
         scope = SourceScope(self.source_id, self.workspace_id)
         app = create_runtime_app(store=store, source_tokens={source: scope},
             node_tokens={node: NodeScope(self.source_id, self.workspace_id, self.node_id, self.executor_instance)},
-            dispatch_tokens={dispatcher: scope})
+            dispatch_tokens={dispatcher: scope} if dispatcher else None)
         if self.retention_enabled:
             previous_lifespan = app.router.lifespan_context
 

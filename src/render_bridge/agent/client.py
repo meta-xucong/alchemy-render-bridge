@@ -70,6 +70,9 @@ class HttpNodeClient:
     def task(self, task_id):
         return self.request('GET', '/tasks/' + self.key(task_id)).json()
 
+    def next_task(self):
+        return self.request('GET', '/tasks/next', timeout=5).json().get('task_id')
+
     def claim(self, task_id, mode='execute'):
         return self.request('POST', f'/tasks/{self.key(task_id)}/claim', json={'mode': mode}).json()
 
