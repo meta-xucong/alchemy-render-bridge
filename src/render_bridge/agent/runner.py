@@ -80,7 +80,7 @@ class NodeAgent:
         try:
             profiles = sorted(self.registry.executors)
             state = ('busy' if self._active or self.journal.occupied_by_other('')
-                     else 'available' if self._worker_running and any(p != 'codex-image' for p in profiles) else 'attention')
+                     else 'available' if self._worker_running and profiles else 'attention')
             if self.health_reporter is None:
                 self.client.heartbeat(state, profiles)
             else:
