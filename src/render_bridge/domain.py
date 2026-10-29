@@ -32,10 +32,10 @@ from .image_options import validate_image_request, requested_output_mime
 from .operational_store import OperationsMixin
 from .availability import AvailabilityMixin, HEALTH_DDL
 
-MAX_INPUT_BYTES = 1_048_576
+MAX_INPUT_BYTES = 4 * 1_048_576
 MAX_OUTPUT_BYTES = 1_048_576
-MAX_IMAGE_PIXELS = 1_048_576
-MAX_STORAGE_BYTES = 16 * MAX_INPUT_BYTES
+MAX_INPUT_IMAGE_PIXELS = 2 * 1_048_576
+MAX_STORAGE_BYTES = 16 * 1_048_576
 PROFILE_ID = "fake-image"
 PROFILE_REVISION = "1"
 _HASH = re.compile(r"^[0-9a-f]{64}$")
@@ -405,6 +405,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                            "max_dimension": profile.max_dimension},
             } for profile in map(get_profile, self.enabled_profiles)],
             "limits": {"max_input_bytes": MAX_INPUT_BYTES,
+                       "max_input_image_pixels": MAX_INPUT_IMAGE_PIXELS,
                        "max_output_bytes": max(get_profile(p).max_output_bytes for p in self.enabled_profiles),
                        "max_image_pixels": max(get_profile(p).max_pixels for p in self.enabled_profiles), "max_references": 8,
                        "max_queued_tasks": self.max_queued_tasks, "max_manual_pending": 3},
@@ -442,7 +443,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                 warnings.simplefilter("error", Image.DecompressionBombWarning)
                 with Image.open(io.BytesIO(content)) as img:
                     width, height = img.size
-                    if (width < 1 or height < 1 or width * height > (profile.max_pixels if profile else MAX_IMAGE_PIXELS)
+                    if (width < 1 or height < 1 or width * height > (profile.max_pixels if profile else MAX_INPUT_IMAGE_PIXELS)
                             or (profile and max(width, height) > profile.max_dimension)):
                         _fail("image_too_large", 413)
                     if img.format != _MIMES[payload["mime_type"]]:
