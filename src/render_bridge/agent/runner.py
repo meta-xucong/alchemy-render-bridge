@@ -9,6 +9,7 @@ import shutil
 
 from .client import NodeHTTPError
 from .journal import AgentJournal, InstanceLock
+from render_bridge.domain import MAX_INPUT_BYTES
 from render_bridge.executors.base import ExecutionRequest, inspect_image
 from render_bridge.profiles import get_profile
 from render_bridge.image_options import validate_image_request, requested_output_mime
@@ -180,7 +181,7 @@ class NodeAgent:
         references = []
         for index, reference in enumerate(task['request']['references']):
             content = self.client.input_content(task_id, reference['input_ref'], claim['claim_id'])
-            if len(content) > 1_048_576 or hashlib.sha256(content).hexdigest() != reference['hash']:
+            if len(content) > MAX_INPUT_BYTES or hashlib.sha256(content).hexdigest() != reference['hash']:
                 raise ValueError('Input reference hash or size does not match')
             path = work / f'input-{index:02d}.original'
             self._save_bytes(path, content)
