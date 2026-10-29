@@ -8,9 +8,9 @@
 
 - `python -m render_bridge.runtime --config config/bridge.example.json` 启动独立 FastAPI 服务。
 - JSON 配置指定持久数据目录、source/workspace/node/executor 身份、监听地址和端口。相对数据目录以当前工作目录为基准。
-- source、node、dispatcher 三套不同 bearer 由指定环境变量提供。程序不生成凭据、创建账户或自动执行 OAuth。仓库样例只有环境变量名称，没有秘密。
+- 默认 Hatchet 模式使用 source、node、dispatcher 三套不同 bearer；`node_pull` 模式只使用 source、node 两套不同 bearer。程序不生成凭据、创建账户或自动执行 OAuth。仓库样例只有环境变量名称，没有秘密。
 - 创建任务和 dispatch outbox 同一 SQLite 事务提交。重复 origin 不创建第二任务/outbox；重开数据库保留任务、收据和待交接记录。
-- 独立 dispatcher 将 outbox 中 task_id 交给 Hatchet；HTTP 源 API 和 node API 本身都不执行任务。没有 HTTP 拉取执行队列。
+- 默认 `hatchet` 模式由独立 dispatcher 将 outbox 中 task_id 交给 Hatchet；HTTP 源 API 和 node API 本身都不执行任务。新的 `node_pull` 模式见 [API pull node runtime](../shared-contract/04_API_PULL_NODE_RUNTIME.md)：本机 Agent 主动读取只读任务提示，再用既有 claim/start 合同领取执行；该模式不写入新的 Hatchet outbox。
 - Node token 固定绑定 source/workspace/node/executor_instance。任务请求不能更换执行身份。
 - 通用 node 路径提供查询、claim、start、unknown、已绑定参考图下载、输出上传和提交。
 - `fake-image` 是默认允许提交的 profile；已实现显式配置的 Codex/Midjourney 开发路由，见后文。配置开放不等于真实工具验收通过。

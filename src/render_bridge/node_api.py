@@ -116,6 +116,11 @@ def install_node_routes(app, store: BridgeStore, node_tokens: Mapping[str, NodeS
         return await call_store(store.report_heartbeat, identity.source_scope, identity.node_id,
                                 identity.executor_instance, data['state'], data['profiles'], data.get('profile_health'))
 
+    @app.get(prefix + '/tasks/next')
+    async def next_task(identity: NodeScope = Depends(node)):
+        return await call_store(store.next_node_task, identity.source_scope, identity.node_id,
+                                identity.executor_instance)
+
     @app.post(prefix + '/tasks/{task_id}/attention')
     async def attention(task_id: str, request: Request, identity: NodeScope = Depends(node)):
         data = await _json_request(request, AttentionRequest, 4096)

@@ -3,6 +3,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 import tempfile
 from pathlib import Path
+import time
 import unittest
 
 import httpx
@@ -80,6 +81,60 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         await self.req('POST','/bridge/v1/tasks/'+task['remote_task_id']+'/cancel')
         self.assertEqual((await self.req('GET','/bridge/dispatch/v1/pending',token='dispatch-test')).json()['items'],[])
 
+    async def test_node_pull_admission_offer_and_existing_claim_boundary(self):
+        self.store.dispatch_mode = 'node_pull'
+        payload = self.payload('pull-one')
+        response = await self.client.post('/bridge/v1/tasks', headers={'Authorization':'Bearer source-test'}, json=payload)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()['error']['code'], 'node_unavailable')
+        heartbeat = await self.req('POST','/bridge/node/v1/heartbeat',token='node-test',
+            json={'state':'available','profiles':['fake-image']})
+        self.assertTrue(heartbeat.json()['accepted'])
+        capabilities = (await self.req('GET','/bridge/v1/capabilities')).json()
+        self.assertTrue(capabilities['admission']['accepting_new_tasks'])
+        task = (await self.req('POST','/bridge/v1/tasks',json=payload)).json()
+        self.assertEqual((await self.req('GET','/bridge/node/v1/tasks/next',token='node-test')).json()['task_id'],
+                         task['remote_task_id'])
+        self.assertEqual((await self.req('GET','/bridge/node/v1/tasks/next',token='node-test')).json()['task_id'],
+                         task['remote_task_id'])
+        self.assertEqual((await self.req('GET','/bridge/dispatch/v1/pending',token='dispatch-test')).json()['items'], [])
+        path='/bridge/node/v1/tasks/'+task['remote_task_id']+'/claim'
+        claim=(await self.req('POST',path,token='node-test',json={'mode':'execute'})).json()
+        replay=(await self.req('POST',path,token='node-test',json={'mode':'execute'})).json()
+        self.assertEqual(claim['claim_id'], replay['claim_id'])
+
+    async def test_node_pull_waits_for_reported_profile_and_available_worker(self):
+        self.store.dispatch_mode = 'node_pull'
+        self.assertFalse((await self.req('GET','/bridge/v1/capabilities')).json()['admission']['accepting_new_tasks'])
+        await self.req('POST','/bridge/node/v1/heartbeat',token='node-test',
+            json={'state':'attention','profiles':['fake-image']})
+        self.assertFalse((await self.req('GET','/bridge/v1/capabilities')).json()['admission']['accepting_new_tasks'])
+        await self.req('POST','/bridge/node/v1/heartbeat',token='node-test',
+            json={'state':'available','profiles':['codex-image']})
+        self.assertFalse((await self.req('GET','/bridge/v1/capabilities')).json()['admission']['accepting_new_tasks'])
+        mismatch = await self.client.post('/bridge/v1/tasks', headers={'Authorization':'Bearer source-test'},
+            json=self.payload('profile-mismatch'))
+        self.assertEqual(mismatch.status_code, 503)
+        self.assertEqual(mismatch.json()['error']['code'], 'node_unavailable')
+        await self.req('POST','/bridge/node/v1/heartbeat',token='node-test',
+            json={'state':'busy','profiles':['fake-image']})
+        self.assertTrue((await self.req('GET','/bridge/v1/capabilities')).json()['admission']['accepting_new_tasks'])
+        self.assertIsNone((await self.req('GET','/bridge/node/v1/tasks/next',token='node-test')).json()['task_id'])
+
+    async def test_node_pull_admission_closes_on_stale_heartbeat(self):
+        self.store.dispatch_mode = 'node_pull'
+        now = time.time()
+        self.store.clock = lambda: now
+        await self.req('POST','/bridge/node/v1/heartbeat',token='node-test',
+            json={'state':'available','profiles':['fake-image']})
+        self.assertTrue((await self.req('GET','/bridge/v1/capabilities')).json()['admission']['accepting_new_tasks'])
+        self.store.clock = lambda: now + 90
+        self.assertFalse((await self.req('GET','/bridge/v1/capabilities')).json()['admission']['accepting_new_tasks'])
+        response = await self.client.post('/bridge/v1/tasks', headers={'Authorization':'Bearer source-test'},
+            json=self.payload('stale-heartbeat'))
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()['error']['code'], 'node_unavailable')
+
     async def test_credentials_separate_and_identity_not_caller_selected(self):
         task=(await self.req('POST','/bridge/v1/tasks',json=self.payload())).json()
         path='/bridge/node/v1/tasks/'+task['remote_task_id']+'/claim'
@@ -108,6 +163,12 @@ class RuntimeConfigTests(unittest.TestCase):
         with self.assertRaises(ValueError): config.credentials({})
         with self.assertRaises(ValueError): config.credentials({'BRIDGE_SOURCE_TOKEN':'same','BRIDGE_NODE_TOKEN':'same','BRIDGE_DISPATCH_TOKEN':'same'})
         self.assertEqual(config.credentials({'BRIDGE_SOURCE_TOKEN':'s','BRIDGE_NODE_TOKEN':'n','BRIDGE_DISPATCH_TOKEN':'d'}),['s','n','d'])
+
+    def test_node_pull_needs_no_dispatcher_credential(self):
+        config=RuntimeConfig(Path('unused'),'s','w','n','e',dispatch_mode='node_pull')
+        self.assertEqual(config.credentials({'BRIDGE_SOURCE_TOKEN':'s','BRIDGE_NODE_TOKEN':'n'}),['s','n'])
+        with self.assertRaises(ValueError):
+            RuntimeConfig(Path('unused'),'s','w','n','e',dispatch_mode='other').validate()
 
     def test_non_loopback_requires_tls(self):
         with self.assertRaises(ValueError): RuntimeConfig(Path('unused'),'s','w','n','e',host='0.0.0.0').validate()
