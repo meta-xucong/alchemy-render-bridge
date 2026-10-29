@@ -24,6 +24,12 @@ Alchemy仅发送已授权的冻结请求与素材；Render Bridge仅返回状态
 | GET /bridge/v1/artifacts/{id}/content | 原文件流 | 有权task/receipt关联、下载限额与有效期 |
 | POST /bridge/v1/receipts/{id}/ack | 客户端接受/拒绝确认 | client_receipt_id幂等；不同确认冲突 |
 
+Capabilities advertises global input bounds separately as `limits.max_input_bytes`
+and `limits.max_input_image_pixels`. The current bounded values are 4 MiB and
+2,097,152 pixels per PNG/JPEG reference. Clients must use the advertised values
+before upload; missing fields on an older Bridge retain the older client fallback
+limits. Input bytes are immutable and are not resized or transcoded.
+
 本API不包含领取节点、start-grant、续租、GPU中断、Hatchet管理、Alchemy用户余额或数据库操作。
 
 HTTP重试仅对已定义幂等操作进行；429/503尊重Retry-After并有总预算。授权失败不无限重试。超时不能推断未执行。只允许固定服务地址；本机受控loopback HTTP是首测例外，非loopback必须TLS。不跟随跨主机携密重定向。
