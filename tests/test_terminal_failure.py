@@ -78,7 +78,7 @@ class TerminalFailureTests(unittest.TestCase):
             self.assertEqual('terminal_failure',executor.execute(request).status)
         def succeed(request):
             files=AttemptFiles(executor.root,request,'codex-cli')
-            original=files.path/'new.png';original.write_bytes(fixture_png(32,24))
+            original=files.path/'image.png';original.write_bytes(fixture_png(32,24))
             return executor.collect_completed(request,thread_id='new-thread',turn_id='new-turn',events=[
                 {'method':'item/completed','params':{'threadId':'new-thread','turnId':'new-turn',
                  'item':{'id':'image','type':'imageGeneration','status':'completed','savedPath':str(original.resolve())}}},

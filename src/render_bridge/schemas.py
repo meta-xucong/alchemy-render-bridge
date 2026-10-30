@@ -11,6 +11,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, model_validator
 from pydantic.json_schema import SkipJsonSchema
+from .domain import MAX_INPUT_BYTES
 from .profiles import get_profile
 from .image_options import validate_image_request
 
@@ -47,7 +48,7 @@ class TerminalFailureRequest(StrictRequest):
 class InputCreate(StrictRequest):
     input_key: Key
     original_sha256: SHA256
-    size: Annotated[StrictInt, Field(ge=1, le=1_048_576)]
+    size: Annotated[StrictInt, Field(ge=1, le=MAX_INPUT_BYTES)]
     mime_type: Literal["image/png", "image/jpeg"]
 
 

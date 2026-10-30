@@ -70,3 +70,11 @@ v1.0中“原模块pending恢复”具体落到新增模块自己的integration_
 实现与验证范围见[自动回退实现验收](implementation/AUTO_FALLBACK_ACCEPTANCE.md)，不以旧心跳或排队状态推定自动切换。当前Alchemy接缝限V3 Standard/general单图、开发与review-only，不代表全版本或生产交付；用户Windows实机能力与恢复仍需按[同机指南](implementation/WINDOWS_LOCAL_LOOPBACK.md)验收。
 
 具体wire字段、兼容/撤回证明与V3单图传统执行接缝见[08实施契约](shared-contract/08_自动回退代码落地与兼容契约.md)。07/08仅扩展显式新模式；代码、模拟、最终发布版本回归与用户实机验收须分别记录，不能用设计文字或模拟通过替代真实账户、生图及生产验收。
+
+## 2026-10-29 新增实现：VPS Bridge + 本地 Agent API 拉取
+
+本地 Windows Agent 使用主动 HTTPS 轮询领取 VPS Bridge 已持久化的任务。具体边界、`node_pull` 运行模式和恢复约束见[04 API pull node runtime](shared-contract/04_API_PULL_NODE_RUNTIME.md)。此模式不启用 Hatchet dispatcher，不改变 Alchemy Source API 任务合同；默认 `hatchet` 模式保持原样。
+
+## 2026-10-29 新增实现：多 Bridge endpoint 的 Hatchet 隔离
+
+不同 Bridge URL 对应不同任务账本时，Hatchet dispatcher 与 worker 必须使用不同 task name。故障模型、现有 run 兼容边界及回归见[Hatchet endpoint isolation](implementation/HATCHET_ENDPOINT_ISOLATION.md)。

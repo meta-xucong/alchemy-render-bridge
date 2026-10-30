@@ -92,19 +92,23 @@ class RemoteCapacityTests(unittest.TestCase):
             for _ in range(10):
                 self.assertFalse(self.store.capabilities(self.scope)['storage']['includes_orphan_files'])
 
-    def test_source_proxy_template_has_only_source_upstream(self):
+    def test_https_proxy_template_exposes_only_source_and_node_apis(self):
         import re
         path = Path(__file__).resolve().parents[1] / 'config/source-https.nginx.example.conf'
         text = path.read_text(encoding='utf-8')
         locations = re.findall(r'location\s+([^\s{]+)\s*\{', text)
-        self.assertEqual(locations, ['/bridge/v1/', '/'])
+        self.assertEqual(locations, ['/bridge/v1/', '/bridge/node/v1/', '/'])
         self.assertIn('location / { return 404; }', text)
-        self.assertEqual(text.count('proxy_pass '), 1)
+        self.assertEqual(text.count('proxy_pass '), 2)
         self.assertIn('proxy_pass http://127.0.0.1:8787;', text)
-        self.assertIn('proxy_next_upstream off;', text)
-        for blocked in ('/bridge/node/v1/tasks', '/bridge/dispatch/v1/pending',
-                        '/admin', '/docs', '/bridge/v1evil/tasks'):
-            self.assertFalse(blocked.startswith(locations[0]))
+        self.assertEqual(text.count('proxy_next_upstream off;'), 2)
+        source = re.search(r'location /bridge/v1/ \{(.*?)\n    \}', text, re.S).group(1)
+        node = re.search(r'location /bridge/node/v1/ \{(.*?)\n    \}', text, re.S).group(1)
+        self.assertIn('client_max_body_size 32m;', source)
+        self.assertIn('client_max_body_size 16m;', node)
+        for blocked in ('/bridge/dispatch/v1/pending', '/admin', '/docs',
+                        '/bridge/v1evil/tasks', '/bridge/node/v1evil/tasks'):
+            self.assertFalse(any(blocked.startswith(prefix) for prefix in locations[:2]))
 
     def test_existing_local_example_defaults_unchanged(self):
         config = RuntimeConfig.load(Path(__file__).resolve().parents[1] / 'config/bridge.example.json')

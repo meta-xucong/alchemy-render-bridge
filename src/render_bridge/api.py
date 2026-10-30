@@ -308,7 +308,7 @@ def create_app(
         content, mime_type = await call_store(store.get_artifact_content, scope, artifact_id)
 
         def chunks():
-            # The domain enforces the experimental 1 MiB artifact limit.
+            # The domain enforces the frozen output limit for the task profile.
             for offset in range(0, len(content), 65_536):
                 yield content[offset : offset + 65_536]
 

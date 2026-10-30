@@ -17,7 +17,8 @@ from render_bridge.fake import fixture_png, fixture_jpeg
 class CodexLifecycleTests(unittest.TestCase):
     def run_fixture(self, image, requested_format=None, actual_format='png', recover=False, transparent=False,
                     reference=False,
-                    terminal_failure=False, cli_version='codex-cli 0.157.1'):
+                    terminal_failure=False, cli_version='codex-cli 0.157.1', output_delta_count=0,
+                    image_event='imageGeneration', image_item_id='image-fixture'):
         original_bytes = (fixture_jpeg if actual_format == 'jpeg' else fixture_png)()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -49,17 +50,20 @@ for line in sys.stdin:
   assert p['sandboxPolicy']['networkAccess'] is False
   assert p['sandboxPolicy']['writableRoots']==[str(pathlib.Path.cwd())]
   emit({'id':r['id'],'result':{'turn':{'id':'turn-fixture','status':'inProgress'}}})
+  for index in range(OUTPUT_DELTA_COUNT):
+   emit({'method':'item/commandExecution/outputDelta','params':{'delta':'ImageGen skill output chunk'}})
   if IMAGE:
-   original=pathlib.Path.cwd()/'generated.png'
+   original=pathlib.Path.cwd()/'image-fixture.png'
    original.write_bytes(base64.b64decode(PNG))
-   item={'type':'imageGeneration','id':'image-fixture','status':'completed','result':'','savedPath':str(original)}
+   item={'type':IMAGE_EVENT_TYPE,'id':IMAGE_ITEM_ID,'status':'completed','result':'','savedPath':str(original)}
+   if IMAGE_EVENT_TYPE=='Extension': item['kind']='image_gen.generation'
   else:
    item={'type':'agentMessage','id':'message-fixture','text':'Image generated!'}
   emit({'method':'item/completed','params':{'threadId':'thread-fixture','turnId':'turn-fixture','item':item,'completedAtMs':1}})
   emit({'method':'turn/completed','params':{'threadId':'thread-fixture','turn':{'id':'turn-fixture','status':'completed','items':[item]}}})
  else: raise AssertionError('duplicate operation')
  stage+=1
-'''.replace('if IMAGE:', 'if ' + repr(image) + ':').replace('base64.b64decode(PNG)', 'base64.b64decode(' + repr(base64.b64encode(original_bytes).decode()) + ')').replace('INVOKE_TRANSPARENT', repr(transparent and cli_version == 'codex-cli 0.163.0')).replace('HAS_REFERENCE', repr(reference)).replace('REF_NAME', repr('reference.png' if reference else '')), encoding='utf-8')
+'''.replace('OUTPUT_DELTA_COUNT', str(output_delta_count)).replace('IMAGE_EVENT_TYPE', repr(image_event)).replace('IMAGE_ITEM_ID', repr(image_item_id)).replace('if IMAGE:', 'if ' + repr(image) + ':').replace('base64.b64decode(PNG)', 'base64.b64decode(' + repr(base64.b64encode(original_bytes).decode()) + ')').replace('INVOKE_TRANSPARENT', repr(transparent and cli_version == 'codex-cli 0.163.0')).replace('HAS_REFERENCE', repr(reference)).replace('REF_NAME', repr('reference.png' if reference else '')), encoding='utf-8')
             reference_path = root / 'reference.png'
             references = ()
             if reference:
@@ -92,14 +96,18 @@ for line in sys.stdin:
                 result = executor.execute(request)
                 self.assertEqual(launched.call_count, 1)
                 if image:
-                    self.assertEqual(result.status, 'ready')
-                    self.assertEqual(result.code, 'artifact_ready')
-                    self.assertEqual(result.artifact.path.read_bytes(), original_bytes)
-                    self.assertEqual(result.details['turn_id'], 'turn-fixture')
-                    self.assertEqual(result.details['cli_version'], cli_version)
-                    self.assertEqual(result.details['parameter_adaptation']['transparent_background'],
-                        'native_tool_argument' if cli_version == 'codex-cli 0.163.0' and transparent else
-                        'codex_cli_default_auto' if transparent else 'native_default')
+                    if image_item_id != 'image-fixture':
+                        self.assertEqual(result.status, 'needs_attention')
+                        self.assertEqual(result.code, 'codex_image_item_identity_mismatch')
+                    else:
+                        self.assertEqual(result.status, 'ready', f'{result.code}: {result.details}')
+                        self.assertEqual(result.code, 'artifact_ready')
+                        self.assertEqual(result.artifact.path.read_bytes(), original_bytes)
+                        self.assertEqual(result.details['turn_id'], 'turn-fixture')
+                        self.assertEqual(result.details['cli_version'], cli_version)
+                        self.assertEqual(result.details['parameter_adaptation']['transparent_background'],
+                            'native_tool_argument' if cli_version == 'codex-cli 0.163.0' and transparent else
+                            'codex_cli_default_auto' if transparent else 'native_default')
                 elif terminal_failure:
                     self.assertEqual(result.status, 'terminal_failure')
                     self.assertEqual(result.details['terminal_failure']['reason_code'], 'quota_exhausted')
@@ -108,13 +116,19 @@ for line in sys.stdin:
                     self.assertEqual(result.code, 'codex_single_image_event_required')
                 completion_evidence = json.loads((root / 'data/task/attempt/codex-completion.json').read_text())
                 self.assertEqual(completion_evidence['cli_version'], cli_version)
+                if output_delta_count:
+                    summary = completion_evidence['event_summary']
+                    self.assertEqual(summary['event_counts']['item/commandExecution/outputDelta'], output_delta_count)
+                    self.assertEqual(summary['captured_lifecycle_events'], 2)
+                    self.assertEqual(summary['ignored_notifications'], output_delta_count)
+                    self.assertNotIn('ImageGen skill output chunk', json.dumps(completion_evidence))
                 if recover:
                     (root / 'data/task/attempt/artifact.json').unlink()
                 with patch('render_bridge.executors.codex.probe_codex', side_effect=AssertionError('reprobe')):
                     replay = executor.execute(request)
                 self.assertEqual(replay.status, result.status)
                 self.assertEqual(replay.code, result.code)
-                if image:
+                if image and image_item_id == 'image-fixture':
                     self.assertEqual(replay.artifact.path.read_bytes(), original_bytes)
                 self.assertEqual(launched.call_count, 1)
                 folder = root / 'data/task/attempt'
@@ -125,6 +139,15 @@ for line in sys.stdin:
 
     def test_full_image_lifecycle_and_replay(self):
         self.run_fixture(True)
+
+    def test_large_command_output_delta_burst_does_not_abort_image_turn(self):
+        self.run_fixture(True, output_delta_count=500)
+
+    def test_live_completion_accepts_verified_extension_image_item(self):
+        self.run_fixture(True, image_event='Extension')
+
+    def test_live_completion_rejects_item_path_identity_mismatch(self):
+        self.run_fixture(True, image_item_id='another-image')
 
     def test_full_image_lifecycle_for_each_supported_cli_version(self):
         for version in sorted(SUPPORTED_CLI_VERSIONS):
@@ -160,7 +183,7 @@ for line in sys.stdin:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             codex_home = root / 'codex-home'
-            source = codex_home / 'generated_images' / 'thread-fixture' / 'image.png'
+            source = codex_home / 'generated_images' / 'thread-fixture' / 'image-fixture.png'
             source.parent.mkdir(parents=True)
             original = fixture_png()
             source.write_bytes(original)
@@ -190,7 +213,7 @@ for line in sys.stdin:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             codex_home = root / 'codex-home'
-            source = codex_home / 'generated_images' / 'other-thread' / 'image.png'
+            source = codex_home / 'generated_images' / 'other-thread' / 'image-fixture.png'
             source.parent.mkdir(parents=True)
             source.write_bytes(fixture_png())
             request = ExecutionRequest('task', 'attempt', 'prompt')

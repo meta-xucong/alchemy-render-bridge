@@ -2,15 +2,17 @@
 
 > 当前实机验收：同一台 Windows 电脑运行本地 Alchemy、独立 Bridge 与用户已有 Codex CLI，通过回环版本化 HTTP API 联调；不要求先部署双 VPS。精确 PowerShell 安装、独立目录、SDK/引擎前提、启动顺序及分阶段验收见 [Windows 同机联调](WINDOWS_LOCAL_LOOPBACK.md)。生产远程 TLS 与数据隔离边界不变。
 
+> 后续 VPS Bridge + 本地 Windows Agent 使用 `dispatch_mode: "node_pull"`，从 [`node_pull` 合同](../shared-contract/04_API_PULL_NODE_RUNTIME.md)和 [`remote-pull` 配置样例](../../config/bridge.remote-pull.example.json)开始；本页下面的 dispatcher/worker 步骤适用于默认 `hatchet` 模式，不用于 node-pull。
+
 本增量把固定 happy/unknown fixture 之外的动态任务接入现有源 API、持久账本和 Node HTTP。服务端接受合法的调用方冻结请求，不写 Alchemy，也不读取用户本机目录。
 
 ## 已实现
 
 - `python -m render_bridge.runtime --config config/bridge.example.json` 启动独立 FastAPI 服务。
 - JSON 配置指定持久数据目录、source/workspace/node/executor 身份、监听地址和端口。相对数据目录以当前工作目录为基准。
-- source、node、dispatcher 三套不同 bearer 由指定环境变量提供。程序不生成凭据、创建账户或自动执行 OAuth。仓库样例只有环境变量名称，没有秘密。
+- 默认 Hatchet 模式使用 source、node、dispatcher 三套不同 bearer；`node_pull` 模式只使用 source、node 两套不同 bearer。程序不生成凭据、创建账户或自动执行 OAuth。仓库样例只有环境变量名称，没有秘密。
 - 创建任务和 dispatch outbox 同一 SQLite 事务提交。重复 origin 不创建第二任务/outbox；重开数据库保留任务、收据和待交接记录。
-- 独立 dispatcher 将 outbox 中 task_id 交给 Hatchet；HTTP 源 API 和 node API 本身都不执行任务。没有 HTTP 拉取执行队列。
+- 默认 `hatchet` 模式由独立 dispatcher 将 outbox 中 task_id 交给 Hatchet；HTTP 源 API 和 node API 本身都不执行任务。新的 `node_pull` 模式见 [API pull node runtime](../shared-contract/04_API_PULL_NODE_RUNTIME.md)：本机 Agent 主动读取只读任务提示，再用既有 claim/start 合同领取执行；该模式不写入新的 Hatchet outbox。
 - Node token 固定绑定 source/workspace/node/executor_instance。任务请求不能更换执行身份。
 - 通用 node 路径提供查询、claim、start、unknown、已绑定参考图下载、输出上传和提交。
 - `fake-image` 是默认允许提交的 profile；已实现显式配置的 Codex/Midjourney 开发路由，见后文。配置开放不等于真实工具验收通过。
@@ -72,7 +74,7 @@ choose its own execution mode.
   `codex-image` may omit them; when present they are frozen request evidence
   and text guidance only. Bridge records and uploads the returned Codex original
   at its actual dimensions without silently resizing it. PNG/JPEG, one image only.
-- Input uploads still have the existing 1 MiB / 1,048,576-pixel ceiling.
+- Input uploads retain the current 16 MiB / 16,777,216-pixel per-reference ceiling.
   Enabling an output profile does not increase input limits or imply that its
   reference-image workflow has been validated.
 - Capabilities advertise each enabled profile's limits. Global output limits

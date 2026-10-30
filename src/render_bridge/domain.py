@@ -32,10 +32,10 @@ from .image_options import validate_image_request, requested_output_mime
 from .operational_store import OperationsMixin
 from .availability import AvailabilityMixin, HEALTH_DDL
 
-MAX_INPUT_BYTES = 1_048_576
+MAX_INPUT_BYTES = 16 * 1_048_576
 MAX_OUTPUT_BYTES = 1_048_576
-MAX_IMAGE_PIXELS = 1_048_576
-MAX_STORAGE_BYTES = 16 * MAX_INPUT_BYTES
+MAX_INPUT_IMAGE_PIXELS = 16 * 1_048_576
+MAX_STORAGE_BYTES = 16 * 1_048_576
 PROFILE_ID = "fake-image"
 PROFILE_REVISION = "1"
 _HASH = re.compile(r"^[0-9a-f]{64}$")
@@ -130,7 +130,8 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
     """
 
     def __init__(self, db_path, artifact_root, *, clock=None, enabled_profiles=("fake-image",),
-                 accepting_new_tasks=True, max_queued_tasks=10, max_storage_bytes=None):
+                 accepting_new_tasks=True, max_queued_tasks=10, max_storage_bytes=None,
+                 dispatch_mode="hatchet"):
         self.enabled_profiles = enabled_profile_ids(enabled_profiles)
         self.db_path = str(db_path)
         if self.db_path == ":memory:":
@@ -140,6 +141,9 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
         if type(max_queued_tasks) is not int or not 1 <= max_queued_tasks <= 10_000:
             raise ValueError("max_queued_tasks must be an integer from 1 through 10000")
         self.accepting_new_tasks = accepting_new_tasks
+        if dispatch_mode not in {"hatchet", "node_pull"}:
+            raise ValueError("dispatch_mode must be hatchet or node_pull")
+        self.dispatch_mode = dispatch_mode
         self.max_queued_tasks = max_queued_tasks
         if max_storage_bytes is not None and (type(max_storage_bytes) is not int or not 1 <= max_storage_bytes <= 1024 ** 4):
             raise ValueError("max_storage_bytes must be an integer from 1 through 1 TiB")
@@ -343,7 +347,10 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
     def node_status(self, scope):
         source, workspace = self._scope(scope)
         with self._connection() as con:
-            row = con.execute("SELECT * FROM node_heartbeats WHERE source=? AND workspace=? ORDER BY seen DESC LIMIT 1",
+            row = con.execute("""SELECT h.* FROM node_heartbeats h
+                JOIN node_registry r ON r.source=h.source AND r.workspace=h.workspace
+                  AND r.node=h.node AND r.executor=h.executor AND r.active=1
+                WHERE h.source=? AND h.workspace=? ORDER BY h.seen DESC LIMIT 1""",
                               (source, workspace)).fetchone()
             registered = con.execute("SELECT active FROM node_registry WHERE source=? AND workspace=?", (source, workspace)).fetchall()
         authorization = "unknown" if not registered else "active" if any(r["active"] for r in registered) else "revoked"
@@ -382,10 +389,14 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
         with self._read_transaction() as con:
             active_count = self._active_task_count(con)
             storage = self._storage_status(con)
+        accepting = self.accepting_new_tasks
+        if self.dispatch_mode == "node_pull":
+            accepting = (accepting and node["state"] in {"available", "busy"}
+                         and any(p in node["reported_profiles"] for p in self.enabled_profiles))
         return {
             "schema_version": "1",
-            "admission": {"accepting_new_tasks": self.accepting_new_tasks,
-                          "mode": "enabled" if self.accepting_new_tasks else "draining"},
+            "admission": {"accepting_new_tasks": accepting,
+                          "mode": "enabled" if accepting else "draining"},
             "node_status": node,
             "routing_availability_v1": self.routing_availability(scope),
             "profiles": [{
@@ -405,6 +416,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                            "max_dimension": profile.max_dimension},
             } for profile in map(get_profile, self.enabled_profiles)],
             "limits": {"max_input_bytes": MAX_INPUT_BYTES,
+                       "max_input_image_pixels": MAX_INPUT_IMAGE_PIXELS,
                        "max_output_bytes": max(get_profile(p).max_output_bytes for p in self.enabled_profiles),
                        "max_image_pixels": max(get_profile(p).max_pixels for p in self.enabled_profiles), "max_references": 8,
                        "max_queued_tasks": self.max_queued_tasks, "max_manual_pending": 3},
@@ -442,7 +454,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                 warnings.simplefilter("error", Image.DecompressionBombWarning)
                 with Image.open(io.BytesIO(content)) as img:
                     width, height = img.size
-                    if (width < 1 or height < 1 or width * height > (profile.max_pixels if profile else MAX_IMAGE_PIXELS)
+                    if (width < 1 or height < 1 or width * height > (profile.max_pixels if profile else MAX_INPUT_IMAGE_PIXELS)
                             or (profile and max(width, height) > profile.max_dimension)):
                         _fail("image_too_large", 413)
                     if img.format != _MIMES[payload["mime_type"]]:
@@ -763,6 +775,17 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                 return self._task_view(con, old)
             if not self.accepting_new_tasks:
                 _fail("bridge_draining", 503)
+            if self.dispatch_mode == "node_pull":
+                node = con.execute("""SELECT h.* FROM node_heartbeats h
+                    JOIN node_registry r ON r.source=h.source AND r.workspace=h.workspace
+                      AND r.node=h.node AND r.executor=h.executor AND r.active=1
+                    WHERE h.source=? AND h.workspace=? ORDER BY h.seen DESC LIMIT 1""",
+                                   (source, workspace)).fetchone()
+                profile_id = payload["execution_profile_id"]
+                if (node is None or self.clock() - node["seen"] >= 90
+                        or node["state"] not in {"available", "busy"}
+                        or profile_id not in json.loads(node["profiles"])):
+                    _fail("node_unavailable", 503)
             if deadline <= self.clock() or deadline > self.clock() + 7 * 86400:
                 _fail("invalid_deadline", 422)
             if self._active_task_count(con) >= self.max_queued_tasks:
@@ -781,12 +804,31 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                         (task_id, source, workspace, payload["origin_key"], digest,
                          _canonical(payload), "queued", attempt_id, 0, self.clock(), deadline))
             con.execute("INSERT INTO attempts(id,task_id) VALUES(?,?)", (attempt_id, task_id))
-            con.execute("INSERT INTO dispatch_outbox(dispatch_key,task_id) VALUES(?,?)",
-                        (_id("dispatch"), task_id))
+            if self.dispatch_mode == "hatchet":
+                con.execute("INSERT INTO dispatch_outbox(dispatch_key,task_id) VALUES(?,?)",
+                            (_id("dispatch"), task_id))
             for ref in payload["references"]:
                 con.execute("INSERT OR IGNORE INTO input_pins VALUES(?,?)", (task_id, ref["input_ref"]))
             self._audit(con, scope, "task_created", task_id=task_id, attempt_id=attempt_id)
             return self._task_view(con, self._scoped(con, "tasks", task_id, scope))
+
+    def next_node_task(self, scope, node_id, executor_instance):
+        """Read-only offer; claim_task remains the atomic task ownership boundary."""
+        source, workspace = self._scope(scope)
+        with self._read_transaction() as con:
+            self._check_node_active(con, scope, node_id, executor_instance, required=True)
+            heartbeat = con.execute("SELECT * FROM node_heartbeats WHERE source=? AND workspace=? AND node=? AND executor=?",
+                                    (source, workspace, node_id, executor_instance)).fetchone()
+            if (heartbeat is None or self.clock() - heartbeat["seen"] >= 90
+                    or heartbeat["state"] != "available"):
+                return {"task_id": None}
+            profiles = json.loads(heartbeat["profiles"])
+            rows = con.execute("SELECT * FROM tasks WHERE source=? AND workspace=? AND state='queued' AND deadline>? ORDER BY created,id",
+                               (source, workspace, self.clock())).fetchall()
+            for row in rows:
+                if self._profile(row).id in profiles:
+                    return {"task_id": row["id"]}
+            return {"task_id": None}
 
     @staticmethod
     def _profile(task):
