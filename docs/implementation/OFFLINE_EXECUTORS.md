@@ -19,7 +19,8 @@ the same attempt. A start with no result stays unknown rather than rerendering.
 References, when supplied, are ordered dictionaries with `input_ref`, `role`,
 `hash`, and a staged local `path`. They are hash-checked and recorded, **not used
 as conditioning for the synthetic image**. Fake dimensions remain 1–1024 per side
-and the fake profile's 1 MiB upload limit still applies.
+and the fake profile's 1 MiB output limit still applies. Reference input uses
+the shared 16 MiB / 16,777,216-pixel Bridge contract.
 
 The local artifact collector supports PNG/JPEG up to 16 MiB / 40 MP. That is only
 also the configured Codex/manual server profile limit; the default fake profile

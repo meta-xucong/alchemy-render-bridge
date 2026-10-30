@@ -2,6 +2,8 @@
 
 > 当前实机验收：同一台 Windows 电脑运行本地 Alchemy、独立 Bridge 与用户已有 Codex CLI，通过回环版本化 HTTP API 联调；不要求先部署双 VPS。精确 PowerShell 安装、独立目录、SDK/引擎前提、启动顺序及分阶段验收见 [Windows 同机联调](WINDOWS_LOCAL_LOOPBACK.md)。生产远程 TLS 与数据隔离边界不变。
 
+> 后续 VPS Bridge + 本地 Windows Agent 使用 `dispatch_mode: "node_pull"`，从 [`node_pull` 合同](../shared-contract/04_API_PULL_NODE_RUNTIME.md)和 [`remote-pull` 配置样例](../../config/bridge.remote-pull.example.json)开始；本页下面的 dispatcher/worker 步骤适用于默认 `hatchet` 模式，不用于 node-pull。
+
 本增量把固定 happy/unknown fixture 之外的动态任务接入现有源 API、持久账本和 Node HTTP。服务端接受合法的调用方冻结请求，不写 Alchemy，也不读取用户本机目录。
 
 ## 已实现
@@ -72,7 +74,7 @@ choose its own execution mode.
   `codex-image` may omit them; when present they are frozen request evidence
   and text guidance only. Bridge records and uploads the returned Codex original
   at its actual dimensions without silently resizing it. PNG/JPEG, one image only.
-- Input uploads still have the existing 1 MiB / 1,048,576-pixel ceiling.
+- Input uploads retain the current 16 MiB / 16,777,216-pixel per-reference ceiling.
   Enabling an output profile does not increase input limits or imply that its
   reference-image workflow has been validated.
 - Capabilities advertise each enabled profile's limits. Global output limits

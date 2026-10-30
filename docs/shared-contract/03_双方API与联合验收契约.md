@@ -25,8 +25,8 @@ Alchemy仅发送已授权的冻结请求与素材；Render Bridge仅返回状态
 | POST /bridge/v1/receipts/{id}/ack | 客户端接受/拒绝确认 | client_receipt_id幂等；不同确认冲突 |
 
 Capabilities advertises global input bounds separately as `limits.max_input_bytes`
-and `limits.max_input_image_pixels`. The current bounded values are 4 MiB and
-2,097,152 pixels per PNG/JPEG reference. Clients must use the advertised values
+and `limits.max_input_image_pixels`. The current bounded values are 16 MiB and
+16,777,216 pixels per PNG/JPEG reference. Clients must use the advertised values
 before upload; missing fields on an older Bridge retain the older client fallback
 limits. Input bytes are immutable and are not resized or transcoded.
 

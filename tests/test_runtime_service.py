@@ -1,17 +1,30 @@
 """Configured dynamic task handoff and node HTTP contract, without a real engine."""
 import hashlib
+import io
+import struct
 from datetime import datetime, timedelta, timezone
 import tempfile
 from pathlib import Path
 import time
 import unittest
+import zlib
 
 import httpx
+from PIL import Image
 
 from render_bridge.domain import BridgeStore, SourceScope
 from render_bridge.fake import fixture_png
 from render_bridge.node_api import NodeScope
 from render_bridge.runtime import RuntimeConfig, create_runtime_app
+
+
+def _padded_reference_png(target_bytes):
+    stream=io.BytesIO()
+    Image.new('RGB',(1024,1536),'blue').save(stream,format='PNG')
+    data=stream.getvalue()
+    chunk_data=b'Comment\0'+b'x'*(target_bytes-len(data)-20)
+    chunk=struct.pack('>I',len(chunk_data))+b'tEXt'+chunk_data+struct.pack('>I',zlib.crc32(b'tEXt'+chunk_data)&0xffffffff)
+    return data[:-12]+chunk+data[-12:]
 
 
 class RuntimeTests(unittest.IsolatedAsyncioTestCase):
@@ -110,12 +123,22 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             json={'state':'attention','profiles':['fake-image']})
         self.assertFalse((await self.req('GET','/bridge/v1/capabilities')).json()['admission']['accepting_new_tasks'])
         await self.req('POST','/bridge/node/v1/heartbeat',token='node-test',
+            json={'state':'available','profiles':['fake-image']})
+        original_payload = self.payload('profile-replay')
+        original = (await self.req('POST','/bridge/v1/tasks',json=original_payload)).json()
+        original_attempt = original['attempt_id']
+        await self.req('POST','/bridge/node/v1/heartbeat',token='node-test',
             json={'state':'available','profiles':['codex-image']})
         self.assertFalse((await self.req('GET','/bridge/v1/capabilities')).json()['admission']['accepting_new_tasks'])
         mismatch = await self.client.post('/bridge/v1/tasks', headers={'Authorization':'Bearer source-test'},
             json=self.payload('profile-mismatch'))
         self.assertEqual(mismatch.status_code, 503)
         self.assertEqual(mismatch.json()['error']['code'], 'node_unavailable')
+        replay = (await self.req('POST','/bridge/v1/tasks',json=original_payload)).json()
+        self.assertEqual((replay['remote_task_id'], replay['attempt_id']),
+                         (original['remote_task_id'], original_attempt))
+        with self.store._connection() as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM tasks').fetchone()[0], 1)
         await self.req('POST','/bridge/node/v1/heartbeat',token='node-test',
             json={'state':'busy','profiles':['fake-image']})
         self.assertTrue((await self.req('GET','/bridge/v1/capabilities')).json()['admission']['accepting_new_tasks'])
@@ -128,12 +151,45 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         await self.req('POST','/bridge/node/v1/heartbeat',token='node-test',
             json={'state':'available','profiles':['fake-image']})
         self.assertTrue((await self.req('GET','/bridge/v1/capabilities')).json()['admission']['accepting_new_tasks'])
+        original_payload = self.payload('accepted-before-stale-heartbeat')
+        original = (await self.req('POST','/bridge/v1/tasks',json=original_payload)).json()
         self.store.clock = lambda: now + 90
         self.assertFalse((await self.req('GET','/bridge/v1/capabilities')).json()['admission']['accepting_new_tasks'])
         response = await self.client.post('/bridge/v1/tasks', headers={'Authorization':'Bearer source-test'},
             json=self.payload('stale-heartbeat'))
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()['error']['code'], 'node_unavailable')
+        replay = (await self.req('POST','/bridge/v1/tasks',json=original_payload)).json()
+        by_origin = (await self.req('GET','/bridge/v1/tasks/by-origin/accepted-before-stale-heartbeat')).json()
+        self.assertEqual((replay['remote_task_id'], replay['attempt_id']),
+                         (original['remote_task_id'], original['attempt_id']))
+        self.assertEqual((by_origin['remote_task_id'], by_origin['attempt_id']),
+                         (original['remote_task_id'], original['attempt_id']))
+        with self.store._connection() as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM tasks').fetchone()[0], 1)
+
+    async def test_node_pull_revoked_node_cannot_admit_new_task_but_preserves_origin_replay(self):
+        self.store.dispatch_mode = 'node_pull'
+        await self.req('POST','/bridge/node/v1/heartbeat',token='node-test',
+            json={'state':'available','profiles':['fake-image']})
+        original_payload = self.payload('accepted-before-revocation')
+        original = (await self.req('POST','/bridge/v1/tasks',json=original_payload)).json()
+        self.store.set_node_active(self.scope, 'node', 'executor', False)
+
+        capabilities = (await self.req('GET','/bridge/v1/capabilities')).json()
+        self.assertFalse(capabilities['admission']['accepting_new_tasks'])
+        self.assertEqual(capabilities['node_status']['authorization'], 'revoked')
+        self.assertEqual(capabilities['node_status']['state'], 'attention')
+        replay = (await self.req('POST','/bridge/v1/tasks',json=original_payload)).json()
+        self.assertEqual((replay['remote_task_id'], replay['attempt_id']),
+                         (original['remote_task_id'], original['attempt_id']))
+
+        response = await self.client.post('/bridge/v1/tasks', headers={'Authorization':'Bearer source-test'},
+            json=self.payload('new-after-revocation'))
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()['error']['code'], 'node_unavailable')
+        with self.store._connection() as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM tasks').fetchone()[0], 1)
 
     async def test_credentials_separate_and_identity_not_caller_selected(self):
         task=(await self.req('POST','/bridge/v1/tasks',json=self.payload())).json()
@@ -146,7 +202,13 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code,401)
 
     async def test_bound_input_download(self):
-        data=fixture_png(16,16); digest=hashlib.sha256(data).hexdigest()
+        data=_padded_reference_png(16*1024*1024)
+        self.assertEqual(len(data),16*1024*1024)
+        self.assertGreater(len(data),4*1024*1024)
+        caps=(await self.req('GET','/bridge/v1/capabilities')).json()
+        self.assertEqual(caps['limits']['max_input_bytes'],16*1024*1024)
+        self.assertEqual(caps['limits']['max_input_image_pixels'],16_777_216)
+        digest=hashlib.sha256(data).hexdigest()
         inp=(await self.req('POST','/bridge/v1/inputs',json={'input_key':'ref','original_sha256':digest,'size':len(data),'mime_type':'image/png'})).json()
         await self.req('PUT','/bridge/v1/inputs/'+inp['input_id']+'/content',content=data,headers={'Content-Type':'image/png'})
         payload=self.payload();payload['references']=[{'input_ref':inp['input_id'],'role':'reference','hash':digest}]

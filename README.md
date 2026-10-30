@@ -3,6 +3,7 @@
 An optional API-based bridge between Alchemy applications and local rendering tools.
 
 Remote VPS-source adaptation: [bounded storage and HTTPS runbook](docs/implementation/REMOTE_SOURCE_READINESS.md). This is optional configuration; existing local defaults remain unchanged.
+For a VPS Bridge with a local Windows Agent, start from the [`node_pull` runtime and cutover contract](docs/shared-contract/04_API_PULL_NODE_RUNTIME.md) and [`bridge.remote-pull.example.json`](config/bridge.remote-pull.example.json); the Hatchet instructions below describe the separate default dispatch mode.
 
 Current parameter-contract candidate: see the [Codex adapter contract](docs/render-bridge/adapters/05_Codex_CLI适配方案.md).
 Native-default image options are explicitly versioned; unmarked historical tasks

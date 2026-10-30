@@ -74,3 +74,7 @@ v1.0中“原模块pending恢复”具体落到新增模块自己的integration_
 ## 2026-10-29 新增实现：VPS Bridge + 本地 Agent API 拉取
 
 本地 Windows Agent 使用主动 HTTPS 轮询领取 VPS Bridge 已持久化的任务。具体边界、`node_pull` 运行模式和恢复约束见[04 API pull node runtime](shared-contract/04_API_PULL_NODE_RUNTIME.md)。此模式不启用 Hatchet dispatcher，不改变 Alchemy Source API 任务合同；默认 `hatchet` 模式保持原样。
+
+## 2026-10-29 新增实现：多 Bridge endpoint 的 Hatchet 隔离
+
+不同 Bridge URL 对应不同任务账本时，Hatchet dispatcher 与 worker 必须使用不同 task name。故障模型、现有 run 兼容边界及回归见[Hatchet endpoint isolation](implementation/HATCHET_ENDPOINT_ISOLATION.md)。

@@ -9,7 +9,7 @@ is authoritative for which profiles are enabled and their per-profile limits.
 - `image.generate`, revision `1`, one `primary` slot. Default enabled profile:
   `fake-image`. `codex-image` and `midjourney-manual` require explicit server and
   Agent configuration; admission does not certify a real model or account.
-- Inputs remain PNG/JPEG, at most 1 MiB and 1,048,576 pixels each; up to eight
+- Inputs remain PNG/JPEG, at most 16 MiB and 16,777,216 pixels each; up to eight
   references and a 16,000-character prompt. Manual reference flow is not enabled.
 - Fake output remains at most 1 MiB / 1,048,576 pixels / 1024 per axis. Other
   registered profiles permit at most 16 MiB / 40,000,000 pixels. Check the
