@@ -44,7 +44,7 @@ python -m render_bridge.agent --state-dir ./local-agent-state run-task TASK_ID
 - 产物检查后保存在本地并记录 `artifact_ready`，再上传。上传失败保留同一 attempt 和原始字节；claim 过期则申请 `upload_only`，只重传、不重新执行。提交成功但回包丢失时，通过服务端 receipt 恢复。
 - 已完成任务再次投递直接返回原 receipt。保留状态和产物目录；本版没有 unknown 强制重置命令（已确认终止的账号失败按下述证据路径处理）；已有显式 maintain 清理命令，只处理已确认且符合保留条件的受管媒体，见 [最终开发范围](FINAL_DEVELOPMENT_SCOPE.md)。不要删除 journal 来“解锁”。
 
-这些是针对关键故障窗口的保守恢复，不代表所有磁盘/断电/网络故障均已验收。输出限制由共享 profile registry 决定：Fake 为 1 MiB / 单边 1024；Codex 与人工 MJ 为 16 MiB / 40 MP。输入参考图仍最多 1 MiB，顺序和 hash 不变。
+这些是针对关键故障窗口的保守恢复，不代表所有磁盘/断电/网络故障均已验收。输出限制由共享 profile registry 决定：Fake 为 1 MiB / 单边 1024；Codex 与人工 MJ 为 16 MiB / 40 MP。输入参考图上限为 16 MiB / 16,777,216 像素，顺序和 hash 不变。
 
 ## 验证与未验收项
 

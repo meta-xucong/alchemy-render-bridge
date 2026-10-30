@@ -4,11 +4,17 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import sys
+import types
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from render_bridge.agent import AgentBusy, HttpNodeClient, InstanceLock, NodeAgent
 from render_bridge.agent.client import validated_url
+from render_bridge.agent.hatchet_sidecar import (
+    TASK_NAME, make_submitter, make_worker, task_name_for_bridge_url,
+)
 from render_bridge.domain import BridgeStore, SourceScope
 from render_bridge.executors.fake import FakeExecutor
 from render_bridge.fake import fixture_png
@@ -27,6 +33,13 @@ class CountingFake(FakeExecutor):
 
 
 class AgentRuntimeTests(unittest.TestCase):
+    def test_node_client_uses_explicit_ca_bundle_without_enabling_proxy_env(self):
+        with patch.dict('os.environ', {'BRIDGE_CA_BUNDLE': 'local-ca.pem'}):
+            with patch('render_bridge.agent.client.httpx.Client') as client_factory:
+                HttpNodeClient('https://bridge.example', 'node-token')
+        self.assertEqual(client_factory.call_args.kwargs['verify'], 'local-ca.pem')
+        self.assertFalse(client_factory.call_args.kwargs['trust_env'])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -109,8 +122,43 @@ class AgentRuntimeTests(unittest.TestCase):
         self.client.put_upload = lambda *args: (_ for _ in ()).throw(ConnectionError())
         self.assertEqual(self.agent.execute_task(task_id, self.fake)['outcome'], 'upload_pending')
         self.client.put_upload = put
-        self.now += 3601
-        self.assertEqual(self.agent.execute_task(task_id, self.fake)['outcome'], 'artifact_committed')
+        record = self.agent.journal.get(task_id)
+        saved = self.root / 'agent' / record['artifact']
+        original = saved.read_bytes()
+        original_hash = hashlib.sha256(original).hexdigest()
+        restarted = NodeAgent(self.client, self.root / 'agent')
+        self.assertEqual(restarted.execute_task(task_id, self.fake)['outcome'], 'artifact_committed')
+        task = self.store.get_task(self.scope, task_id)
+        receipt = self.store.get_receipt(self.scope, task['receipt_id'])
+        delivered, _mime = self.store.get_artifact_content(self.scope, receipt['artifact_id'])
+        self.assertEqual((task['attempt_id'], receipt['attempt_id']), (record['attempt_id'], record['attempt_id']))
+        self.assertEqual(hashlib.sha256(delivered).hexdigest(), original_hash)
+        self.assertEqual(delivered, original)
+        self.assertEqual(self.fake.calls, 1)
+
+    def test_upload_response_lost_after_server_received_bytes_replays_same_original(self):
+        task_id = self.create('upload-response-lost')
+        put = self.client.put_upload
+        sent = []
+        def receive_then_lose(upload_id, claim_id, content, mime_type):
+            sent.append(content)
+            put(upload_id, claim_id, content, mime_type)
+            raise ConnectionError('Upload response lost after Bridge stored bytes')
+        self.client.put_upload = receive_then_lose
+        self.assertEqual(self.agent.execute_task(task_id, self.fake)['outcome'], 'upload_pending')
+        record = self.agent.journal.get(task_id)
+        original = (self.root / 'agent' / record['artifact']).read_bytes()
+        original_hash = hashlib.sha256(original).hexdigest()
+        self.client.put_upload = lambda upload_id, claim_id, content, mime_type: (
+            sent.append(content), put(upload_id, claim_id, content, mime_type))[1]
+        restarted = NodeAgent(self.client, self.root / 'agent')
+        self.assertEqual(restarted.execute_task(task_id, self.fake)['outcome'], 'artifact_committed')
+        task = self.store.get_task(self.scope, task_id)
+        receipt = self.store.get_receipt(self.scope, task['receipt_id'])
+        delivered, _mime = self.store.get_artifact_content(self.scope, receipt['artifact_id'])
+        self.assertEqual(sent, [original, original])
+        self.assertEqual(hashlib.sha256(delivered).hexdigest(), original_hash)
+        self.assertEqual((task['attempt_id'], receipt['attempt_id']), (record['attempt_id'], record['attempt_id']))
         self.assertEqual(self.fake.calls, 1)
 
     def test_commit_response_lost_uses_server_receipt(self):
@@ -121,19 +169,50 @@ class AgentRuntimeTests(unittest.TestCase):
             raise ConnectionError('Lost response')
         self.client.commit = lose
         self.assertEqual(self.agent.execute_task(task_id, self.fake)['outcome'], 'upload_pending')
-        self.assertEqual(self.agent.execute_task(task_id, self.fake)['outcome'], 'already_committed')
+        receipt_id = self.store.get_task(self.scope, task_id)['receipt_id']
+        restarted = NodeAgent(self.client, self.root / 'agent')
+        self.assertEqual(restarted.execute_task(task_id, self.fake)['outcome'], 'already_committed')
+        self.assertEqual(restarted.journal.get(task_id)['receipt_id'], receipt_id)
+        receipt = self.store.get_receipt(self.scope, receipt_id)
+        delivered, _mime = self.store.get_artifact_content(self.scope, receipt['artifact_id'])
+        self.assertEqual(hashlib.sha256(delivered).hexdigest(), receipt['original_sha256'])
         self.assertEqual(self.fake.calls, 1)
 
     def test_start_response_unknown_never_executes_or_takes_another_slot(self):
         task_id = self.create()
         start = self.client.start
+        start_calls = []
         def lose(*args):
+            start_calls.append(args)
             start(*args)
             raise ConnectionError('Lost response')
         self.client.start = lose
         self.assertEqual(self.agent.execute_task(task_id, self.fake)['outcome'], 'execution_unknown')
-        self.assertEqual(self.agent.execute_task(task_id, self.fake)['outcome'], 'execution_unknown')
+        attempt_id = self.store.get_task(self.scope, task_id)['attempt_id']
+        with self.store._connection() as con:
+            self.assertIsNotNone(con.execute('SELECT start_grant_id FROM attempts WHERE task_id=?', (task_id,)).fetchone()['start_grant_id'])
+        restarted = NodeAgent(self.client, self.root / 'agent')
+        self.assertEqual(restarted.execute_task(task_id, self.fake)['outcome'], 'execution_unknown')
+        self.assertEqual(self.store.get_task(self.scope, task_id)['attempt_id'], attempt_id)
+        self.assertEqual(len(start_calls), 1)
         self.assertEqual(self.agent.execute_task(self.create('second'), self.fake)['outcome'], 'physical_slot_busy')
+        self.assertEqual(self.fake.calls, 0)
+
+    def test_start_request_not_reached_bridge_stays_unknown_after_restart(self):
+        task_id = self.create('start-not-received')
+        start_calls = []
+        def fail_before_server(*args):
+            start_calls.append(args)
+            raise ConnectionError('Request did not reach Bridge')
+        self.client.start = fail_before_server
+        self.assertEqual(self.agent.execute_task(task_id, self.fake)['outcome'], 'execution_unknown')
+        attempt_id = self.store.get_task(self.scope, task_id)['attempt_id']
+        with self.store._connection() as con:
+            self.assertIsNone(con.execute('SELECT start_grant_id FROM attempts WHERE task_id=?', (task_id,)).fetchone()['start_grant_id'])
+        restarted = NodeAgent(self.client, self.root / 'agent')
+        self.assertEqual(restarted.execute_task(task_id, self.fake)['outcome'], 'execution_unknown')
+        self.assertEqual(self.store.get_task(self.scope, task_id)['attempt_id'], attempt_id)
+        self.assertEqual(len(start_calls), 1)
         self.assertEqual(self.fake.calls, 0)
 
     def test_references_downloaded_in_order_and_verified(self):
@@ -167,3 +246,47 @@ class AgentRuntimeTests(unittest.TestCase):
         for value in ('http://bridge.example', 'https://secret@example.com', 'https://example.com/path'):
             with self.assertRaises(ValueError):
                 validated_url(value)
+
+    def test_hatchet_task_names_are_partitioned_by_bridge_endpoint(self):
+        first = task_name_for_bridge_url('http://127.0.0.1:8797/')
+        same = task_name_for_bridge_url('http://127.0.0.1:8797')
+        second = task_name_for_bridge_url('http://127.0.0.1:8798')
+        self.assertEqual(first, same)
+        self.assertNotEqual(first, second)
+        self.assertTrue(first.startswith(TASK_NAME + '-'))
+
+    def test_hatchet_task_name_is_shared_by_dispatcher_and_worker(self):
+        task_name = task_name_for_bridge_url('http://127.0.0.1:8797')
+        class Stub:
+            def __init__(self, owner):
+                self.owner = owner
+            def run(self, **kwargs):
+                return types.SimpleNamespace(workflow_run_id='run-id')
+
+        class Stubs:
+            def __init__(self, owner):
+                self.owner = owner
+            def task(self, *, name, input_validator):
+                self.owner.dispatch_name = name
+                return Stub(self.owner)
+
+        class Hatchet:
+            def __init__(self):
+                self.stubs = Stubs(self)
+                self.worker_name = None
+            def task(self, *, name, **kwargs):
+                self.worker_name = name
+                return lambda function: function
+            def worker(self, name, *, slots, workflows):
+                return types.SimpleNamespace(name=name, slots=slots, workflows=workflows)
+
+        hatchet = Hatchet()
+        submit = make_submitter(hatchet, task_name)
+        self.assertEqual(submit('task-id', 'dispatch-key'), 'run-id')
+        fake_sdk = types.ModuleType('hatchet_sdk')
+        fake_sdk.Context = type('Context', (), {})
+        with patch.dict(sys.modules, {'hatchet_sdk': fake_sdk}):
+            worker = make_worker(hatchet, node=object(), task_name=task_name)
+        self.assertEqual(hatchet.dispatch_name, hatchet.worker_name)
+        self.assertEqual(hatchet.worker_name, task_name)
+        self.assertEqual(worker.workflows[0].__name__, 'execute')

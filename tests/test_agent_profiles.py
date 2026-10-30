@@ -15,7 +15,6 @@ from PIL import Image
 from fastapi.testclient import TestClient
 
 from render_bridge.agent import HttpNodeClient, NodeAgent
-from render_bridge.agent import runner as runner_module
 from render_bridge.agent.registry import ExecutorRegistry
 from render_bridge.domain import BridgeStore, SourceScope
 from render_bridge.executors.codex import CodexConfig, CodexExecutor
@@ -74,31 +73,30 @@ class AgentProfilesTests(unittest.TestCase):
             claim.assert_not_called()
             start.assert_not_called()
 
-    def test_agent_accepts_reference_larger_than_one_mib_within_bridge_limit(self):
-        pixels = random.Random(0).randbytes(700 * 700 * 3)
-        image = Image.frombytes('RGB', (700, 700), pixels)
+    def test_agent_accepts_reference_larger_than_four_mib_within_bridge_limit(self):
+        pixels = random.Random(0).randbytes(1200 * 1200 * 3)
+        image = Image.frombytes('RGB', (1200, 1200), pixels)
         encoded = io.BytesIO()
         image.save(encoded, format='PNG', compress_level=0)
         content = encoded.getvalue()
         self.assertGreater(len(content), 1_048_576)
-        self.assertLessEqual(len(content), 4 * 1_048_576)
+        self.assertGreater(len(content), 4 * 1_048_576)
+        self.assertLessEqual(len(content), 16 * 1_048_576)
 
         digest = hashlib.sha256(content).hexdigest()
-        with patch('render_bridge.domain.MAX_INPUT_BYTES', 4 * 1_048_576), \
-             patch.object(runner_module, 'MAX_INPUT_BYTES', 4 * 1_048_576, create=True):
-            uploaded = self.store.create_input(self.scope, {'input_key': 'large-reference',
-                'original_sha256': digest, 'size': len(content), 'mime_type': 'image/png'})
-            self.store.put_input_content(self.scope, uploaded['input_id'], content)
-            task = self.create('codex-image', 'large-reference-task', references=[{
-                'input_ref': uploaded['input_id'], 'role': 'reference', 'hash': digest}])
-            self.registry.executors['codex-image'] = FakeExecutor(self.state / 'large-reference-output')
+        uploaded = self.store.create_input(self.scope, {'input_key': 'large-reference',
+            'original_sha256': digest, 'size': len(content), 'mime_type': 'image/png'})
+        self.store.put_input_content(self.scope, uploaded['input_id'], content)
+        task = self.create('codex-image', 'large-reference-task', references=[{
+            'input_ref': uploaded['input_id'], 'role': 'reference', 'hash': digest}])
+        self.registry.executors['codex-image'] = FakeExecutor(self.state / 'large-reference-output')
 
-            result = self.agent.execute_task(task)
+        result = self.agent.execute_task(task)
 
-            self.assertEqual(result['outcome'], 'artifact_committed')
-            snapshot = self.client.task(task)
-            self.assertEqual(snapshot['state'], 'artifacts_ready')
-            self.assertTrue(snapshot['receipt_id'])
+        self.assertEqual(result['outcome'], 'artifact_committed')
+        snapshot = self.client.task(task)
+        self.assertEqual(snapshot['state'], 'artifacts_ready')
+        self.assertTrue(snapshot['receipt_id'])
 
     def test_agent_recovers_completed_codex_original_without_second_execution(self):
         for manifest in (False, True):

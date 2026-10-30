@@ -5,6 +5,7 @@ This module never creates a Hatchet account or token and never logs supplied tok
 """
 import argparse
 from datetime import timedelta
+import hashlib
 import importlib.metadata
 import ipaddress
 import json
@@ -20,6 +21,18 @@ from .runner import NodeAgent
 from .registry import ExecutorRegistry
 
 TASK_NAME = 'bridge-node-execute-v1'
+
+
+def task_name_for_bridge_url(url):
+    """Partition Hatchet delivery by the Bridge runtime owning the task ledger.
+
+    A configured Bridge runtime has one source/workspace scope. Its canonical
+    URL therefore identifies the execution ledger for this local runtime and
+    gives its dispatcher and worker the same isolated Hatchet task name.
+    """
+    canonical = validated_url(url)
+    suffix = hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:12]
+    return f'{TASK_NAME}-{suffix}'
 
 
 class DispatchClient(HttpNodeClient):
@@ -57,11 +70,11 @@ def input_type():
     return TaskInput
 
 
-def make_submitter(hatchet):
+def make_submitter(hatchet, task_name=TASK_NAME):
     # Verified in upstream hatchet-sdk 1.42.1: features/stubs.py task(),
     # runnables/workflow.py Standalone.run(wait_for_result=False), TaskRunRef.
     Input = input_type()
-    stub = hatchet.stubs.task(name=TASK_NAME, input_validator=Input)
+    stub = hatchet.stubs.task(name=task_name, input_validator=Input)
     def submit(task_id, dispatch_key):
         ref = stub.run(input=Input(task_id=task_id), wait_for_result=False,
                        additional_metadata={'bridge_dispatch_key': dispatch_key})
@@ -99,10 +112,10 @@ def configured_hatchet(environ=None):
                    tls_config=tls, healthcheck=HealthcheckConfig(enabled=False)))
 
 
-def make_worker(hatchet, node, executor=None, name='bridge-node-one-slot'):
+def make_worker(hatchet, node, executor=None, name='bridge-node-one-slot', task_name=TASK_NAME):
     Input = input_type()
     from hatchet_sdk import Context
-    @hatchet.task(name=TASK_NAME, input_validator=Input, retries=2,
+    @hatchet.task(name=task_name, input_validator=Input, retries=2,
                   execution_timeout=timedelta(minutes=55), schedule_timeout=timedelta(hours=1))
     def execute(input: Input, ctx: Context) -> dict:
         result = node.execute_task(input.task_id, executor)
@@ -128,6 +141,7 @@ def main(argv=None):
     pull.add_argument('--config', type=Path)
     pull.add_argument('--interval', type=float, default=2)
     args = parser.parse_args(argv)
+    task_name = task_name_for_bridge_url(args.url)
     client = None
     try:
         if args.command == 'dispatcher':
@@ -138,7 +152,7 @@ def main(argv=None):
             if not 0.2 <= args.interval <= 60:
                 raise ValueError('Invalid dispatcher interval')
             client = DispatchClient(args.url, token)
-            submit = make_submitter(hatchet)
+            submit = make_submitter(hatchet, task_name)
             while True:
                 try:
                     delivered = dispatch_once(client, submit)
@@ -161,7 +175,7 @@ def main(argv=None):
             node = NodeAgent(client, args.state_dir, registry=registry)
             from .heartbeat import HeartbeatLoop
             with HeartbeatLoop(node):
-                make_worker(hatchet, node).start()
+                make_worker(hatchet, node, task_name=task_name).start()
         else:
             if not 0.2 <= args.interval <= 60:
                 raise ValueError('Invalid pull interval')

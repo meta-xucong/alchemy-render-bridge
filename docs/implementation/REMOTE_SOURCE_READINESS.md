@@ -2,6 +2,13 @@
 
 2026-10-25. Base: 80f155d4e1217d1f7f9304bfb9154d16071ec67d.
 
+> **Topology note (2026-10-29):** this document's original VPS-Alchemy-to-local
+> Bridge arrangement is a legacy remote-source option. The selected VPS
+> deployment is defined by Alchemy RB30 and Bridge's [API-pull runtime
+> contract](../shared-contract/04_API_PULL_NODE_RUNTIME.md): Bridge and its
+> ledger run on the VPS; the local Node Agent pulls outbound over HTTPS. Do not
+> configure a tunnel to the local PC for that topology.
+
 ## Intended boundary and defect
 
 VPS Alchemy calls the source HTTPS API; Bridge, Agent and the authenticated CLI
@@ -18,12 +25,12 @@ already authenticated capabilities response; diagnostics are not an admission
 permit. Keep the transaction-serialized immutable write quota and include orphaned
 files. Reuse existing ACK/grace-period retention without changing execution,
 identity, profile, original bytes, or tombstone semantics. Provide an explicit
-remote configuration example and source-only TLS proxy template, never install it
+remote configuration example and TLS proxy template, never install it
 or create credentials automatically.
 
-Do not silently resize references or raise one layer's input limit: API, schemas,
-domain and Agent currently agree on 1 MiB / 1,048,576 pixels for each PNG/JPEG
-reference. Codex native max-five references is a separate tool constraint. Actual
+Do not silently resize or transcode references. The current API, schemas, domain
+and Agent agree on 16 MiB / 16,777,216 pixels per PNG/JPEG reference. Codex native
+max-five references is a separate tool constraint. Actual
 product media outside those limits needs explicit future end-to-end limit work,
 not an undocumented mutation of frozen inputs.
 
@@ -33,7 +40,7 @@ Reject booleans, floats, strings, zero and oversized quotas. Verify default quot
 compatibility, concurrent writes at quota, orphan accounting, immutable retry,
 capacity diagnostics and reopening. Run existing retention tests proving unknown
 and unacknowledged protection, ACK grace, idempotency and byte reclamation. Validate
-remote examples and source-only path routing. Live TLS, NAT, WAN, Windows power-loss,
+remote examples and Source/Node API route isolation. Live TLS, NAT, WAN, Windows power-loss,
 CLI generation and account/billing acceptance remain separate gates.
 
 ## Operator runbook (not an automatic installation)
@@ -51,18 +58,22 @@ CLI generation and account/billing acceptance remain separate gates.
 3. Keep three distinct source/node/dispatch credentials, supplied via their named
    environment variables outside Git. Only source credentials go to VPS Alchemy.
    Never copy Codex auth, Veyra secrets or Alchemy end-user sessions into Bridge.
-4. Use a stable dedicated HTTPS origin with a publicly trusted certificate (or a
+4. For the legacy VPS-Alchemy-to-local-Bridge arrangement only, use a stable
+   dedicated HTTPS origin with a publicly trusted certificate (or a
    deliberately provisioned trusted private CA). Alchemy does not accept a path
    prefix, query, userinfo, cross-host redirects or TLS-verification bypass.
-   The review-only `config/source-https.nginx.example.conf` shows source-only
-   routing to a same-host loopback Bridge; it is not a configured tunnel. A remote
-   gateway requires a separately authorized secure tunnel to this computer.
+   A gateway separate from that local Bridge would need its own authorized secure
+   path to the PC. This is not the selected API-pull topology; follow RB30 and
+   run the Bridge HTTPS gateway beside the VPS Bridge instead. The updated
+   `config/source-https.nginx.example.conf` proxies only Source and Node APIs.
    Obtain authorization before installing gateways, changing firewall rules or
-   creating persistent credentials. Do not expose node/dispatch/engine endpoints.
+   creating persistent credentials. Do not expose dispatch/engine endpoints.
 5. The proxy preserves Authorization, PUT/content types, binary bytes and API error
    responses, disables request replay and buffering, and does not redirect to an
-   interactive login page. Current reference upload max is 1 MiB; raising proxy
-   size alone does not raise Bridge limits. Output downloads may be up to 16 MiB.
+   interactive login page. Source reference uploads are capped at 16 MiB by the
+   Bridge; the Nginx 32 MiB limit leaves transport headroom without changing that
+   contract. Node artifact uploads may reach the existing 16 MiB output limit.
+   Bridge profile validation remains authoritative.
    Validate actual proxy syntax and trusted certificate/hostname before launch.
 6. Monitor authenticated `/bridge/v1/capabilities` -> `storage`: `used_bytes`,
    `max_bytes`, `available_bytes`, `near_capacity` (80%), `at_capacity`. These are

@@ -21,6 +21,10 @@ Start the local Agent with `python -m render_bridge.agent.hatchet_sidecar --url 
 
 The local Agent and VPS runtime must use matching source/workspace/node/executor identity. Use a fresh VPS Bridge data directory for a deliberate migration; do not copy or merge the local test ledger. Existing local unresolved attempts remain bound to their original local endpoint and ledger until reconciled.
 
+## Cutover boundary
+
+While any task is unresolved, keep its original Bridge endpoint, ledger, and enabled execution profile available. Removing a profile or changing the endpoint does not preserve the ability to replay that task. `node_pull` does not consume or acknowledge rows in an old Hatchet `dispatch_outbox`; changing `dispatch_mode` against the same ledger is not an automatic migration. The task table and old outbox may then describe different dispatch histories, so do not run both modes against one ledger as a cutover shortcut. Use a fresh VPS data directory for the new deployment; finish old tasks against the old endpoint/ledger and never recreate them in the new ledger. This runtime remains one node with serial local execution; it adds no multi-node lease-wait scheduler.
+
 ## Acceptance boundary
 
 Test with a fresh isolated ledger and a fake executor first: offline admission, online task offer, claim/start, artifact transfer, receipt acknowledgement, disconnect/reconnect, and process restart. Existing Hatchet mode regression tests must remain unchanged. This document does not authorize VPS deployment, secret provisioning, or paid image generation.

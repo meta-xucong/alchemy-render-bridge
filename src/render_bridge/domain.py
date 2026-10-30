@@ -32,9 +32,9 @@ from .image_options import validate_image_request, requested_output_mime
 from .operational_store import OperationsMixin
 from .availability import AvailabilityMixin, HEALTH_DDL
 
-MAX_INPUT_BYTES = 4 * 1_048_576
+MAX_INPUT_BYTES = 16 * 1_048_576
 MAX_OUTPUT_BYTES = 1_048_576
-MAX_INPUT_IMAGE_PIXELS = 2 * 1_048_576
+MAX_INPUT_IMAGE_PIXELS = 16 * 1_048_576
 MAX_STORAGE_BYTES = 16 * 1_048_576
 PROFILE_ID = "fake-image"
 PROFILE_REVISION = "1"
@@ -347,7 +347,10 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
     def node_status(self, scope):
         source, workspace = self._scope(scope)
         with self._connection() as con:
-            row = con.execute("SELECT * FROM node_heartbeats WHERE source=? AND workspace=? ORDER BY seen DESC LIMIT 1",
+            row = con.execute("""SELECT h.* FROM node_heartbeats h
+                JOIN node_registry r ON r.source=h.source AND r.workspace=h.workspace
+                  AND r.node=h.node AND r.executor=h.executor AND r.active=1
+                WHERE h.source=? AND h.workspace=? ORDER BY h.seen DESC LIMIT 1""",
                               (source, workspace)).fetchone()
             registered = con.execute("SELECT active FROM node_registry WHERE source=? AND workspace=?", (source, workspace)).fetchall()
         authorization = "unknown" if not registered else "active" if any(r["active"] for r in registered) else "revoked"
@@ -773,7 +776,10 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             if not self.accepting_new_tasks:
                 _fail("bridge_draining", 503)
             if self.dispatch_mode == "node_pull":
-                node = con.execute("SELECT * FROM node_heartbeats WHERE source=? AND workspace=? ORDER BY seen DESC LIMIT 1",
+                node = con.execute("""SELECT h.* FROM node_heartbeats h
+                    JOIN node_registry r ON r.source=h.source AND r.workspace=h.workspace
+                      AND r.node=h.node AND r.executor=h.executor AND r.active=1
+                    WHERE h.source=? AND h.workspace=? ORDER BY h.seen DESC LIMIT 1""",
                                    (source, workspace)).fetchone()
                 profile_id = payload["execution_profile_id"]
                 if (node is None or self.clock() - node["seen"] >= 90

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -36,9 +37,11 @@ class HttpNodeClient:
     def __init__(self, url: str, token: str, *, transport=None):
         if not token or any(ord(c) < 33 or ord(c) > 126 for c in token):
             raise ValueError('An explicit node token is required')
+        ca_bundle = os.environ.get('BRIDGE_CA_BUNDLE')
         self.http = httpx.Client(base_url=validated_url(url),
                                  headers={'Authorization': 'Bearer ' + token},
                                  timeout=30, follow_redirects=False, trust_env=False,
+                                 verify=ca_bundle or True,
                                  transport=transport)
 
     @staticmethod
