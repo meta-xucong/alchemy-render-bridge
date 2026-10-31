@@ -148,8 +148,42 @@ case mutates only synthetic local journal JSON and verifies no API call occurs.
 An earlier implementation draft did compute a synthetic fixture digest; that
 draft was replaced with a fixed literal. A broad test selection also
 unintentionally ran one existing synthetic SHA test. Neither event accessed
-old task data. No packages were installed. This remains Bridge-only phase
-evidence.
-The independent final code audit,
-Alchemy V2 integration regression, incident cleanup, service reconnection, and
-real-generation acceptance remain separate gates; none was performed here.
+old task data. No packages were installed.
+
+## Controlled integrated acceptance
+
+Date: 2026-11-01
+
+- The final independent Bridge code audit passed. The exact 14 focused nodes
+  also passed on the active launcher worktree (`codex/local-bridge-setup-20261101`)
+  in 5.086 seconds. Alchemy's terminal-Bridge-failure queue regression passed
+  on integrated `main` (1 test, 2.90 seconds).
+- The Alchemy fix was fast-forwarded and pushed as `daa3889b084556416c8a30f417d4b46c10551fbf`.
+  The Bridge fix is committed as `749875e94d5198db212efc137207df9426c69709`
+  and cherry-picked into the local launcher branch as
+  `108880e58a7a48a7b10d79f65a1401e399d50922`; it has not been pushed to
+  Bridge `main`, whose checkout contains pre-existing user edits in overlapping
+  files. The current local launcher uses the cherry-picked branch.
+- Local Alchemy V1/V3/Lab health, V2 health, authenticated Bridge connection,
+  and the `codex-image` node were verified. The node returned to `available`
+  with zero active Bridge tasks after acceptance.
+- One new V2 run (`run_82ec66429c50`) completed through provider `render_bridge`:
+  queue task `task_71e5b7912150`, job `job_5d597c284d1e`, output
+  `out_19cdd51ac847dcc498305a52329b3058`. The queue claim was released, the
+  run/job were `completed`, and the 1024x1536 PNG download endpoint returned
+  HTTP 200.
+- One obsolete queued Bridge-owned V2 job was canceled through Alchemy's
+  public cancellation API; no Alchemy database was edited directly. The queue
+  had no pending items before the new acceptance run.
+- **Scope exception:** the cancellation endpoint returned the full image job,
+  including its frozen prompt, and the response was accidentally serialized in
+  tool output. This exceeded the old-task inspection boundary. The prompt is
+  not reproduced or used. The user was notified in the conversation
+  immediately after the response; the companion error log is the Alchemy
+  workspace's [`.learnings/ERRORS.md`](D:/AI/Alchemy%20Media%20Agent%20System/.learnings/ERRORS.md),
+  entry `ERR-20261101-002`. Future cancellation results must be projected to
+  an explicit metadata allowlist before output.
+
+This passes the local Windows end-to-end acceptance for the current launcher
+branch and one V2 real-generation task. Bridge `main` integration remains open;
+the local startup entrypoint continues to use the tested launcher branch.
