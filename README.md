@@ -22,6 +22,7 @@ real-account, Windows, or image-generation acceptance evidence.
 - 新增：[有界图片选项合同](docs/implementation/TYPED_IMAGE_OPTIONS_SCOPE.md)、[本地就绪诊断](docs/implementation/LOCAL_READINESS_DOCTOR.md)、[可配置服务与 Node API](docs/implementation/CONFIGURED_BRIDGE_RUNTIME.md)、[离线执行器](docs/implementation/OFFLINE_EXECUTORS.md)、[云端开发与本地迁移说明](docs/implementation/LOCAL_MIGRATION.md)。
 - Codex 流式通知过载修正及回归边界见[事件流健壮性说明](docs/implementation/CODEX_EVENT_STREAM_RESILIENCE.md)。
 - Codex 图片已生成但 turn 超时中断后的同 attempt 自动对账边界见[超时图片恢复说明](docs/implementation/CODEX_TIMEOUT_IMAGE_RECOVERY.md)。
+- Codex EOF 后进程已退出时的有界 attempt abandon 与启动恢复见[退出 attempt abandon 范围](docs/implementation/EXITED_CODEX_ATTEMPT_ABANDONMENT_SCOPE.md)。
 - 实现范围：[第一阶段范围](docs/implementation/PHASE1_SCOPE.md)、[运行隔离测试](docs/implementation/RUN_CONTRACT_TESTS.md)。
 - 引擎与业务接缝：[Hatchet门禁](docs/implementation/HATCHET_POC_GATE.md)、[Alchemy只读预检](docs/implementation/ALCHEMY_READ_ONLY_PREFLIGHT.md)。
 - 首阶段：隔离环境、一个受信工作区、一个本地节点、FakeRenderer。

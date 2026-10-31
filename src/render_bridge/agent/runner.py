@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -129,6 +130,63 @@ class NodeAgent:
             return True
         except Exception:
             return False
+
+    def reconcile_exited_codex_attempts(self):
+        """One-shot startup reconciliation from allowlisted local diagnostic metadata."""
+        with InstanceLock(self.journal.root / 'agent.lock'):
+            for record in self.journal.exited_codex_recovery_records():
+                if record.get('state') != 'execution_unknown' or record.get('profile_id') != 'codex-image':
+                    continue
+                task_id, attempt_id = record.get('task_id'), record.get('attempt_id')
+                if (not isinstance(task_id, str) or not _KEY.fullmatch(task_id)
+                        or not isinstance(attempt_id, str) or not _KEY.fullmatch(attempt_id)
+                        or record.get('record_attempt_id') != attempt_id
+                        or record.get('request_task_id') != task_id
+                        or record.get('request_attempt_id') != attempt_id
+                        or not record.get('has_start_grant')
+                        or record.get('has_artifact_record')):
+                    continue
+                executor = self.registry.get('codex-image')
+                if executor is None:
+                    continue
+                try:
+                    root_path = Path(executor.root)
+                    if root_path.is_symlink():
+                        continue
+                    root = root_path.resolve()
+                    attempt_dir = root / task_id / attempt_id
+                    diagnostic = attempt_dir / 'codex-execution-diagnostic.json'
+                    if (root.is_symlink() or (root / task_id).is_symlink() or attempt_dir.is_symlink()
+                            or diagnostic.is_symlink() or not attempt_dir.is_dir()
+                            or not diagnostic.is_file()
+                            or not attempt_dir.resolve().is_relative_to(root)
+                            or diagnostic.stat().st_size > 65536):
+                        continue
+                    evidence = json.loads(diagnostic.read_text(encoding='utf-8'))
+                    summary = evidence.get('event_summary') if isinstance(evidence, dict) else None
+                    exit_code = summary.get('process_exit_code') if isinstance(summary, dict) else None
+                except (OSError, RuntimeError, UnicodeError, ValueError):
+                    continue
+                if (not isinstance(evidence, dict)
+                        or evidence.get('schema_version') != '1'
+                        or evidence.get('stage') != 'turn_wait'
+                        or evidence.get('failure_class') != 'EOFError'
+                        or type(exit_code) is not int):
+                    continue
+                try:
+                    confirmation = self.client.abandon_exited_attempt(task_id, attempt_id)
+                except Exception:
+                    continue  # Keep this attempt latched and allow unrelated startup recovery.
+                if (not isinstance(confirmation, dict)
+                        or confirmation.get('task_id') != task_id
+                        or confirmation.get('attempt_id') != attempt_id
+                        or confirmation.get('status') != 'failed'
+                        or confirmation.get('reason_code') != 'codex_turn_wait_eof_process_exited'):
+                    continue
+                try:
+                    self.journal.mark_exited_attempt_abandoned(task_id, attempt_id, confirmation)
+                except RuntimeError:
+                    continue  # A changed local row remains latched for explicit investigation.
 
 
     def _execute(self, task_id, executor):

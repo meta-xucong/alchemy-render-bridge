@@ -2,7 +2,8 @@
 import types
 import unittest
 
-from render_bridge.agent.hatchet_sidecar import TASK_NAME, dispatch_once, make_submitter
+from render_bridge.agent.hatchet_sidecar import (TASK_NAME, dispatch_once, make_submitter,
+                                                  reconcile_pull_startup)
 
 
 class Outbox:
@@ -17,6 +18,25 @@ class Outbox:
 
 
 class DispatchTests(unittest.TestCase):
+    def test_pull_startup_reconciles_before_recovery_replay(self):
+        calls = []
+        class Journal:
+            def poll_recovery_records(self):
+                calls.append('poll')
+                return [
+                    {'task_id': 'task_unknown', 'state': 'execution_unknown'},
+                    {'task_id': 'task_started', 'state': 'start_requested'},
+                    {'task_id': 'task_failure', 'state': 'failure_report_pending'},
+                ]
+        class Node:
+            journal = Journal()
+            def reconcile_exited_codex_attempts(self):
+                calls.append('reconcile')
+            def execute_task(self, task_id):
+                calls.append(('execute', task_id))
+        reconcile_pull_startup(Node())
+        self.assertEqual(calls, ['reconcile', 'poll', ('execute', 'task_failure')])
+
     def test_success_acknowledges_engine_run(self):
         outbox = Outbox()
         self.assertEqual(dispatch_once(outbox, lambda task, key: 'run_one'), 1)

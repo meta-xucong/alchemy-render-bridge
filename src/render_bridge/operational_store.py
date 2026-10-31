@@ -1,6 +1,7 @@
 """Single configured-node authorization and bounded metadata audit storage."""
 EVENTS = frozenset({
-    'node_configured', 'terminal_failure_confirmed', 'node_revoked', 'node_reactivated', 'task_created',
+    'node_configured', 'terminal_failure_confirmed', 'exited_attempt_abandoned',
+    'node_revoked', 'node_reactivated', 'task_created',
     'start_granted', 'manual_ready', 'execution_unknown', 'task_attention',
     'cancel_requested', 'canceled', 'withdrawn_before_start', 'receipt_committed', 'delivery_accepted', 'delivery_rejected',
 })
@@ -8,13 +9,22 @@ AUDIT_CAPACITY = 1000
 
 
 class OperationsMixin:
-    def _audit(self, con, scope, kind, *, task_id=None, attempt_id=None, receipt_id=None, code=None):
+    def _audit(self, con, scope, kind, *, task_id=None, attempt_id=None, receipt_id=None,
+               code=None, node_id=None, executor_instance=None):
         from .readiness import ATTENTION_MESSAGES
-        if kind not in EVENTS or (code is not None and code not in ATTENTION_MESSAGES):
+        valid_code = (code is None or code in ATTENTION_MESSAGES
+                      or (kind == 'exited_attempt_abandoned'
+                          and code == 'codex_turn_wait_eof_process_exited'))
+        if kind not in EVENTS or not valid_code:
             raise ValueError('Invalid internal audit event')
+        if ((node_id is None) != (executor_instance is None)
+                or (node_id is not None and (not isinstance(node_id, str) or not node_id
+                    or not isinstance(executor_instance, str) or not executor_instance))):
+            raise ValueError('Invalid audit node identity')
         source, workspace = self._scope(scope)
-        con.execute('INSERT INTO audit_events(source,workspace,occurred,kind,task_id,attempt_id,receipt_id,code) VALUES(?,?,?,?,?,?,?,?)',
-                    (source, workspace, self.clock(), kind, task_id, attempt_id, receipt_id, code))
+        con.execute('INSERT INTO audit_events(source,workspace,occurred,kind,task_id,attempt_id,receipt_id,code,node_id,executor_instance) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                    (source, workspace, self.clock(), kind, task_id, attempt_id, receipt_id,
+                     code, node_id, executor_instance))
         con.execute('DELETE FROM audit_events WHERE id NOT IN (SELECT id FROM audit_events ORDER BY id DESC LIMIT ?)',
                     (AUDIT_CAPACITY,))
 
@@ -23,11 +33,12 @@ class OperationsMixin:
         _integer(limit, 1, 100)
         source, workspace = self._scope(scope)
         with self._connection() as con:
-            rows = con.execute('SELECT id,occurred,kind,task_id,attempt_id,receipt_id,code FROM audit_events WHERE source=? AND workspace=? ORDER BY id DESC LIMIT ?',
+            rows = con.execute('SELECT id,occurred,kind,task_id,attempt_id,receipt_id,code,node_id,executor_instance FROM audit_events WHERE source=? AND workspace=? ORDER BY id DESC LIMIT ?',
                                (source, workspace, limit)).fetchall()
         return {'schema_version': '1', 'capacity': AUDIT_CAPACITY,
                 'events': [{'event_id': row['id'], 'occurred_at': _utc(row['occurred']),
-                            **{key: row[key] for key in ('kind', 'task_id', 'attempt_id', 'receipt_id', 'code')}} for row in rows]}
+                            **{key: row[key] for key in ('kind', 'task_id', 'attempt_id',
+                                'receipt_id', 'code', 'node_id', 'executor_instance')}} for row in rows]}
 
     def provision_node(self, scope, node_id, executor_instance):
         source, workspace = self._scope(scope)

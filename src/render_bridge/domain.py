@@ -165,6 +165,8 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS terminal_failures (
                     task_id TEXT PRIMARY KEY, payload TEXT NOT NULL, confirmation TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS exited_attempt_abandons (
+                    task_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, confirmation TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS withdrawals (
                     source TEXT NOT NULL, workspace TEXT NOT NULL, withdrawal_key TEXT NOT NULL,
                     task_id TEXT NOT NULL UNIQUE, proof TEXT NOT NULL,
@@ -176,7 +178,8 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                 CREATE TABLE IF NOT EXISTS audit_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL,
                     workspace TEXT NOT NULL, occurred REAL NOT NULL, kind TEXT NOT NULL,
-                    task_id TEXT, attempt_id TEXT, receipt_id TEXT, code TEXT);
+                    task_id TEXT, attempt_id TEXT, receipt_id TEXT, code TEXT,
+                    node_id TEXT, executor_instance TEXT);
 
                 CREATE TABLE IF NOT EXISTS node_heartbeats (
                     source TEXT NOT NULL, workspace TEXT NOT NULL, node TEXT NOT NULL,
@@ -235,6 +238,11 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                     UNIQUE(source, workspace, client_receipt_id));
             """)
             con.executescript(HEALTH_DDL)
+            audit_columns = {r[1] for r in con.execute('PRAGMA table_info(audit_events)')}
+            if 'node_id' not in audit_columns:
+                con.execute('ALTER TABLE audit_events ADD COLUMN node_id TEXT')
+            if 'executor_instance' not in audit_columns:
+                con.execute('ALTER TABLE audit_events ADD COLUMN executor_instance TEXT')
             if 'revalidation_generation' not in {r[1] for r in con.execute('PRAGMA table_info(profile_health)')}:
                 con.execute('ALTER TABLE profile_health ADD COLUMN revalidation_generation INTEGER NOT NULL DEFAULT 0')
             con.execute("""INSERT OR IGNORE INTO dispatch_outbox(dispatch_key,task_id)
@@ -1082,6 +1090,43 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             con.execute('DELETE FROM task_attention WHERE task_id=?', (task_id,))
             self._audit(con, scope, 'terminal_failure_confirmed', task_id=task_id,
                         attempt_id=task['attempt_id'])
+            return confirmation
+
+    def abandon_exited_codex_attempt(self, scope, task_id, node_id, executor_instance, payload):
+        from .schemas import AbandonExitedAttemptRequest
+        try:
+            payload = AbandonExitedAttemptRequest.model_validate(payload).model_dump()
+        except ValueError:
+            _fail('invalid_exited_attempt_abandon')
+        with self._transaction() as con:
+            self._check_node_active(con, scope, node_id, executor_instance, required=True)
+            task = self._scoped(con, 'tasks', task_id, scope)
+            attempt = con.execute('SELECT * FROM attempts WHERE task_id=?', (task_id,)).fetchone()
+            if (self._profile(task).id != 'codex-image'
+                    or payload['attempt_id'] != task['attempt_id']
+                    or not attempt['start_grant_id']
+                    or attempt['original_node'] != node_id
+                    or attempt['original_executor'] != executor_instance):
+                _fail('exited_attempt_binding_mismatch', 409)
+            old = con.execute('SELECT * FROM exited_attempt_abandons WHERE task_id=?',
+                              (task_id,)).fetchone()
+            if old:
+                if old['attempt_id'] != payload['attempt_id']:
+                    _fail('exited_attempt_binding_mismatch', 409)
+                return json.loads(old['confirmation'])
+            if (task['state'] != 'execution_unknown'
+                    or con.execute('SELECT 1 FROM receipts WHERE task_id=?', (task_id,)).fetchone()
+                    or con.execute('SELECT 1 FROM uploads WHERE task_id=?', (task_id,)).fetchone()):
+                _fail('exited_attempt_not_safe', 409)
+            confirmation = {'task_id': task_id, 'attempt_id': payload['attempt_id'],
+                            'status': 'failed', 'reason_code': payload['reason_code']}
+            con.execute('INSERT INTO exited_attempt_abandons VALUES(?,?,?)',
+                        (task_id, payload['attempt_id'], _canonical(confirmation)))
+            con.execute("UPDATE tasks SET state='failed' WHERE id=?", (task_id,))
+            con.execute('DELETE FROM task_attention WHERE task_id=?', (task_id,))
+            self._audit(con, scope, 'exited_attempt_abandoned', task_id=task_id,
+                        attempt_id=payload['attempt_id'], code=payload['reason_code'],
+                        node_id=node_id, executor_instance=executor_instance)
             return confirmation
 
     def mark_execution_unknown(self, scope, task_id, claim_id):

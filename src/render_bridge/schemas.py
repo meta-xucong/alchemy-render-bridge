@@ -44,6 +44,11 @@ class TerminalFailureRequest(StrictRequest):
     evidence: TerminalFailureEvidence
 
 
+class AbandonExitedAttemptRequest(StrictRequest):
+    attempt_id: Key
+    reason_code: Literal['codex_turn_wait_eof_process_exited']
+
+
 class InputCreate(StrictRequest):
     input_key: Key
     original_sha256: SHA256

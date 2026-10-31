@@ -106,6 +106,39 @@ class AgentJournal:
             return [json.loads(row['record']) for row in con.execute(
                 "SELECT record FROM attempts WHERE state IN ('start_requested','execution_unknown','failure_report_pending') LIMIT 10")]
 
+    def exited_codex_recovery_records(self):
+        with self.connection() as con:
+            return [dict(row) for row in con.execute("""
+                SELECT task_id, attempt_id, state,
+                    json_extract(record, '$.attempt_id') AS record_attempt_id,
+                    json_extract(record, '$.profile_id') AS profile_id,
+                    json_extract(record, '$.request.task_id') AS request_task_id,
+                    json_extract(record, '$.request.attempt_id') AS request_attempt_id,
+                    CASE WHEN json_type(record, '$.start_grant_id') = 'text'
+                              AND length(json_extract(record, '$.start_grant_id')) > 0
+                         THEN 1 ELSE 0 END AS has_start_grant,
+                    CASE WHEN json_type(record, '$.artifact') IS NOT NULL
+                              OR json_type(record, '$.sha256') IS NOT NULL
+                              OR json_type(record, '$.size') IS NOT NULL
+                              OR json_type(record, '$.mime_type') IS NOT NULL
+                              OR json_type(record, '$.artifact_provenance') IS NOT NULL
+                         THEN 1 ELSE 0 END AS has_artifact_record
+                FROM attempts WHERE state='execution_unknown'
+                """)]
+
+    def mark_exited_attempt_abandoned(self, task_id, attempt_id, confirmation):
+        with self.connection() as con:
+            changed = con.execute("""
+                UPDATE attempts
+                SET state='terminal_failed',
+                    record=json_set(record, '$.state', 'terminal_failed',
+                                    '$.exited_attempt_abandon', json(?))
+                WHERE task_id=? AND attempt_id=? AND state='execution_unknown'
+                """, (json.dumps(confirmation, ensure_ascii=False, allow_nan=False),
+                      task_id, attempt_id)).rowcount
+            if changed != 1:
+                raise RuntimeError('Exited Codex journal attempt changed during reconciliation')
+
     def pending_artifact_records(self):
         with self.connection() as con:
             return [json.loads(row['record']) for row in con.execute(

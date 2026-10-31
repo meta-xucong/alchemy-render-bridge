@@ -1,4 +1,5 @@
 """Bound terminal account failure recovery; synthetic events, no real CLI/account."""
+import json
 import unittest
 from unittest.mock import patch
 
@@ -27,6 +28,151 @@ class TerminalFailureTests(unittest.TestCase):
     setUp = test_agent_profiles.AgentProfilesTests.setUp
     tearDown = test_agent_profiles.AgentProfilesTests.tearDown
     create = test_agent_profiles.AgentProfilesTests.create
+
+    def exited_attempt(self, agent, ordinal, diagnostic=None, *, artifact=False,
+                       empty_start_grant=False):
+        task = self.create('codex-image', f'exited-{ordinal}')
+        claim = self.client.claim(task)
+        grant = self.client.start(task, claim['claim_id'])
+        self.client.unknown(task, claim['claim_id'])
+        record = {'task_id': task, 'attempt_id': claim['attempt_id'],
+                  'state': 'execution_unknown', 'profile_id': 'codex-image',
+                  'start_grant_id': '' if empty_start_grant else grant['start_grant_id'],
+                  'request': {'task_id': task, 'attempt_id': claim['attempt_id']}}
+        if artifact:
+            record['artifact'] = 'attempt/result.original'
+        agent.journal.save(record)
+        path = agent.registry.get('codex-image').root / task / claim['attempt_id']
+        if diagnostic is not None:
+            path.mkdir(parents=True, exist_ok=True)
+            (path / 'codex-execution-diagnostic.json').write_text(
+                json.dumps(diagnostic), encoding='utf-8')
+        return task, claim['attempt_id'], path / 'codex-execution-diagnostic.json'
+
+    def test_startup_abandons_only_bound_exited_eof_attempt(self):
+        agent, _ = self.configured()
+        diagnostic = {'schema_version': '1', 'stage': 'turn_wait',
+                      'failure_class': 'EOFError',
+                      'event_summary': {'process_exit_code': 17}}
+        task, attempt, _ = self.exited_attempt(agent, 1, diagnostic)
+        with patch.object(self.client, 'task', side_effect=AssertionError('broad task fetch forbidden')):
+            agent.reconcile_exited_codex_attempts()
+        self.assertEqual('failed', self.store.get_task(self.scope, task)['state'])
+        self.assertEqual('terminal_failed', agent.journal.get(task)['state'])
+        self.assertEqual(attempt, agent.journal.get(task)['attempt_id'])
+
+    def test_startup_bridge_error_keeps_unknown_attempt_latched(self):
+        agent, _ = self.configured()
+        diagnostic = {'schema_version': '1', 'stage': 'turn_wait',
+                      'failure_class': 'EOFError',
+                      'event_summary': {'process_exit_code': 17}}
+        task, _, _ = self.exited_attempt(agent, 13, diagnostic)
+        with patch.object(self.client, 'task', side_effect=AssertionError('broad task fetch forbidden')), \
+             patch.object(self.client, 'abandon_exited_attempt', side_effect=ConnectionError('offline')):
+            agent.reconcile_exited_codex_attempts()
+        self.assertEqual('execution_unknown', self.store.get_task(self.scope, task)['state'])
+        self.assertEqual('execution_unknown', agent.journal.get(task)['state'])
+
+    def test_startup_malformed_bridge_confirmation_keeps_unknown_latched(self):
+        agent, _ = self.configured()
+        diagnostic = {'schema_version': '1', 'stage': 'turn_wait',
+                      'failure_class': 'EOFError',
+                      'event_summary': {'process_exit_code': 17}}
+        task, _, _ = self.exited_attempt(agent, 14, diagnostic)
+        with patch.object(self.client, 'task', side_effect=AssertionError('broad task fetch forbidden')), \
+             patch.object(self.client, 'abandon_exited_attempt', return_value=None):
+            agent.reconcile_exited_codex_attempts()
+        self.assertEqual('execution_unknown', self.store.get_task(self.scope, task)['state'])
+        self.assertEqual('execution_unknown', agent.journal.get(task)['state'])
+
+    def test_startup_replays_commit_after_agent_crash_before_journal_update(self):
+        agent, _ = self.configured()
+        diagnostic = {'schema_version': '1', 'stage': 'turn_wait',
+                      'failure_class': 'EOFError',
+                      'event_summary': {'process_exit_code': 17}}
+        task, attempt, _ = self.exited_attempt(agent, 10, diagnostic)
+        abandon = self.client.abandon_exited_attempt
+        def commit_then_crash(*args):
+            abandon(*args)
+            raise RuntimeError('simulated crash after Bridge commit')
+        with patch.object(self.client, 'task', side_effect=AssertionError('broad task fetch forbidden')), \
+             patch.object(self.client, 'abandon_exited_attempt', side_effect=commit_then_crash):
+            agent.reconcile_exited_codex_attempts()
+        self.assertEqual('failed', self.store.get_task(self.scope, task)['state'])
+        self.assertEqual('execution_unknown', agent.journal.get(task)['state'])
+        with patch.object(self.client, 'task', side_effect=AssertionError('broad task fetch forbidden')):
+            agent.reconcile_exited_codex_attempts()
+        self.assertEqual('terminal_failed', agent.journal.get(task)['state'])
+        self.assertEqual(attempt, agent.journal.get(task)['attempt_id'])
+
+    def test_startup_skips_empty_persisted_start_grant(self):
+        agent, _ = self.configured()
+        diagnostic = {'schema_version': '1', 'stage': 'turn_wait',
+                      'failure_class': 'EOFError',
+                      'event_summary': {'process_exit_code': 17}}
+        task, _, _ = self.exited_attempt(agent, 11, diagnostic, empty_start_grant=True)
+        with patch.object(self.client, 'task', side_effect=AssertionError('broad task fetch forbidden')), \
+             patch.object(self.client, 'abandon_exited_attempt') as abandon:
+            agent.reconcile_exited_codex_attempts()
+        abandon.assert_not_called()
+        self.assertEqual('execution_unknown', self.store.get_task(self.scope, task)['state'])
+        self.assertEqual('execution_unknown', agent.journal.get(task)['state'])
+
+    def test_startup_skips_journal_record_attempt_id_mismatch(self):
+        agent, _ = self.configured()
+        diagnostic = {'schema_version': '1', 'stage': 'turn_wait',
+                      'failure_class': 'EOFError',
+                      'event_summary': {'process_exit_code': 17}}
+        task, attempt, _ = self.exited_attempt(agent, 12, diagnostic)
+        with agent.journal.connection() as con:
+            con.execute("""UPDATE attempts
+                SET record=json_set(record, '$.attempt_id', ?)
+                WHERE task_id=?""", ('mutated-local-attempt', task))
+        with patch.object(self.client, 'task', side_effect=AssertionError('broad task fetch forbidden')), \
+             patch.object(self.client, 'abandon_exited_attempt') as abandon:
+            agent.reconcile_exited_codex_attempts()
+        abandon.assert_not_called()
+        with agent.journal.connection() as con:
+            row = con.execute('SELECT attempt_id, record FROM attempts WHERE task_id=?',
+                              (task,)).fetchone()
+        local_record = json.loads(row['record'])
+        self.assertEqual(attempt, row['attempt_id'])
+        self.assertEqual('mutated-local-attempt', local_record['attempt_id'])
+        self.assertEqual(attempt, local_record['request']['attempt_id'])
+        self.assertEqual('execution_unknown', self.store.get_task(self.scope, task)['state'])
+
+    def test_startup_skips_missing_or_mismatched_diagnostic_and_keeps_latch(self):
+        agent, _ = self.configured()
+        valid = {'schema_version': '1', 'stage': 'turn_wait',
+                 'failure_class': 'EOFError',
+                 'event_summary': {'process_exit_code': 17}}
+        cases = [None,
+                 {**valid, 'stage': 'other'},
+                 {**valid, 'failure_class': 'TimeoutError'},
+                 {**valid, 'event_summary': {'process_exit_code': None}}]
+        for index, evidence in enumerate(cases, start=2):
+            with self.subTest(index=index):
+                if index > 2:
+                    self.tearDown()
+                    self.setUp()
+                    agent, _ = self.configured()
+                task, _, _ = self.exited_attempt(agent, index, evidence)
+                agent.reconcile_exited_codex_attempts()
+                self.assertEqual('execution_unknown', self.store.get_task(self.scope, task)['state'])
+                self.assertEqual('execution_unknown', agent.journal.get(task)['state'])
+
+    def test_startup_skips_journal_artifact_without_bridge_call(self):
+        agent, _ = self.configured()
+        diagnostic = {'schema_version': '1', 'stage': 'turn_wait',
+                      'failure_class': 'EOFError',
+                      'event_summary': {'process_exit_code': 17}}
+        task, _, _ = self.exited_attempt(agent, 9, diagnostic, artifact=True)
+        with patch.object(self.client, 'task', side_effect=AssertionError('broad task fetch forbidden')), \
+             patch.object(self.client, 'abandon_exited_attempt') as abandon:
+            agent.reconcile_exited_codex_attempts()
+        abandon.assert_not_called()
+        self.assertEqual('execution_unknown', self.store.get_task(self.scope, task)['state'])
+        self.assertEqual('execution_unknown', agent.journal.get(task)['state'])
 
     def configured(self):
         executor = CodexExecutor(self.state/'executors', CodexConfig(enabled=True, model='fixture',

@@ -49,6 +49,20 @@ def dispatch_once(client, submit):
     return count
 
 
+def reconcile_pull_startup(node):
+    """Reconcile exited Codex attempts, then replay only terminal reports."""
+    node.reconcile_exited_codex_attempts()
+    for record in node.journal.poll_recovery_records():
+        if record.get('state') != 'failure_report_pending':
+            # Never route an uncertain local execution through rollout recovery.
+            # Its journal latch remains authoritative and blocks new work.
+            continue
+        try:
+            node.execute_task(record['task_id'])
+        except Exception:
+            pass  # Original local journal remains the recovery authority.
+
+
 def input_type():
     from pydantic import BaseModel, ConfigDict
     class TaskInput(BaseModel):
@@ -171,14 +185,10 @@ def main(argv=None):
             client = HttpNodeClient(args.url, token)
             registry = ExecutorRegistry.from_config(args.state_dir / 'executors', args.config)
             node = NodeAgent(client, args.state_dir, registry=registry)
+            reconcile_pull_startup(node)
             node._worker_running = True
             from .heartbeat import HeartbeatLoop
             with HeartbeatLoop(node):
-                for record in node.journal.poll_recovery_records():
-                    try:
-                        node.execute_task(record['task_id'])
-                    except Exception:
-                        pass  # Original local journal remains the recovery authority.
                 while True:
                     for record in node.journal.pending_artifact_records():
                         try:

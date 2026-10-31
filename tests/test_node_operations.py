@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import unittest
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import test_agent_profiles as fixtures
@@ -20,6 +21,114 @@ class NodeOperationsTests(unittest.TestCase):
 
     def toggle(self, active):
         return self.store.set_node_active(self.scope, 'node', 'instance', active)
+
+    def test_abandon_exited_attempt_is_bound_idempotent_and_fail_closed(self):
+        task = self.create('codex-image')
+        claim = self.client.claim(task)
+        self.client.start(task, claim['claim_id'])
+        self.client.unknown(task, claim['claim_id'])
+        body = {'attempt_id': claim['attempt_id'],
+                'reason_code': 'codex_turn_wait_eof_process_exited'}
+        url = '/bridge/node/v1/tasks/' + task + '/abandon-exited-attempt'
+        one = self.client.http.post(url, json=body)
+        two = self.client.http.post(url, json=body)
+        self.assertEqual(one.status_code, 200, one.text)
+        self.assertEqual(one.json(), two.json())
+        self.assertEqual({'task_id', 'attempt_id', 'status', 'reason_code'},
+                         set(one.json()))
+        self.assertEqual('failed', self.store.get_task(self.scope, task)['state'])
+        events = self.store.audit_events(self.scope)['events']
+        abandoned = [e for e in events if e['kind'] == 'exited_attempt_abandoned']
+        self.assertEqual(1, len(abandoned))
+        self.assertEqual((task, claim['attempt_id'], 'node', 'instance',
+                          'codex_turn_wait_eof_process_exited'),
+                         (abandoned[0]['task_id'], abandoned[0]['attempt_id'],
+                          abandoned[0]['node_id'], abandoned[0]['executor_instance'],
+                          abandoned[0]['code']))
+        for changed in ({**body, 'attempt_id': 'wrong'},
+                        {**body, 'reason_code': 'other'},
+                        {**body, 'extra': True}):
+            response = self.client.http.post(url, json=changed)
+            self.assertIn(response.status_code, (409, 422))
+
+    def test_abandon_exited_attempt_rejects_active_or_uploaded_attempt(self):
+        task = self.create('codex-image')
+        claim = self.client.claim(task)
+        self.client.start(task, claim['claim_id'])
+        body = {'attempt_id': claim['attempt_id'],
+                'reason_code': 'codex_turn_wait_eof_process_exited'}
+        url = '/bridge/node/v1/tasks/' + task + '/abandon-exited-attempt'
+        self.assertEqual(409, self.client.http.post(url, json=body).status_code)
+        self.client.unknown(task, claim['claim_id'])
+        self.now += 3601
+        upload_claim = self.client.claim(task, mode='upload_only')
+        self.client.create_upload(task, upload_claim['claim_id'], {
+            'attempt_id': upload_claim['attempt_id'], 'slot_id': 'primary',
+            'original_sha256': 'a' * 64,
+            'size': 1, 'mime_type': 'image/png'})
+        self.assertEqual(409, self.client.http.post(url, json=body).status_code)
+        self.assertEqual('uploading', self.store.get_task(self.scope, task)['state'])
+
+    def test_abandon_exited_attempt_rejects_existing_receipt(self):
+        task = self.create('codex-image')
+        claim = self.client.claim(task)
+        self.client.start(task, claim['claim_id'])
+        self.client.unknown(task, claim['claim_id'])
+        with self.store._connection() as con:
+            attempt_id = con.execute('SELECT id FROM attempts WHERE task_id=?', (task,)).fetchone()[0]
+            con.execute("""INSERT INTO uploads
+                (id, task_id, attempt_id, slot_id, digest, payload, state, size, file_name, dimensions)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ('upload_fixture', task, attempt_id, 'primary', 'a' * 64, '{}',
+                 'committed', 1, 'fixture.png', '{}'))
+            con.execute("""INSERT INTO receipts
+                (id, task_id, upload_id, artifact_id, manifest)
+                VALUES(?, ?, ?, ?, ?)""",
+                ('receipt_fixture', task, 'upload_fixture', 'artifact_fixture', '{}'))
+        response = self.client.http.post(
+            '/bridge/node/v1/tasks/' + task + '/abandon-exited-attempt',
+            json={'attempt_id': claim['attempt_id'],
+                  'reason_code': 'codex_turn_wait_eof_process_exited'})
+        self.assertEqual(409, response.status_code)
+        self.assertEqual('execution_unknown', self.store.get_task(self.scope, task)['state'])
+
+    def test_abandon_rechecks_state_after_concurrent_transition(self):
+        task = self.create('codex-image')
+        claim = self.client.claim(task)
+        self.client.start(task, claim['claim_id'])
+        self.client.unknown(task, claim['claim_id'])
+        original_transaction = self.store._transaction
+
+        @contextmanager
+        def transition_before_check():
+            with original_transaction() as concurrent_con:
+                concurrent_con.execute("UPDATE tasks SET state='failed' WHERE id=?", (task,))
+            with original_transaction() as con:
+                yield con
+
+        self.store._transaction = transition_before_check
+        response = self.client.http.post(
+            '/bridge/node/v1/tasks/' + task + '/abandon-exited-attempt',
+            json={'attempt_id': claim['attempt_id'],
+                  'reason_code': 'codex_turn_wait_eof_process_exited'})
+        self.assertEqual(409, response.status_code)
+        self.assertEqual('failed', self.store.get_task(self.scope, task)['state'])
+        with self.store._connection() as con:
+            self.assertIsNone(con.execute('SELECT 1 FROM exited_attempt_abandons WHERE task_id=?',
+                                          (task,)).fetchone())
+
+    def test_abandon_rejects_failed_task_without_persisted_abandon_record(self):
+        task = self.create('codex-image')
+        claim = self.client.claim(task)
+        self.client.start(task, claim['claim_id'])
+        self.client.unknown(task, claim['claim_id'])
+        with self.store._connection() as con:
+            con.execute("UPDATE tasks SET state='failed' WHERE id=?", (task,))
+        response = self.client.http.post(
+            '/bridge/node/v1/tasks/' + task + '/abandon-exited-attempt',
+            json={'attempt_id': claim['attempt_id'],
+                  'reason_code': 'codex_turn_wait_eof_process_exited'})
+        self.assertEqual(409, response.status_code)
 
     def test_revoke_is_live_and_survives_restart(self):
         task = self.create('fake-image')
