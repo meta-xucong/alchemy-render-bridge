@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import hashlib
 import math
+import ntpath
 import stat
 from dataclasses import dataclass
 import os
@@ -344,6 +345,263 @@ class CodexExecutor:
         self.root = Path(root)
         self.config = config or CodexConfig()
 
+    @staticmethod
+    def _codex_home() -> Path:
+        configured_home = os.environ.get('CODEX_HOME')
+        return Path(configured_home) if configured_home else Path.home() / '.codex'
+
+    def find_interrupted_rollout(self, request: ExecutionRequest) -> Path | None:
+        """Find the unique local rollout named by this persisted attempt's thread."""
+        files = AttemptFiles(self.root, request, 'codex-cli')
+        thread_file = files.path / 'codex-thread.json'
+        turn_file = files.path / 'codex-turn.json'
+        try:
+            thread_record = json.loads(thread_file.read_text(encoding='utf-8'))
+            turn = json.loads(turn_file.read_text(encoding='utf-8'))
+            if not isinstance(thread_record, dict) or not isinstance(turn, dict):
+                return None
+            thread_id = thread_record.get('thread_id')
+            if (not isinstance(thread_id, str) or not thread_id
+                    or turn.get('thread_id') != thread_id
+                    or not isinstance(turn.get('turn_id'), str) or not turn['turn_id']):
+                return None
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        return self.find_rollout_for_thread(thread_id)
+
+    @classmethod
+    def find_rollout_for_thread(cls, thread_id: str) -> Path | None:
+        """Return one exact Codex rollout path; missing or ambiguous matches fail closed."""
+        if (not isinstance(thread_id, str) or not thread_id
+                or Path(thread_id).name != thread_id
+                or any(char in thread_id for char in '*?[]/\\')):
+            return None
+        codex_home = cls._codex_home()
+        sessions = codex_home / 'sessions'
+        try:
+            if (codex_home.is_symlink()
+                    or (hasattr(codex_home, 'is_junction') and codex_home.is_junction())
+                    or sessions.is_symlink()
+                    or (hasattr(sessions, 'is_junction') and sessions.is_junction())):
+                return None
+            home = codex_home.resolve(strict=True)
+            session_root = sessions.resolve(strict=True)
+            if session_root.parent != home or not session_root.is_dir():
+                return None
+        except (OSError, RuntimeError):
+            return None
+
+        suffix = f'-{thread_id}.jsonl'
+        match = None
+        try:
+            for candidate in session_root.rglob('rollout-*.jsonl'):
+                if not candidate.name.endswith(suffix):
+                    continue
+                if (candidate.is_symlink()
+                        or (hasattr(candidate, 'is_junction') and candidate.is_junction())):
+                    return None
+                resolved = candidate.resolve(strict=True)
+                if not resolved.is_file() or not resolved.is_relative_to(session_root):
+                    return None
+                if match is not None:
+                    return None
+                match = resolved
+        except (OSError, RuntimeError):
+            return None
+        return match
+
+    @classmethod
+    def _read_scoped_rollout(cls, rollout_path: Path) -> tuple[Path, bytes]:
+        """Read one stable regular rollout file from CODEX_HOME/sessions."""
+        configured_home = cls._codex_home()
+        sessions_path = configured_home / 'sessions'
+
+        def directory_identity(path: Path) -> tuple[int, int]:
+            info = path.stat()
+            if not stat.S_ISDIR(info.st_mode):
+                raise ValueError('Codex sessions root is not a directory')
+            return info.st_dev, info.st_ino
+
+        # Capture directory identities before link resolution and keep those
+        # identities authoritative for the entire read operation.
+        home_identity = directory_identity(configured_home)
+        sessions_identity = directory_identity(sessions_path)
+        if (configured_home.is_symlink()
+                or (hasattr(configured_home, 'is_junction') and configured_home.is_junction())
+                or sessions_path.is_symlink()
+                or (hasattr(sessions_path, 'is_junction') and sessions_path.is_junction())):
+            raise ValueError('Codex sessions root is linked')
+        codex_home = configured_home.resolve(strict=True)
+        session_root = sessions_path.resolve(strict=True)
+        if session_root.parent != codex_home or not session_root.is_dir():
+            raise ValueError('Codex sessions root is invalid')
+        if (directory_identity(codex_home) != home_identity
+                or directory_identity(session_root) != sessions_identity):
+            raise ValueError('Codex sessions root changed during setup')
+
+        def verify_roots() -> None:
+            if (configured_home.is_symlink()
+                    or (hasattr(configured_home, 'is_junction') and configured_home.is_junction())
+                    or sessions_path.is_symlink()
+                    or (hasattr(sessions_path, 'is_junction') and sessions_path.is_junction())
+                    or configured_home.resolve(strict=True) != codex_home
+                    or sessions_path.resolve(strict=True) != session_root
+                    or directory_identity(codex_home) != home_identity
+                    or directory_identity(session_root) != sessions_identity):
+                raise ValueError('Codex sessions root changed during rollout read')
+
+        verify_roots()
+        path = Path(rollout_path)
+        if path.is_symlink() or (hasattr(path, 'is_junction') and path.is_junction()):
+            raise ValueError('Rollout path is linked')
+        pinned_root = cls._pin_windows_sessions_root(session_root, sessions_identity)
+        flags = os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0)
+        try:
+            descriptor = os.open(path, flags)
+        except Exception:
+            if pinned_root is not None:
+                pinned_root[0].CloseHandle(pinned_root[1])
+            raise
+        try:
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode) or opened.st_size > MAX_SESSION_BYTES:
+                raise ValueError('Rollout is not a bounded regular file')
+            resolved = path.resolve(strict=True)
+            if not resolved.is_relative_to(session_root):
+                raise ValueError('Rollout is outside Codex sessions')
+            current = resolved.stat()
+            identity = (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)
+            if identity != (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns):
+                raise ValueError('Rollout path changed while opening')
+            if pinned_root is not None:
+                if cls._windows_handle_path(pinned_root[0], pinned_root[1]) != pinned_root[2]:
+                    raise ValueError('Pinned sessions directory moved while opening rollout')
+                import msvcrt
+                actual_path = cls._windows_handle_path(
+                    pinned_root[0], msvcrt.get_osfhandle(descriptor))
+                if not cls._is_child_path(actual_path, pinned_root[2]):
+                    raise ValueError('Opened rollout is outside the pinned sessions directory')
+            chunks = []
+            remaining = MAX_SESSION_BYTES + 1
+            while remaining:
+                chunk = os.read(descriptor, min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            raw = b''.join(chunks)
+            after = os.fstat(descriptor)
+            if (len(raw) > MAX_SESSION_BYTES
+                    or identity != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+                raise ValueError('Rollout changed or exceeded its size limit while reading')
+            final_path = path.resolve(strict=True)
+            final = final_path.stat()
+            if (not final_path.is_relative_to(session_root)
+                    or identity != (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns)):
+                raise ValueError('Rollout path changed while reading')
+            if pinned_root is not None:
+                if cls._windows_handle_path(pinned_root[0], pinned_root[1]) != pinned_root[2]:
+                    raise ValueError('Pinned sessions directory moved while reading rollout')
+                actual_path = cls._windows_handle_path(
+                    pinned_root[0], msvcrt.get_osfhandle(descriptor))
+                if not cls._is_child_path(actual_path, pinned_root[2]):
+                    raise ValueError('Opened rollout moved outside the pinned sessions directory')
+            verify_roots()
+            return resolved, raw
+        finally:
+            os.close(descriptor)
+            if pinned_root is not None:
+                pinned_root[0].CloseHandle(pinned_root[1])
+
+    @staticmethod
+    def _windows_handle_path(kernel32, handle) -> str:
+        import ctypes
+        buffer = ctypes.create_unicode_buffer(32768)
+        size = kernel32.GetFinalPathNameByHandleW(handle, buffer, len(buffer), 0)
+        if not size or size >= len(buffer):
+            raise OSError('Could not resolve an opened Windows file handle')
+        return buffer.value
+
+    @staticmethod
+    def _normalize_windows_path(path: str) -> str:
+        if path.startswith('\\\\?\\UNC\\'):
+            path = '\\\\' + path[8:]
+        elif path.startswith('\\\\?\\'):
+            path = path[4:]
+        return ntpath.normcase(ntpath.normpath(path)).rstrip('\\')
+
+    @classmethod
+    def _is_child_path(cls, candidate: str, parent: str) -> bool:
+        candidate = cls._normalize_windows_path(candidate)
+        parent = cls._normalize_windows_path(parent)
+        try:
+            return ntpath.commonpath((candidate, parent)) == parent and candidate != parent
+        except ValueError:
+            return False
+
+    @classmethod
+    def _same_windows_path(cls, left: str, right: str) -> bool:
+        return cls._normalize_windows_path(left) == cls._normalize_windows_path(right)
+
+    @staticmethod
+    def _windows_handle_identity(kernel32, handle) -> tuple[int, int]:
+        import ctypes
+        from ctypes import wintypes
+        class FileIdInfo(ctypes.Structure):
+            _fields_ = [('VolumeSerialNumber', ctypes.c_ulonglong),
+                ('FileId', ctypes.c_ubyte * 16)]
+        info = FileIdInfo()
+        kernel32.GetFileInformationByHandleEx.argtypes = [wintypes.HANDLE, ctypes.c_int,
+            wintypes.LPVOID, wintypes.DWORD]
+        kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+        if not kernel32.GetFileInformationByHandleEx(handle, 18, ctypes.byref(info),
+                ctypes.sizeof(info)):  # FileIdInfo
+            raise OSError(ctypes.get_last_error(), 'Could not identify opened Windows directory')
+        return info.VolumeSerialNumber, int.from_bytes(bytes(info.FileId), 'little')
+
+    @classmethod
+    def _pin_windows_sessions_root(cls, session_root: Path, expected_identity: tuple[int, int]):
+        """Hold a Windows directory handle so pathname swaps cannot redirect reads."""
+        if os.name != 'nt':
+            return None
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+            wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        kernel32.GetFileInformationByHandleEx.argtypes = [wintypes.HANDLE, ctypes.c_int,
+            wintypes.LPVOID, wintypes.DWORD]
+        kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        # Omitting FILE_SHARE_DELETE pins this directory against rename/replacement
+        # while the rollout is read. The identity check binds the handle to the
+        # earlier CODEX_HOME/sessions snapshot.
+        handle = kernel32.CreateFileW(str(session_root), 0, 0x1 | 0x2, None, 3,
+            0x02000000 | 0x00200000, None)  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+        if handle == wintypes.HANDLE(-1).value:
+            raise OSError(ctypes.get_last_error(), 'Could not pin Codex sessions directory')
+        class FileAttributeTagInfo(ctypes.Structure):
+            _fields_ = [('FileAttributes', wintypes.DWORD), ('ReparseTag', wintypes.DWORD)]
+        info = FileAttributeTagInfo()
+        if (not kernel32.GetFileInformationByHandleEx(handle, 9, ctypes.byref(info),
+                ctypes.sizeof(info)) or not info.FileAttributes & 0x10
+                or info.FileAttributes & 0x400):
+            kernel32.CloseHandle(handle)
+            raise ValueError('Pinned Codex sessions handle is not a regular directory')
+        try:
+            if cls._windows_handle_identity(kernel32, handle) != expected_identity:
+                raise ValueError('Pinned sessions handle identity differs from the expected directory')
+            path = cls._windows_handle_path(kernel32, handle)
+        except Exception:
+            kernel32.CloseHandle(handle)
+            raise
+        if not cls._same_windows_path(path, str(session_root)):
+            kernel32.CloseHandle(handle)
+            raise ValueError('Pinned sessions handle differs from the expected Codex sessions root')
+        return kernel32, handle, path
+
     def preflight(self, request: ExecutionRequest) -> ExecutionResult | None:
         """Check local acceptance and version only; never starts a thread or turn."""
         validate_image_request(request.parameters, request.references, 'codex-image')
@@ -514,13 +772,7 @@ class CodexExecutor:
         except (OSError, ValueError, KeyError, TypeError):
             return ExecutionResult('execution_unknown', 'codex_interrupted_image_attempt_binding_invalid')
         try:
-            rollout_path = Path(rollout_path)
-            if rollout_path.is_symlink() or (hasattr(rollout_path, 'is_junction') and rollout_path.is_junction()):
-                raise ValueError('Rollout path is linked')
-            rollout = rollout_path.resolve(strict=True)
-            if not rollout.is_file() or rollout.stat().st_size > MAX_SESSION_BYTES:
-                raise ValueError('Rollout is not a bounded regular file')
-            raw = rollout.read_bytes()
+            rollout, raw = self._read_scoped_rollout(rollout_path)
             if not raw or len(raw) > MAX_SESSION_BYTES or not raw.endswith(b'\n'):
                 raise ValueError('Rollout exceeds its size limit')
             records = []
@@ -751,13 +1003,14 @@ class CodexExecutor:
             reason = 'tool_missing' if isinstance(exc, FileNotFoundError) else 'probe_failed'
             self._write_execution_diagnostic(files, stage, exc, session)
             return ExecutionResult('execution_unknown', 'codex_execution_requires_reconciliation',
-                                   details={'profile_health_reason': reason,
+                                   details={'stage': stage, 'failure_class': type(exc).__name__,
+                                            'profile_health_reason': reason,
                                             **({'event_summary': session.diagnostic_summary()} if session else {})})
         except (RuntimeError, ValueError, KeyError, TypeError) as exc:
             # A request may already have reached the server. Never regenerate.
             self._write_execution_diagnostic(files, stage, exc, session)
             return ExecutionResult('execution_unknown', 'codex_execution_requires_reconciliation',
-                                   details={'failure_class': type(exc).__name__,
+                                   details={'stage': stage, 'failure_class': type(exc).__name__,
                                             **({'event_summary': session.diagnostic_summary()} if session else {})})
 
     @staticmethod
@@ -941,8 +1194,7 @@ class CodexExecutor:
         if (not thread_id or Path(thread_id).name != thread_id
                 or '/' in thread_id or '\\' in thread_id):
             return False
-        configured_home = os.environ.get('CODEX_HOME')
-        codex_home = Path(configured_home) if configured_home else Path.home() / '.codex'
+        codex_home = CodexExecutor._codex_home()
         try:
             home = codex_home.resolve(strict=True)
             generated_root = codex_home / 'generated_images'

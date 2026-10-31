@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 from PIL import Image
 
-from render_bridge.executors import CodexExecutor, ExecutionRequest
+from render_bridge.executors import CodexExecutor, ExecutionRequest, ExecutionResult
 from render_bridge.agent.client import NodeHTTPError
 from render_bridge.agent.journal import AgentJournal
 from render_bridge.agent.registry import ExecutorRegistry, get_profile
@@ -58,7 +58,8 @@ class CodexAbortedImageReconciliationTests(unittest.TestCase):
             {'ordinal': 4, 'type': 'event_msg', 'payload': {
                 'type': 'turn_aborted', 'turn_id': self.TURN, 'reason': 'interrupted'}},
         ]
-        rollout = root / 'rollout.jsonl'
+        rollout = home / 'sessions' / '2026' / '10' / f'rollout-fixture-{self.THREAD}.jsonl'
+        rollout.parent.mkdir(parents=True)
         rollout.write_bytes(b''.join((json.dumps(row, separators=(',', ':')) + '\n').encode()
                                      for row in rows))
         return home, request, executor, rollout, output
@@ -301,6 +302,135 @@ class CodexAbortedImageReconciliationTests(unittest.TestCase):
             self.assertEqual(record['review_only_reconciliation']['contract'],
                              'codex-aborted-image-reconcile/v1')
             self.assertEqual(record['receipt_id'], 'receipt-fixture')
+
+    def test_rollout_discovery_requires_one_exact_thread_match(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp) / 'codex-home'
+            sessions = home / 'sessions' / '2026' / '10'
+            sessions.mkdir(parents=True)
+            rollout = sessions / f'rollout-fixture-{self.THREAD}.jsonl'
+            rollout.write_text('{}\n', encoding='utf-8')
+            with patch.dict(os.environ, {'CODEX_HOME': str(home)}):
+                self.assertEqual(CodexExecutor.find_rollout_for_thread(self.THREAD), rollout)
+                self.assertIsNone(CodexExecutor.find_rollout_for_thread('other-thread'))
+                (sessions / f'rollout-duplicate-{self.THREAD}.jsonl').write_text('{}\n', encoding='utf-8')
+                self.assertIsNone(CodexExecutor.find_rollout_for_thread(self.THREAD))
+
+    def test_reconciliation_rejects_rollout_outside_codex_sessions(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home, request, executor, rollout, _ = self.setup_case(root)
+            outside = root / 'outside-rollout.jsonl'
+            outside.write_bytes(rollout.read_bytes())
+            with patch.dict(os.environ, {'CODEX_HOME': str(home)}):
+                result = executor.reconcile_interrupted_image(
+                    request, outside, bridge_binding=self.bridge_binding())
+            self.assertEqual(result.status, 'execution_unknown')
+            attempt = executor.root / request.task_id / request.attempt_id
+            self.assertFalse((attempt / 'codex-aborted-image.json').exists())
+            self.assertFalse((attempt / 'artifact.original').exists())
+
+    def test_timeout_auto_reconciles_same_aborted_attempt(self):
+        class Client:
+            def __init__(self, request):
+                self.request = request
+                self.state = 'queued'
+                self.receipt = None
+                self.upload_bytes = None
+                self.claim_modes = []
+            def task(self, task_id):
+                return {'remote_task_id': task_id, 'state': self.state,
+                    'attempt_id': self.request.attempt_id, 'receipt_id': self.receipt,
+                    'task_digest': 'b' * 64,
+                    'request': {'prompt': self.request.prompt,
+                        'parameters': self.request.parameters, 'references': [],
+                        'execution_profile_id': 'codex-image',
+                        'execution_profile_revision': '1',
+                        'output_slot': {'count': 1, 'slot_id': 'primary'}}}
+            def claim(self, task_id, mode):
+                self.claim_modes.append(mode)
+                claim_id = 'execute-claim' if mode == 'execute' else 'upload-only-claim'
+                return {'claim_id': claim_id, 'attempt_id': self.request.attempt_id, 'mode': mode}
+            def start(self, task_id, claim_id):
+                self.state = 'running'
+                return {'may_execute': True, 'attempt_id': self.request.attempt_id,
+                    'start_grant_id': 'grant-fixture'}
+            def unknown(self, task_id, claim_id):
+                self.state = 'execution_unknown'
+            def create_upload(self, task_id, claim_id, payload):
+                self.payload = payload
+                self.upload_claim_id = claim_id
+                return {'upload_id': 'upload-fixture'}
+            def put_upload(self, upload_id, claim_id, content, mime_type):
+                self.upload_bytes = content
+            def commit(self, upload_id, claim_id):
+                self.receipt = 'receipt-fixture'
+                return {'receipt_id': self.receipt, 'task_id': self.request.task_id,
+                    'attempt_id': self.request.attempt_id,
+                    'original_sha256': self.payload['original_sha256']}
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home, request, executor, rollout, output = self.setup_case(root)
+            client = Client(request)
+            agent = NodeAgent(client, root / 'private' / 'agent',
+                registry=ExecutorRegistry({'codex-image': executor}))
+            with patch.dict(os.environ, {'CODEX_HOME': str(home)}), \
+                 patch.object(executor, 'preflight', return_value=None), \
+                 patch.object(executor, 'execute',
+                     return_value=ExecutionResult('execution_unknown',
+                         'codex_execution_requires_reconciliation', details={
+                             'stage': 'turn_wait', 'failure_class': 'TimeoutError'})) as execute:
+                result = agent.execute_task(request.task_id)
+
+            self.assertEqual(result['outcome'], 'artifact_committed')
+            self.assertEqual(client.upload_bytes, output.read_bytes())
+            self.assertEqual(client.claim_modes, ['execute', 'upload_only'])
+            self.assertEqual(client.upload_claim_id, 'upload-only-claim')
+            execute.assert_called_once()
+            record = agent.journal.get(request.task_id)
+            self.assertEqual(record['state'], 'complete')
+            self.assertTrue(record['review_only_reconciliation']['review_only'])
+
+    def test_non_timeout_unknown_does_not_attempt_rollout_recovery(self):
+        class Client:
+            def __init__(self, request):
+                self.request = request
+                self.state = 'queued'
+            def task(self, task_id):
+                return {'remote_task_id': task_id, 'state': self.state,
+                    'attempt_id': self.request.attempt_id, 'receipt_id': None,
+                    'request': {'prompt': self.request.prompt,
+                        'parameters': self.request.parameters, 'references': [],
+                        'execution_profile_id': 'codex-image',
+                        'execution_profile_revision': '1',
+                        'output_slot': {'count': 1, 'slot_id': 'primary'}}}
+            def claim(self, task_id, mode):
+                return {'claim_id': 'execute-claim', 'attempt_id': self.request.attempt_id,
+                    'mode': mode}
+            def start(self, task_id, claim_id):
+                self.state = 'running'
+                return {'may_execute': True, 'attempt_id': self.request.attempt_id,
+                    'start_grant_id': 'grant-fixture'}
+            def unknown(self, task_id, claim_id):
+                pass
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _, request, executor, _, _ = self.setup_case(root)
+            agent = NodeAgent(Client(request), root / 'private' / 'agent',
+                registry=ExecutorRegistry({'codex-image': executor}))
+            with patch.object(executor, 'preflight', return_value=None), \
+                 patch.object(executor, 'execute',
+                     return_value=ExecutionResult('execution_unknown',
+                         'codex_execution_requires_reconciliation', details={
+                             'stage': 'turn_wait', 'failure_class': 'ValueError'})), \
+                 patch.object(executor, 'find_interrupted_rollout') as find_rollout:
+                result = agent.execute_task(request.task_id)
+
+            self.assertEqual(result['outcome'], 'execution_unknown')
+            find_rollout.assert_not_called()
+            self.assertEqual(agent.journal.get(request.task_id)['state'], 'execution_unknown')
 
     def test_reference_paths_stay_local_and_shared_reference_binding_matches(self):
         class Client:

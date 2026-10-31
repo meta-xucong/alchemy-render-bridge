@@ -51,21 +51,62 @@ class NodeAgent:
             try:
                 self.heartbeat()
                 result = self._execute(task_id, executor)
-                if result.get('outcome') in ('needs_attention', 'execution_unknown') and self._current_attempt and hasattr(self.client, 'attention'):
-                    from render_bridge.readiness import ATTENTION_MESSAGES
-                    code = result.get('code', 'execution_requires_reconciliation')
-                    if code not in ATTENTION_MESSAGES:
-                        code = 'execution_requires_reconciliation'
-                    try:
-                        self.client.attention(task_id, self._current_attempt, code)
-                        result['attention_reported'] = True
-                    except Exception:
-                        # Report failure is visible locally; never restart a renderer.
-                        result['attention_reported'] = False
-                return result
             finally:
                 self._active = False
                 self.heartbeat()
+        recovery_details = result.get('details')
+        if (result.get('outcome') == 'execution_unknown'
+                and result.get('code') == 'codex_execution_requires_reconciliation'
+                and isinstance(recovery_details, dict)
+                and recovery_details.get('stage') == 'turn_wait'
+                and recovery_details.get('failure_class') == 'TimeoutError'):
+            recovered = self._auto_reconcile_interrupted_codex(task_id)
+            if recovered is not None:
+                result = recovered
+        if (result.get('outcome') in ('needs_attention', 'execution_unknown')
+                and self._current_attempt and hasattr(self.client, 'attention')):
+            from render_bridge.readiness import ATTENTION_MESSAGES
+            code = result.get('code', 'execution_requires_reconciliation')
+            if code not in ATTENTION_MESSAGES:
+                code = 'execution_requires_reconciliation'
+            try:
+                self.client.attention(task_id, self._current_attempt, code)
+                result['attention_reported'] = True
+            except Exception:
+                # Report failure is visible locally; never restart a renderer.
+                result['attention_reported'] = False
+        return result
+
+    def _auto_reconcile_interrupted_codex(self, task_id):
+        """Recover only the current task's exact interrupted Codex attempt."""
+        try:
+            task = self.client.task(task_id)
+            record = self.journal.get(task_id)
+            if (not record or task.get('state') != 'execution_unknown'
+                    or task.get('receipt_id')
+                    or record.get('state') != 'execution_unknown'
+                    or record.get('task_id') != task_id
+                    or record.get('attempt_id') != task.get('attempt_id')
+                    or record.get('profile_id') != 'codex-image'
+                    or not record.get('start_grant_id')):
+                return None
+            executor = self.registry.get('codex-image')
+            finder = getattr(executor, 'find_interrupted_rollout', None)
+            if finder is None:
+                return None
+            request = ExecutionRequest(**record['request'])
+            if (request.task_id != task_id or request.attempt_id != record['attempt_id']
+                    or request.digest != record.get('request_sha256')):
+                return None
+            rollout = finder(request)
+            if rollout is None:
+                return None
+            # The public recovery method re-acquires InstanceLock and rechecks
+            # Bridge state, task/attempt, and start grant before parsing evidence.
+            return self.reconcile_codex_interrupted(task_id, rollout)
+        except Exception:
+            # The original execution_unknown result and physical-slot latch stay authoritative.
+            return None
 
     def heartbeat(self):
         """Best-effort liveness plus explicitly enabled, read-only local health probes."""
@@ -243,7 +284,10 @@ class NodeAgent:
                 return self._save_terminal_failure(record, result)
             if result.status != 'ready' or result.artifact is None:
                 self._unknown(record)
-                return {'outcome': result.status, 'code': result.code, 'task_id': task_id}
+                details = {key: result.details[key] for key in ('stage', 'failure_class')
+                           if key in result.details}
+                return {'outcome': result.status, 'code': result.code, 'task_id': task_id,
+                        **({'details': details} if details else {})}
             self._save_artifact(record, result.artifact, profile)
         except Exception:
             self._unknown(record)
