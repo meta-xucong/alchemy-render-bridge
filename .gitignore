@@ -24,3 +24,13 @@ logs/
 # OS files
 .DS_Store
 Thumbs.db
+# Local contract tests / packaging
+*.egg-info/
+build/
+dist/
+.coverage
+htmlcov/
+
+# Explicit synthetic HTTP demo outputs
+/demo-output/
+/experiments/hatchet-wsl1-integration/demo-artifact.png

@@ -1,0 +1,80 @@
+name: Experimental WSL1 native Windows engine smoke
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'experiments/hatchet-wsl1-integration/**'
+      - '.github/workflows/hatchet-wsl1.yml'
+permissions:
+  contents: read
+jobs:
+  preflight:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    env:
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: 'utf-8'
+    defaults:
+      run:
+        working-directory: experiments/hatchet-wsl1-integration
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Create isolated Bridge interpreter
+        run: |
+          $venv = Join-Path $env:RUNNER_TEMP 'bridge-node-venv-${{ github.run_id }}-${{ github.run_attempt }}'
+          if (Test-Path -LiteralPath "$venv") { throw 'Unexpected existing Bridge trial venv' }
+          python -m venv "$venv"
+          if ($LASTEXITCODE -ne 0) { throw 'Bridge trial venv creation failed' }
+          $interpreter = Join-Path "$venv" 'Scripts\python.exe'
+          "BRIDGE_TRIAL_PYTHON=$interpreter" | Out-File -FilePath "$env:GITHUB_ENV" -Encoding utf8 -Append
+      - name: Install hash-locked Bridge dependencies separately
+        working-directory: .
+        run: '& $env:BRIDGE_TRIAL_PYTHON -m pip install --require-hashes -r requirements-test.txt'
+      - name: Install hash-locked source HTTP server into Bridge interpreter
+        run: '& $env:BRIDGE_TRIAL_PYTHON -m pip install --require-hashes -r requirements-source-server.txt'
+      - name: Verify Bridge dependency consistency
+        run: '& $env:BRIDGE_TRIAL_PYTHON -m pip check'
+      - name: Unit tests in Bridge interpreter (no external services)
+        run: '& $env:BRIDGE_TRIAL_PYTHON -m unittest discover -s tests -v'
+      - name: Install hash-locked SDK dependencies
+        working-directory: experiments/hatchet-windows-compat
+        run: python -m pip install --require-hashes -r requirements-upstream.txt
+      - name: Install only the pinned synthetic PNG dependency into SDK interpreter
+        run: python -m pip install --require-hashes -r requirements-node-worker.txt
+      - name: Download exact upstream SDK wheel
+        working-directory: experiments/hatchet-windows-compat
+        run: python -m pip download --no-deps --dest .cache hatchet-sdk==1.42.1
+      - name: Build deterministic isolated candidate
+        working-directory: experiments/hatchet-windows-compat
+        run: python build_candidate.py .cache/hatchet_sdk-1.42.1-py3-none-any.whl
+      - name: Verify candidate source and wheel identity
+        working-directory: experiments/hatchet-windows-compat
+        run: python verify_candidate.py
+      - name: Install exact candidate wheel
+        working-directory: experiments/hatchet-windows-compat
+        run: python -m pip install --no-deps --force-reinstall dist/hatchet_sdk-1.42.1+bridgewin1-py3-none-any.whl
+      - name: Verify dependency consistency
+        run: python -m pip check
+      - name: WSL1 and PostgreSQL gates then native Windows real-engine smoke
+        run: python preflight.py --engine
+      - name: Always clean up only our temporary distro
+        if: always()
+        run: python preflight.py --cleanup
+      - name: Remove owned Bridge interpreter after all child processes stopped
+        if: always()
+        run: |
+          $venv = Join-Path $env:RUNNER_TEMP 'bridge-node-venv-${{ github.run_id }}-${{ github.run_attempt }}'
+          if (Test-Path $venv) { Remove-Item -LiteralPath $venv -Recurse -Force -ErrorAction Stop }
+      - name: Upload non-secret capability result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wsl1-preflight-result
+          path: |
+            experiments/hatchet-wsl1-integration/result.json
+            experiments/hatchet-wsl1-integration/demo-artifact.png
+          if-no-files-found: warn
+          retention-days: 7

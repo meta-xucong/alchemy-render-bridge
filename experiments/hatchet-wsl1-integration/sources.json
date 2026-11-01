@@ -1,0 +1,31 @@
+{
+  "verified_date": "2026-10-20",
+  "rootfs_url": "https://cloud-images.ubuntu.com/wsl/releases/24.04/20240423/ubuntu-noble-wsl-amd64-24.04lts.rootfs.tar.gz",
+  "rootfs_sha256": "2a790896740b14d637dbdc583cce1ba081ac53b9e9cdb46dc09a2f73abbd9934",
+  "checksum_manifest": "https://cloud-images.ubuntu.com/wsl/releases/24.04/20240423/SHA256SUMS",
+  "package_manifest": "https://cloud-images.ubuntu.com/wsl/releases/24.04/20240423/ubuntu-noble-wsl-amd64-wsl.manifest",
+  "package_manifest_sha256": "d3930f601ea875e3480c3383e4f5200572b749bf3a4340b81a95f14bb82ec7ea",
+  "verification": "Pinned digest read from official Canonical HTTPS manifest; detached signature not independently verified",
+  "engine_tested": false,
+  "postgres_tested": false,
+  "postgres_artifact": {
+    "packager": "Zonky",
+    "version": "18.3.0",
+    "url": "https://repo.maven.apache.org/maven2/io/zonky/test/postgres/embedded-postgres-binaries-linux-amd64/18.3.0/embedded-postgres-binaries-linux-amd64-18.3.0.jar",
+    "sha256": "1974c3a59c3ae010e9818e81637e425aad94eaac26e4ef533b42e081fe7ca345",
+    "inner_txz_sha256": "e09b13df10e9df257275d498b19b8c214a3e86d7a5d8cd263b0860e308e8b0b6",
+    "packaging_commit": "f3c31c8a290fe09fd4ae8c027697a046f3f656b7",
+    "verification": "Registry .sha256 matched actual JAR bytes; inner digest calculated from verified JAR; no signature verification claimed"
+  },
+  "engine": {
+    "version": "v0.110.5",
+    "url": "https://github.com/hatchet-dev/hatchet-embedded/releases/download/v0.110.5/hatchet-embedded-sidecar_linux_amd64",
+    "sha256": "18ddacae0005042bd982328bcb8d370cca6907352a1ab2a3c8406001d31e7dee",
+    "embedded_source_commit": "3dc26f939dfc5c1072c35dedc65bf51313d665a7",
+    "engine_source_commit": "56c617e0da399bc9d8a10d2ba74b4950f8a950b8",
+    "pgx_version": "v5.11.0",
+    "pgpassfile_source": "https://github.com/jackc/pgx/blob/v5.11.0/pgconn/config.go",
+    "candidate_version": "1.42.1+bridgewin1",
+    "candidate_sha256": "f8fbe9ed1944a1c1718b1655b17dddd55ba5e79920d99beabf68c98ad9d8af92"
+  }
+}

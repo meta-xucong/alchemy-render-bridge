@@ -91,10 +91,14 @@ RB-07 联调API合同与最终审计包。
 
 ## 10. 本端运维与回滚
 
-独立部署，与Alchemy部署在不同VPS，不提供共址或共享内部依赖作为本项目路线。停止新任务不停止必要查询/上传/确认。保留unknown与未确认产物，不能按年龄直接删除唯一副本。清理不涉及Alchemy数据。未绑定任务的输入会话有短期TTL；已绑定活动/unknown任务的输入不得被该TTL清理，需引用检查和有界回收。
+独立服务部署。最新首轮实机测试按用户要求与Alchemy同在Windows电脑，loopback HTTP、独立状态目录；后续可分VPS，远程仍需TLS。共址不代表共享内部依赖、数据库或媒体目录。停止新任务不停止必要查询/上传/确认。保留unknown与未确认产物，不能按年龄直接删除唯一副本。清理不涉及Alchemy数据。未绑定任务的输入会话有短期TTL；已绑定活动/unknown任务的输入不得被该TTL清理，需引用检查和有界回收。
 
 版本升级保持source API兼容，旧任务继续同attempt恢复。回滚不把running改queued；保留恢复端点直到未决任务清楚。真实Adapter、付费调用、生产部署另行验收授权。
 
 ## 11. 版本中立与首批执行器
 
 Bridge只理解最终prompt、有序参考图、执行profile/operation、参数和不透明任务关联；不得按Alchemy版本名分支处理Brain/审核/业务字段。Codex与Midjourney适配细节见adapters目录。源码版本不同但API合同兼容时，Alchemy升级不需要Bridge同步升级；新能力通过显式schema/profile协商，不能承诺破坏API也无需适配。
+
+## 2026-10-21 增量边界
+
+[07](../shared-contract/07_可用性与排队自动回退设计.md)/[08](../shared-contract/08_自动回退代码落地与兼容契约.md)新增每profile健康报告与pre-start原子撤回；Bridge不决定Sub2API路由、不持有其凭据。旧task schema/routing=bridge_only和单调度器不变。已有start/manual grant或unknown不得因失联/恢复另起生成。新wire契约和实现状态以08及实际测试报告分别说明。

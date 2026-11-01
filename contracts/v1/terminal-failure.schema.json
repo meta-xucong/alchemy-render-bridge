@@ -1,0 +1,66 @@
+{
+  "$defs": {
+    "TerminalFailureEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "thread_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "reason_code": {
+          "enum": [
+            "auth_unavailable",
+            "quota_exhausted"
+          ],
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "completion_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Completion Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "thread_id",
+        "turn_id",
+        "reason_code",
+        "completion_sha256"
+      ],
+      "title": "TerminalFailureEvidence",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "attempt_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Attempt Id",
+      "type": "string"
+    },
+    "evidence": {
+      "$ref": "#/$defs/TerminalFailureEvidence"
+    }
+  },
+  "required": [
+    "attempt_id",
+    "evidence"
+  ],
+  "title": "TerminalFailureRequest",
+  "type": "object"
+}

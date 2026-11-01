@@ -1,0 +1,60 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "status": {
+      "const": "withdrawn_before_start",
+      "title": "Status",
+      "type": "string"
+    },
+    "withdrawal_key": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+      "title": "Withdrawal Key",
+      "type": "string"
+    },
+    "withdrawal_ref": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Withdrawal Ref",
+      "type": "string"
+    },
+    "task_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Task Id",
+      "type": "string"
+    },
+    "origin_key": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+      "title": "Origin Key",
+      "type": "string"
+    },
+    "attempt_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Attempt Id",
+      "type": "string"
+    },
+    "task_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Task Digest",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "status",
+    "withdrawal_key",
+    "withdrawal_ref",
+    "task_id",
+    "origin_key",
+    "attempt_id",
+    "task_digest"
+  ],
+  "title": "WithdrawalProof",
+  "type": "object"
+}

@@ -1,0 +1,129 @@
+{
+  "$defs": {
+    "ProfileHealth": {
+      "additionalProperties": false,
+      "properties": {
+        "profile_id": {
+          "enum": [
+            "fake-image",
+            "codex-image",
+            "midjourney-manual"
+          ],
+          "title": "Profile Id",
+          "type": "string"
+        },
+        "profile_revision": {
+          "const": "1",
+          "title": "Profile Revision",
+          "type": "string"
+        },
+        "report_revision": {
+          "maximum": 9223372036854775807,
+          "minimum": 1,
+          "title": "Report Revision",
+          "type": "integer"
+        },
+        "revalidation_generation": {
+          "default": 0,
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "title": "Revalidation Generation",
+          "type": "integer"
+        },
+        "health": {
+          "enum": [
+            "available",
+            "unavailable",
+            "unknown"
+          ],
+          "title": "Health",
+          "type": "string"
+        },
+        "reason_code": {
+          "enum": [
+            "ready",
+            "tool_missing",
+            "version_unsupported",
+            "auth_unavailable",
+            "quota_exhausted",
+            "resource_unavailable",
+            "probe_failed",
+            "unverified",
+            "stale"
+          ],
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "evidence_kind": {
+          "enum": [
+            "local_probe",
+            "provider_error",
+            "operator_validation",
+            "operator_attested_preflight",
+            "account_status",
+            "none"
+          ],
+          "title": "Evidence Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "profile_id",
+        "profile_revision",
+        "report_revision",
+        "health",
+        "reason_code",
+        "evidence_kind"
+      ],
+      "title": "ProfileHealth",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "state": {
+      "enum": [
+        "available",
+        "busy",
+        "attention"
+      ],
+      "title": "State",
+      "type": "string"
+    },
+    "profiles": {
+      "items": {
+        "enum": [
+          "fake-image",
+          "codex-image",
+          "midjourney-manual"
+        ],
+        "type": "string"
+      },
+      "maxItems": 3,
+      "title": "Profiles",
+      "type": "array"
+    },
+    "profile_health": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/ProfileHealth"
+          },
+          "maxItems": 3,
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Profile Health"
+    }
+  },
+  "required": [
+    "state",
+    "profiles"
+  ],
+  "title": "HeartbeatRequest",
+  "type": "object"
+}

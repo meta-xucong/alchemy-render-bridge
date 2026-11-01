@@ -1,0 +1,49 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "client_receipt_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Client Receipt Id",
+      "type": "string"
+    },
+    "decision": {
+      "enum": [
+        "accepted",
+        "rejected"
+      ],
+      "title": "Decision",
+      "type": "string"
+    },
+    "reason_code": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Reason Code",
+      "type": "string"
+    },
+    "original_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Original Hash",
+      "type": "string"
+    },
+    "normalized_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Normalized Hash",
+      "type": "string"
+    },
+    "native_registration_ref": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Native Registration Ref",
+      "type": "string"
+    }
+  },
+  "required": [
+    "client_receipt_id",
+    "decision",
+    "reason_code",
+    "original_hash"
+  ],
+  "title": "ReceiptAck",
+  "type": "object"
+}
