@@ -336,6 +336,59 @@ class DomainTests(unittest.TestCase):
         receipt = self.store.commit_upload(self.scope, upload["upload_id"], recovery["claim_id"])
         self.assertEqual(task["attempt_id"], receipt["attempt_id"])
 
+    def test_unknown_codex_same_executor_promotes_live_execute_claim_to_upload_only(self):
+        task_id = "task-fixture"
+        attempt_id = "attempt-fixture"
+        now = self.now
+        with self.store._transaction() as con:
+            con.execute("INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (task_id, self.scope.source_id, self.scope.workspace_id, "origin-fixture",
+                 "fixture-digest-not-computed", '{"execution_profile_id":"codex-image"}',
+                 "execution_unknown", attempt_id, 0, now, now + 86400))
+            con.execute("INSERT INTO attempts(id,task_id,start_grant_id,original_node,original_executor,started) "
+                        "VALUES(?,?,?,?,?,?)",
+                (attempt_id, task_id, "grant-fixture", "node", "instance", now - 30))
+            con.execute("INSERT INTO claims VALUES(?,?,?,?,?,?,?)",
+                (task_id, "execute-claim", 1, "node", "instance", "execute", now + 3570))
+
+        recovery = self.store.claim_task(self.scope, task_id, node_id="node",
+            executor_instance="instance", mode="upload_only")
+
+        self.assertEqual(recovery["mode"], "upload_only")
+        self.assertEqual(recovery["attempt_id"], attempt_id)
+        self.assertNotEqual(recovery["claim_id"], "execute-claim")
+        with self.store._connection() as con:
+            claim = con.execute("SELECT id,epoch,mode,node,executor FROM claims WHERE task_id=?",
+                (task_id,)).fetchone()
+            task = con.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        self.assertEqual(tuple(claim), (recovery["claim_id"], 2, "upload_only", "node", "instance"))
+        with self.store._connection() as con:
+            self.assert_error("stale_claim", self.store._check_claim, con, task, "execute-claim")
+
+    def test_live_claim_promotion_rejects_running_state_and_identity_mismatches(self):
+        for suffix, state, node_id, executor_instance, original_node, original_executor, claim_node, claim_executor, expected_error in (
+            ("running", "running", "node", "instance", "node", "instance", "node", "instance", "claim_busy"),
+            ("foreign_claim_owner", "execution_unknown", "node", "instance", "node", "instance", "other-node", "other-instance", "claim_busy"),
+            ("wrong_original", "execution_unknown", "node", "instance", "other-node", "other-instance", "node", "instance", "upload_only_identity_mismatch"),
+        ):
+            with self.subTest(state=suffix):
+                task_id = f"task-{suffix}"
+                attempt_id = f"attempt-{suffix}"
+                now = self.now
+                with self.store._transaction() as con:
+                    con.execute("INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                        (task_id, self.scope.source_id, self.scope.workspace_id, f"origin-{suffix}",
+                         "fixture-digest-not-computed", '{"execution_profile_id":"codex-image"}',
+                         state, attempt_id, 0, now, now + 86400))
+                    con.execute("INSERT INTO attempts(id,task_id,start_grant_id,original_node,original_executor,started) "
+                                "VALUES(?,?,?,?,?,?)",
+                        (attempt_id, task_id, f"grant-{suffix}", original_node, original_executor, now - 30))
+                    con.execute("INSERT INTO claims VALUES(?,?,?,?,?,?,?)",
+                        (task_id, f"execute-claim-{suffix}", 1, claim_node, claim_executor, "execute", now + 3570))
+
+                self.assert_error(expected_error, self.store.claim_task, self.scope, task_id,
+                    node_id=node_id, executor_instance=executor_instance, mode="upload_only")
+
     def test_unknown_codex_attempt_rejects_old_execute_during_existing_upload(self):
         task, execute_claim, grant = self.started_codex()
         data = self.png()

@@ -216,7 +216,7 @@ class NodeAgent:
         if record and record['state'] == 'artifact_ready':
             if profile_id == 'codex-image' and not self._revalidate_codex_artifact(record, task):
                 return {'outcome': 'execution_unknown', 'task_id': task_id}
-            return self._upload(record)
+            return self._upload(record, task_state=task['state'])
         profile = get_profile(profile_id)
         # Legacy explicit injection is limited to the configured legacy profile.
         executor = executor if executor is not None and profile_id == self.profile else self.registry.get(profile_id)
@@ -251,7 +251,7 @@ class NodeAgent:
                                 self._unknown(record)
                                 return {'outcome': 'execution_unknown', 'task_id': task_id}
                             self._save_artifact(record, recovered.artifact, profile)
-                            return self._upload(record)
+                            return self._upload(record, task_state=task['state'])
                         self._unknown(record)
                         return {'outcome': recovered.status, 'code': recovered.code, 'task_id': task_id}
                 except Exception:
@@ -350,7 +350,7 @@ class NodeAgent:
         except Exception:
             self._unknown(record)
             return {'outcome': 'execution_unknown', 'task_id': task_id}
-        return self._upload(record)
+        return self._upload(record, task_state=task['state'])
 
     def _save_artifact(self, record, artifact, profile):
         content = Path(artifact.path).read_bytes()
@@ -531,7 +531,7 @@ class NodeAgent:
                         or proof.get('task_id') != task_id or proof.get('review_only') is not review_only):
                     self._unknown(record)
                     return {'outcome': 'execution_unknown', 'task_id': task_id}
-                return self._upload(record)
+                return self._upload(record, task_state=task['state'])
             if (task.get('state') != 'execution_unknown'
                     or record.get('state') not in ('start_requested', 'execution_unknown')
                     or record.get('profile_id') != 'codex-image'
@@ -577,7 +577,7 @@ class NodeAgent:
             record[proof_field] = proof
             self.journal.save(record)
             self._save_artifact(record, result.artifact, get_profile('codex-image'))
-            return self._upload(record)
+            return self._upload(record, task_state=task['state'])
 
     def manual_import(self, task_id, source, *, confirmed_request_sha256, confirmed_single_original):
         if not isinstance(task_id, str) or not _KEY.fullmatch(task_id):
@@ -669,7 +669,7 @@ class NodeAgent:
         except Exception:
             pass  # Local latch remains authoritative for preventing a rerun.
 
-    def _upload(self, record):
+    def _upload(self, record, *, task_state=None):
         path = (self.journal.root / record['artifact']).resolve()
         if not path.is_relative_to(self.journal.root):
             raise ValueError('Journal artifact is outside Agent state directory')
@@ -701,7 +701,12 @@ class NodeAgent:
                 or proof.get('review_only') is not expected_review_only):
             self._unknown(record)
             return {'outcome': 'execution_unknown', 'task_id': record['task_id']}
-        require_upload_only = rollout_artifact
+        require_upload_only = (
+            rollout_artifact
+            or record.get('claim_mode') == 'upload_only'
+            or (record.get('profile_id') == 'codex-image'
+                and task_state == 'execution_unknown')
+        )
         if require_upload_only:
             try:
                 claim = self.client.claim(record['task_id'], 'upload_only')

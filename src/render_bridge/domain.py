@@ -975,9 +975,22 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                 _fail("execution_not_started", 409)
             old = con.execute("SELECT * FROM claims WHERE task_id=?", (task_id,)).fetchone()
             if old and old["expires"] > self.clock():
-                if old["node"] != node_id or old["executor"] != executor_instance or old["mode"] != mode:
+                same_claim_owner = old["node"] == node_id and old["executor"] == executor_instance
+                if not same_claim_owner:
                     _fail("claim_busy", 409)
-                return self._claim_view(old, task["attempt_id"])
+                if old["mode"] == mode:
+                    return self._claim_view(old, task["attempt_id"])
+                may_promote_to_upload_only = (
+                    mode == "upload_only"
+                    and old["mode"] == "execute"
+                    and self._profile(task).id == "codex-image"
+                    and task["state"] == "execution_unknown"
+                    and attempt["start_grant_id"] is not None
+                    and attempt["original_node"] == node_id
+                    and attempt["original_executor"] == executor_instance
+                )
+                if not may_promote_to_upload_only:
+                    _fail("claim_busy", 409)
             if attempt["start_grant_id"] and self._profile(task).execution_mode == "automatic":
                 con.execute("UPDATE tasks SET state='execution_unknown' WHERE id=?", (task_id,))
             epoch = old["epoch"] + 1 if old else 1

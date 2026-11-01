@@ -31,6 +31,28 @@ image item was absent from that stream. This change therefore does not guess
 at another app-server event shape. It uses the already supported, identity-
 bound rollout parser after the executor has stopped and returned unknown.
 
+### Follow-up: V2 artifact delivery remains pending
+
+A later frontend V2 run reached a local Agent journal state of
+`artifact_ready` with `codex_aborted_turn_review_only` provenance. The Bridge
+task remained `execution_unknown` without a receipt, and the V2 job surfaced as
+retryable `bridge_wait`. The available local record had no persisted
+`upload_only` claim or upload ID. This establishes that generation recovery
+produced a locally persisted artifact but Alchemy had not received a committed
+Bridge receipt. No safe log record preserved the HTTP error from claiming the
+upload lease, so `claim_busy` is the code-supported failure hypothesis rather
+than a directly observed response.
+
+The cross-layer correction has two required parts. First, for every Codex
+`artifact_ready` replay, the Agent selects `upload_only` from the current
+Bridge task state (`execution_unknown`), not only from rollout provenance.
+Second, Bridge allows that same original node and executor to promote an active
+`execute` lease to `upload_only` after the attempt is durably unknown. The
+promotion rotates the claim ID and epoch in one transaction. Rollout provenance
+continues to govern its proof checks and never authorizes a new Codex execution.
+V2 keeps polling the same frozen Bridge task; its route, billing, and fallback
+behavior do not change.
+
 ## Authoritative evidence and recovery rule
 
 The Bridge task and Agent journal remain authoritative for the task, attempt,
@@ -79,10 +101,23 @@ ambiguous, evidence is incomplete, or any binding differs, preserve
 `execution_unknown` and the occupied execution slot. Never invoke `execute`,
 preflight, `thread/resume`, another turn, API fallback, or a new Alchemy job.
 
-If the original execute claim still prevents an upload-only claim, retain the
-validated artifact and reconciliation proof as `artifact_ready` on the same
-attempt. A later pass may retry only the upload-only claim and artifact upload;
-it must not rescan for a different image or execute Codex again.
+Once the same attempt is durably `execution_unknown`, its original node and
+executor may atomically promote their still-live `execute` claim to a new
+`upload_only` claim. This promotion advances the claim epoch, fencing the old
+claim, and grants no execution permission. A different node/executor, another
+profile, an unstarted task, or a task not durably marked `execution_unknown`
+cannot use this transition. This lets the Agent upload the already validated
+artifact immediately instead of waiting for the one-hour Node API claim lease
+to expire. If the upload-only claim is still unavailable for another reason,
+retain the validated artifact and proof on the same attempt and retry only that
+claim and upload; do not rescan or execute Codex again.
+
+The upload mode is selected from the Bridge task state for every Codex
+`artifact_ready` replay: `execution_unknown` requires `upload_only`, regardless
+of artifact provenance. Rollout provenance continues to control its existing
+proof validation; it does not decide whether an unknown attempt is allowed to
+upload. If a prior upload already recorded `claim_mode=upload_only`, replay
+continues using that mode even while the Bridge task projects `uploading`.
 
 The explicit `reconcile-codex-interrupted` command remains available for
 operator-led recovery. Automatic recovery and the command must call the same
@@ -108,6 +143,13 @@ Alchemy-side review/billing authority remain unchanged.
   call the existing interrupted-rollout reconciler with the original Bridge
   task/attempt binding. Share the locked reconciliation implementation with
   the explicit command rather than duplicating its checks.
+- Allow only the original node/executor to promote its active execute claim to
+  upload-only after same-attempt Codex evidence is persisted as
+  `execution_unknown`; advance the claim epoch in the same transaction.
+- When replaying any Codex `artifact_ready` record, choose upload-only from the
+  authoritative Bridge task state and preserve an already acquired
+  upload-only claim across retries. Keep rollout-proof validation tied only to
+  rollout provenance.
 - Keep every other unknown result on the current fail-closed path.
 - Do not change Alchemy, the shared API schema, the live success predicate, or
   the 120-second timeout in this correction.
@@ -123,5 +165,25 @@ and that explicit recovery
 still uses the same path. Tests must not invoke a real image provider or create
 an Alchemy task.
 
-This phase does not establish Windows live-account acceptance. It establishes
-the Bridge recovery contract and deterministic local tests only.
+The Bridge recovery contract and deterministic local tests are necessary but
+not sufficient for end-to-end acceptance. Windows live-account acceptance is
+recorded separately below and is limited to the exact recovered task.
+
+## Windows local end-to-end acceptance (2026-11-01)
+
+- Recovered the existing same-attempt artifact in Bridge without invoking
+  Codex again. The original Bridge task moved from `execution_unknown` to
+  `artifacts_ready`; the existing attempt retained its identity, acquired an
+  epoch-fenced `upload_only` claim, and committed one receipt.
+- The local V2 API became healthy on `127.0.0.1:8020`. Its existing queued run
+  reached `completed`, with its existing generation job completed and one
+  persisted output. No additional image-generation task was created.
+- The persisted output's V2 download route returned HTTP 200 with
+  `image/png`; the PNG signature was valid. The local frontend on
+  `127.0.0.1:8017` returned HTTP 200.
+- The real same-attempt recovery and V2 persistence/download path passed for
+  this one task. This does not establish a guarantee for every future task or
+  prove public/VPS deployment behavior.
+- Post-acceptance rerun: `tests.test_domain` and
+  `tests.test_upload_claim_recovery` passed, 41 tests total; `git diff --check`
+  passed.
