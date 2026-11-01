@@ -101,6 +101,16 @@ class AgentJournal:
             return [json.loads(row['record']) for row in con.execute(
                 "SELECT record FROM attempts WHERE state IN ('start_requested','execution_unknown','failure_report_pending') LIMIT 10")]
 
+    def poll_recovery_records(self):
+        with self.connection() as con:
+            return [json.loads(row['record']) for row in con.execute(
+                "SELECT record FROM attempts WHERE state IN ('start_requested','execution_unknown','failure_report_pending') LIMIT 10")]
+
+    def pending_artifact_records(self):
+        with self.connection() as con:
+            return [json.loads(row['record']) for row in con.execute(
+                "SELECT record FROM attempts WHERE state='artifact_ready' LIMIT 10")]
+
     def next_health_revision(self, profile):
         with self.connection() as con:
             con.execute('BEGIN IMMEDIATE')
