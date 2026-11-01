@@ -13,7 +13,7 @@ the Hatchet dispatcher for this ledger.
 
 | Purpose | Path |
 |---|---|
-| Container image | `alchemy-render-bridge:69ecec7` |
+| Container image | `alchemy-render-bridge:rb33-20261102` |
 | Runtime config | `/etc/alchemy/render-bridge/bridge.json` |
 | Runtime credentials | `/etc/alchemy/render-bridge/bridge.env` |
 | SQLite ledger and artifacts | `/var/lib/alchemy/render-bridge` |
@@ -28,13 +28,13 @@ artifacts directory together.
 ## Install and start
 
 1. Place the reviewed source release at
-   `/opt/alchemy-render-bridge/releases/69ecec7`, then build its runtime image
+   `/opt/alchemy-render-bridge/releases/api-pull-20261102`, then build its runtime image
    from the repository root. The VPS uses the existing Python 3.12 container
    image; the host system Python remains unchanged.
 
    ```sh
-   cd /opt/alchemy-render-bridge/releases/69ecec7
-   docker build -f deploy/docker/Dockerfile -t alchemy-render-bridge:69ecec7 .
+   cd /opt/alchemy-render-bridge/releases/api-pull-20261102
+   docker build -f deploy/docker/Dockerfile -t alchemy-render-bridge:rb33-20261102 .
    ```
 
 2. Create the persistent data/config directories. The data directory must be

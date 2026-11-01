@@ -6,8 +6,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStartPre=/usr/bin/docker image inspect alchemy-render-bridge:69ecec7
-ExecStart=/usr/bin/docker run --rm --pull=never --name alchemy-render-bridge-api --network host --read-only --env-file /etc/alchemy/render-bridge/bridge.env --mount type=bind,src=/etc/alchemy/render-bridge/bridge.json,dst=/etc/alchemy/render-bridge/bridge.json,readonly --mount type=bind,src=/var/lib/alchemy/render-bridge,dst=/var/lib/alchemy/render-bridge --user 65532:65532 alchemy-render-bridge:69ecec7
+ExecStartPre=/usr/bin/docker image inspect alchemy-render-bridge:rb33-20261102
+ExecStart=/usr/bin/docker run --rm --pull=never --name alchemy-render-bridge-api --network host --read-only --env-file /etc/alchemy/render-bridge/bridge.env --mount type=bind,src=/etc/alchemy/render-bridge/bridge.json,dst=/etc/alchemy/render-bridge/bridge.json,readonly --mount type=bind,src=/var/lib/alchemy/render-bridge,dst=/var/lib/alchemy/render-bridge --user 65532:65532 alchemy-render-bridge:rb33-20261102
 ExecStop=/usr/bin/docker stop --time 30 alchemy-render-bridge-api
 Restart=on-failure
 RestartSec=5s
