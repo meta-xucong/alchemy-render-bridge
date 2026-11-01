@@ -671,7 +671,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
         _origin(payload["origin_key"])
         _text(payload["binding_id"], 256)
         _text(payload["prompt"], 16000, multiline=True)
-        _object(payload["parameters"], (), ("width", "height", "seed", "image_options"))
+        _object(payload["parameters"], (), ("width", "height", "seed", "image_options", "codex_adapter"))
         try:
             validate_image_request(payload["parameters"], payload["references"], profile.id)
         except ValueError:
@@ -1066,7 +1066,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             dimensions = self._verify_media(content, payload, profile=self._profile(task))
             request = json.loads(task["payload"])
             parameters = request["parameters"]
-            expected_mime = requested_output_mime(parameters)
+            expected_mime = requested_output_mime(parameters, self._profile(task).id)
             # _verify_media has already matched the MIME against the decoded format.
             if expected_mime and payload["mime_type"] != expected_mime:
                 _fail("output_format_mismatch", 422)

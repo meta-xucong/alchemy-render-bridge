@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, model_validator
 from pydantic.json_schema import SkipJsonSchema
 from .profiles import get_profile
 from .image_options import validate_image_request
@@ -53,11 +53,14 @@ class InputCreate(StrictRequest):
 
 class ImageOptions(StrictRequest):
     schema_version: Literal["1"]
-    quality: Literal["auto"]
-    output_format: Literal["png", "jpeg"]
+    quality: Literal["auto", "low", "medium", "high"] | SkipJsonSchema[None] = Field(default_factory=lambda: None)
+    output_format: Literal["png", "jpeg", "webp"] | SkipJsonSchema[None] = Field(default_factory=lambda: None)
+    input_fidelity: Literal["auto", "low", "high"] | SkipJsonSchema[None] = Field(default_factory=lambda: None)
+    transparent_background: StrictBool | SkipJsonSchema[None] = Field(default_factory=lambda: None)
 
 
 class ImageParameters(StrictRequest):
+    codex_adapter: Literal["codex_cli_imagegen_v1"] | SkipJsonSchema[None] = Field(default_factory=lambda: None)
     width: ImageDimension = 32
     height: ImageDimension = 32
     seed: ImageSeed = 0

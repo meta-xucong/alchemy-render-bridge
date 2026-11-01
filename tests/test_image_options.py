@@ -16,6 +16,7 @@ from render_bridge.executors.base import AttemptFiles
 from render_bridge.fake import fixture_png, fixture_jpeg, run_fake_once
 from render_bridge.api import create_app
 from render_bridge.schemas import TaskCreate
+from render_bridge.image_options import codex_imagegen_arguments, requested_output_mime, validate_image_request
 
 
 def options(fmt='png'):
@@ -60,10 +61,10 @@ class ImageOptionsContractTests(unittest.TestCase):
 
     def test_invalid_options_rejected_by_http_domain_and_executors_before_start(self):
         invalid = [None, {}, [], 'png', options() | {'schema_version': '2'},
-            options() | {'schema_version': 1}, options() | {'output_format': 'webp'},
+            options() | {'schema_version': 1},
             options() | {'output_format': None}]
-        invalid += [options() | {'quality': value} for value in ('low', 'medium', 'high', None, True, [])]
-        invalid += [options() | {'input_fidelity': value} for value in ('auto', 'high', None, False)]
+        invalid += [options() | {'quality': value} for value in (None, True, [])]
+        invalid += [options() | {'input_fidelity': value} for value in (None, False)]
         invalid += [options() | {'unknown': True}]
         for index, value in enumerate(invalid):
             with self.subTest(value=value):
@@ -95,6 +96,28 @@ class ImageOptionsContractTests(unittest.TestCase):
                 self.store.create_task(self.scope, payload)
             with self.assertRaises(ValueError):
                 FakeExecutor(self.root).execute(ExecutionRequest('task', 'attempt', 'test', payload['parameters']))
+
+    def test_codex_adapter_defaults_api_only_controls_and_preserves_native_transparency(self):
+        parameters = {'codex_adapter': 'codex_cli_imagegen_v1', 'width': 1536, 'height': 1024, 'seed': 41,
+            'image_options': {'schema_version': '1', 'quality': 'high', 'output_format': 'webp',
+                'input_fidelity': 'high', 'transparent_background': True}}
+        validate_image_request(parameters, (), 'codex-image')
+        self.assertEqual(codex_imagegen_arguments(parameters, 'codex-cli 0.163.0'), {
+            'transparent_background': True, 'transparent_background_mapping': 'native_tool_argument'})
+        self.assertEqual(codex_imagegen_arguments(parameters, 'codex-cli 0.157.1'), {
+            'transparent_background': False, 'transparent_background_mapping': 'codex_cli_default_auto'})
+        self.assertIsNone(requested_output_mime(parameters, 'codex-image'))
+        payload = self.payload('codex-image', key='normalized')
+        payload['parameters'] = parameters
+        response = self.client.post('/bridge/v1/tasks', json=payload)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(TaskCreate.model_validate(payload).parameters.model_dump(exclude_unset=True), parameters)
+
+    def test_codex_reference_limit_matches_native_tool_limit(self):
+        refs = [{'input_ref': f'ref-{index}', 'role': 'reference', 'hash': '0' * 64} for index in range(5)]
+        validate_image_request({'codex_adapter': 'codex_cli_imagegen_v1'}, refs, 'codex-image')
+        with self.assertRaises(ValueError):
+            validate_image_request({'codex_adapter': 'codex_cli_imagegen_v1'}, refs + [{'input_ref': 'ref-5', 'role': 'reference', 'hash': '1' * 64}], 'codex-image')
 
     def test_manual_references_rejected_before_export_or_claim(self):
         payload = self.payload('midjourney-manual')
@@ -153,8 +176,9 @@ class ImageOptionsContractTests(unittest.TestCase):
                 executor_instance='executor', start_log=self.root / (fmt+'.log'))
             self.assertEqual(outcome['receipt']['mime_type'], 'image/'+fmt)
 
-    def test_server_checks_decoded_original_format_before_commit(self):
+    def test_server_preserves_codex_original_even_when_source_format_was_requested(self):
         payload = self.payload('codex-image', 'jpeg')
+        payload['parameters']['codex_adapter'] = 'codex_cli_imagegen_v1'
         task = self.store.create_task(self.scope, payload)['remote_task_id']
         claim = self.store.claim_task(self.scope, task, node_id='node', executor_instance='executor')
         self.store.start_execution(self.scope, task, claim['claim_id'])
@@ -163,18 +187,18 @@ class ImageOptionsContractTests(unittest.TestCase):
             'attempt_id': claim['attempt_id'], 'slot_id': 'primary', 'original_sha256': hashlib.sha256(content).hexdigest(),
             'size': len(content), 'mime_type': 'image/png'})
         for _ in range(2):
-            with self.assertRaises(DomainError) as caught:
-                self.store.put_upload_content(self.scope, upload['upload_id'], claim['claim_id'], content)
-            self.assertEqual(caught.exception.code, 'output_format_mismatch')
-        with self.assertRaises(DomainError):
-            self.store.commit_upload(self.scope, upload['upload_id'], claim['claim_id'])
-        self.assertIsNone(self.store.get_task(self.scope, task)['receipt_id'])
+            result = self.store.put_upload_content(self.scope, upload['upload_id'], claim['claim_id'], content)
+            self.assertEqual(result['state'], 'ready')
+        committed = self.store.commit_upload(self.scope, upload['upload_id'], claim['claim_id'])
+        self.assertEqual(committed['mime_type'], 'image/png')
+        self.assertTrue(committed['receipt_id'])
+        self.assertEqual(self.store.get_task(self.scope, task)['receipt_id'], committed['receipt_id'])
 
-    def test_cached_mismatch_keeps_original_and_cannot_relabel_or_replace(self):
-        request = ExecutionRequest('task', 'attempt', 'test', {'image_options': options('jpeg')})
+    def test_codex_default_format_keeps_original_bytes_and_cannot_replace_them(self):
+        request = ExecutionRequest('task', 'attempt', 'test', {'codex_adapter': 'codex_cli_imagegen_v1', 'image_options': options('jpeg')})
         files = AttemptFiles(self.root / 'local', request, 'codex-cli')
         result = files.save(fixture_png(), 'fixture')
-        self.assertEqual((result.status, result.code), ('needs_attention', 'output_format_mismatch'))
+        self.assertEqual((result.status, result.code), ('ready', 'artifact_ready'))
         self.assertEqual(result.artifact.path.read_bytes(), fixture_png())
         manifest = json.loads((files.path / 'artifact.json').read_text())
         manifest['mime_type'] = 'image/jpeg'  # Cached metadata is not decoded format evidence.
@@ -212,8 +236,19 @@ class ImageOptionsContractTests(unittest.TestCase):
         for item in report['profiles']:
             contract = item['image_options_contract']
             self.assertEqual(contract['schema_version'], '1')
-            self.assertEqual(contract['quality'], {'values': ['auto'], 'semantics': 'unspecified_only'})
-            self.assertEqual(contract['output_format'], {'values': ['png', 'jpeg'], 'semantics': 'original_artifact_postcondition'})
-            self.assertEqual(contract['input_fidelity'], {'values': [], 'semantics': 'omitted_only'})
+            self.assertEqual(contract['output_format']['values'], ['png', 'jpeg'])
             self.assertEqual(contract['references']['max_count'], 0 if item['requires_human'] else 8)
+            if item['execution_profile_id'] == 'codex-image':
+                contract = item['parameter_contract']['codex_adapter']['image_options_contract']
+                self.assertEqual(contract['quality'], {'values': ['auto'], 'semantics': 'unsupported_values_normalized_to_auto'})
+                self.assertEqual(contract['output_format'], {'values': [], 'semantics': 'native_default_original_artifact'})
+                self.assertEqual(contract['input_fidelity'], {'values': [], 'semantics': 'gpt_image_2_default_high'})
+                self.assertEqual(contract['transparent_background'], {'values': [False, True], 'semantics':
+                    '0.163.0 native argument; 0.157.1 requested true normalizes to CLI default auto'})
+                self.assertEqual(contract['references']['max_count'], 5)
+            else:
+                self.assertEqual(contract['quality'], {'values': ['auto'], 'semantics': 'unspecified_only'})
+                self.assertEqual(contract['output_format'], {'values': ['png', 'jpeg'], 'semantics': 'original_artifact_postcondition'})
+                self.assertEqual(contract['input_fidelity'], {'values': [], 'semantics': 'omitted_only'})
+                self.assertEqual(contract['references']['max_count'], 0 if item['requires_human'] else 8)
             self.assertFalse(item['production_verified'])
