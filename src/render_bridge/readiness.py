@@ -11,6 +11,8 @@ ATTENTION_MESSAGES = {
     'import_original': 'Generate manually and import one confirmed original for this task.',
     'awaiting_user_submission': 'Submit the exported task manually, then import its original.',
     'execution_requires_reconciliation': 'Execution may have started. Reconcile this same attempt; do not regenerate.',
+    'codex_turn_timed_out': 'Codex did not confirm an image before its configured timeout. The local session was stopped; the upstream outcome is unknown. This attempt remains held for reconciliation; do not regenerate or route this same task to another provider.',
+    'execution_reconciliation_overdue': 'The execution lease expired without proof the renderer stopped. The slot remains reserved; reconcile this same attempt and do not regenerate.',
     'codex_prior_start_requires_reconciliation': 'A prior Codex start needs reconciliation, not another turn.',
     'codex_execution_requires_reconciliation': 'Codex execution is uncertain. Reconcile this same attempt.',
     'codex_turn_not_confirmed_complete': 'Codex completion was not confirmed. Reconcile this same turn.',

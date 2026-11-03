@@ -17,9 +17,10 @@ new credential, external notification or production deployment is performed.
 - Each existing profile adds `availability` using the same state vocabulary.
 
 No report means unknown; reports at least 90 seconds old mean offline. A fresh
-configured persistent worker can report available, an active/unresolved automatic
-execution reports busy. Missing configured profiles and Codex pending local real
-acceptance report attention. Available is worker liveness/configuration evidence,
+configured persistent worker can report available, an actively executing worker
+reports busy, and an unresolved journal slot reports attention. Missing configured
+profiles and Codex pending local real acceptance also report attention. Available
+is worker liveness/configuration evidence,
 not a successful render, account check or end-to-end Hatchet scheduling proof.
 An explicit one-shot run does not leave the node advertised as available after it
 finishes. Older servers without these fields must be shown as unknown by clients.
@@ -43,6 +44,18 @@ Canceled/terminal tasks are not revived. Start, receipt and attempt identities a
 unchanged. A successful resumed start clears prior pre-start attention. If reporting
 itself fails, the local result exposes `attention_reported: false`; it never starts
 a new generation to repair a reporting failure.
+
+For a started task with a cancellation request, the public state remains
+`cancel_requested` (cancel pending); the task view also exposes the allowlisted
+`action_required_detail` until same-attempt execution is reconciled. The Agent
+retries a failed attention status report from its existing heartbeat recovery
+path. `attention` closes node-pull admission, while the local journal continues
+to hold the physical slot. A Codex turn that reaches its configured timeout
+(600 seconds by default) returns an explicit timeout detail after the local
+session is stopped. The upstream result remains unknown, so neither timeout nor
+cancellation releases that slot or authorizes another generation. After the
+existing one-hour execution claim expires, the task detail and local status
+window also say the lease expired and the same attempt still needs reconciliation.
 
 ## Drain and same-attempt recovery
 

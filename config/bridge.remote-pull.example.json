@@ -1,5 +1,5 @@
 {
-  "data_dir": "./.runtime/remote-bridge",
+  "data_dir": "/var/lib/alchemy/render-bridge",
   "source_id": "vps-alchemy",
   "workspace_id": "vps-workspace",
   "node_id": "local-node",
@@ -7,7 +7,7 @@
   "enabled_profiles": [
     "fake-image"
   ],
-  "accepting_new_tasks": true,
+  "accepting_new_tasks": false,
   "dispatch_mode": "node_pull",
   "max_queued_tasks": 10,
   "host": "127.0.0.1",

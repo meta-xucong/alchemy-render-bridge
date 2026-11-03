@@ -94,7 +94,7 @@ class ReadinessTests(unittest.TestCase):
             self.assertNotIn('private text', str(view))
             self.agent.execute_task(task)
             self.assertEqual(execute.call_count, 1)
-        self.assertEqual(self.store.capabilities(self.scope)['node_status']['state'], 'busy')
+        self.assertEqual(self.store.capabilities(self.scope)['node_status']['state'], 'attention')
 
     def test_attention_rejects_wrong_attempt_and_does_not_revive_cancel(self):
         task = self.create('fake-image')

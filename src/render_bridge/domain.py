@@ -373,14 +373,18 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             attempt = con.execute("SELECT * FROM attempts WHERE task_id=?", (task_id,)).fetchone()
             if attempt["original_node"] is not None and (attempt["original_node"] != node_id or attempt["original_executor"] != executor_instance):
                 _fail("node_binding_mismatch", 403)
-            if task["state"] in _TERMINAL or task["cancel_requested"] or (not attempt["start_grant_id"] and task["deadline"] <= self.clock()):
+            if (task["state"] in _TERMINAL
+                    or (not attempt["start_grant_id"] and task["deadline"] <= self.clock())):
                 return self._task_view(con, task)
             started = bool(attempt["start_grant_id"]) and self._profile(task).execution_mode == "automatic"
+            if task["cancel_requested"] and not started:
+                return self._task_view(con, task)
             previous = con.execute("SELECT code FROM task_attention WHERE task_id=?", (task_id,)).fetchone()
             if previous is None or previous["code"] != code:
                 self._audit(con, scope, "task_attention", task_id=task_id, attempt_id=attempt_id, code=code)
             con.execute("INSERT OR REPLACE INTO task_attention VALUES(?,?)", (task_id, code))
-            con.execute("UPDATE tasks SET state=? WHERE id=?", ("execution_unknown" if started else "awaiting_user", task_id))
+            if not task["cancel_requested"]:
+                con.execute("UPDATE tasks SET state=? WHERE id=?", ("execution_unknown" if started else "awaiting_user", task_id))
             return self._task_view(con, self._scoped(con, "tasks", task_id, scope))
 
     def capabilities(self, scope):
@@ -836,13 +840,15 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
 
     def _task_view(self, con, row):
         state = row["state"]
+        attempt = con.execute("SELECT * FROM attempts WHERE task_id=?", (row["id"],)).fetchone()
+        claim = con.execute("SELECT * FROM claims WHERE task_id=?", (row["id"],)).fetchone()
+        execution_lease_expired = (self._profile(row).execution_mode == "automatic"
+                                   and attempt and attempt["start_grant_id"]
+                                   and claim and claim["expires"] <= self.clock())
         if state not in _TERMINAL and not row["cancel_requested"]:
-            attempt = con.execute("SELECT * FROM attempts WHERE task_id=?", (row["id"],)).fetchone()
-            claim = con.execute("SELECT * FROM claims WHERE task_id=?", (row["id"],)).fetchone()
             if (not attempt["start_grant_id"] or self._profile(row).execution_mode == "manual") and row["deadline"] <= self.clock():
                 state = "expired"
-            elif (self._profile(row).execution_mode == "automatic"
-                  and attempt["start_grant_id"] and claim and claim["expires"] <= self.clock()):
+            elif execution_lease_expired:
                 # Reading never turns expiry into a second start permit.
                 state = "execution_unknown"
         receipt = con.execute("SELECT * FROM receipts WHERE task_id=?", (row["id"],)).fetchone()
@@ -853,8 +859,14 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
         from .readiness import ATTENTION_MESSAGES
         attention = con.execute("SELECT code FROM task_attention WHERE task_id=?", (row["id"],)).fetchone()
         detail = None
-        if state in {"awaiting_user", "execution_unknown"}:
-            code = attention["code"] if attention else ("import_original" if state == "awaiting_user" else "execution_requires_reconciliation")
+        cancel_pending_started = (state == "cancel_requested" and row["cancel_requested"]
+                                  and attempt and attempt["start_grant_id"]
+                                  and self._profile(row).execution_mode == "automatic")
+        if state in {"awaiting_user", "execution_unknown"} or cancel_pending_started:
+            code = ("execution_reconciliation_overdue" if execution_lease_expired else
+                    attention["code"] if attention else
+                    "import_original" if state == "awaiting_user" else
+                    "execution_requires_reconciliation")
             detail = {"code": code, "message": ATTENTION_MESSAGES[code]}
         return {
             "remote_task_id": row["id"], "origin_key": row["origin_key"],
@@ -1100,10 +1112,11 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             attempt = con.execute("SELECT * FROM attempts WHERE task_id=?", (task_id,)).fetchone()
             if not attempt["start_grant_id"]:
                 _fail("execution_not_started", 409)
-            if task["state"] not in _TERMINAL and not task["cancel_requested"]:
+            if task["state"] not in _TERMINAL:
                 if task["state"] != "execution_unknown":
                     self._audit(con, scope, "execution_unknown", task_id=task_id, attempt_id=attempt["id"])
-                con.execute("UPDATE tasks SET state='execution_unknown' WHERE id=?", (task_id,))
+                if not task["cancel_requested"]:
+                    con.execute("UPDATE tasks SET state='execution_unknown' WHERE id=?", (task_id,))
             return self._task_view(con, self._scoped(con, "tasks", task_id, scope))
 
     def create_upload(self, scope, task_id, claim_id, payload):

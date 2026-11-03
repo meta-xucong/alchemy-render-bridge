@@ -26,6 +26,7 @@ from render_bridge.image_options import codex_imagegen_arguments, requested_outp
 from .base import AttemptFiles, ExecutionRequest, ExecutionResult, MAX_ARTIFACT_BYTES, inspect_image
 
 SUPPORTED_CLI_VERSIONS = frozenset({'codex-cli 0.157.1', 'codex-cli 0.163.0'})
+MAX_TURN_TIMEOUT_SECONDS = 600
 # Native imageGeneration events may include an encoded original. Keep a hard
 # bound while allowing base64 expansion of the largest accepted artifact.
 MAX_LINE = MAX_ARTIFACT_BYTES * 2
@@ -317,7 +318,7 @@ class CodexConfig:
     approval_policy: str = ''
     image_capability_verified: bool = False
     tool_policy_verified: bool = False
-    timeout: float = 120
+    timeout: float = MAX_TURN_TIMEOUT_SECONDS
 
     def __post_init__(self):
         for name in ('enabled', 'image_capability_verified', 'tool_policy_verified'):
@@ -335,8 +336,8 @@ class CodexConfig:
         if not isinstance(self.model, str):
             raise ValueError('Codex model must be a string')
         if (type(self.timeout) not in (int, float) or not math.isfinite(self.timeout)
-                or self.timeout <= 0):
-            raise ValueError('Codex timeout must be a positive finite number')
+                or not 0 < self.timeout <= MAX_TURN_TIMEOUT_SECONDS):
+            raise ValueError('Codex timeout must be positive and at most 600 seconds')
 
 
 class CodexExecutor:
@@ -748,8 +749,14 @@ class CodexExecutor:
         except PermissionError:
             return ExecutionResult('needs_attention', 'codex_requested_user_attention')
         except (OSError, EOFError, TimeoutError) as exc:
+            turn_timed_out = isinstance(exc, TimeoutError) and stage == 'turn_wait'
             reason = 'tool_missing' if isinstance(exc, FileNotFoundError) else 'probe_failed'
             self._write_execution_diagnostic(files, stage, exc, session)
+            if turn_timed_out:
+                return ExecutionResult('execution_unknown', 'codex_turn_timed_out', details={
+                    'timeout_seconds': config.timeout,
+                    'failure_class': type(exc).__name__,
+                    **({'event_summary': session.diagnostic_summary()} if session else {})})
             return ExecutionResult('execution_unknown', 'codex_execution_requires_reconciliation',
                                    details={'profile_health_reason': reason,
                                             **({'event_summary': session.diagnostic_summary()} if session else {})})

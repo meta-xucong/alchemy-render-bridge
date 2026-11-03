@@ -52,16 +52,9 @@ class NodeAgent:
                 self.heartbeat()
                 result = self._execute(task_id, executor)
                 if result.get('outcome') in ('needs_attention', 'execution_unknown') and self._current_attempt and hasattr(self.client, 'attention'):
-                    from render_bridge.readiness import ATTENTION_MESSAGES
                     code = result.get('code', 'execution_requires_reconciliation')
-                    if code not in ATTENTION_MESSAGES:
-                        code = 'execution_requires_reconciliation'
-                    try:
-                        self.client.attention(task_id, self._current_attempt, code)
-                        result['attention_reported'] = True
-                    except Exception:
-                        # Report failure is visible locally; never restart a renderer.
-                        result['attention_reported'] = False
+                    result['attention_reported'] = self._report_attention(
+                        task_id, self._current_attempt, code)
                 return result
             finally:
                 self._active = False
@@ -79,7 +72,9 @@ class NodeAgent:
             return False
         try:
             profiles = sorted(self.registry.executors)
-            state = ('busy' if self._active or self.journal.occupied_by_other('')
+            unresolved = self.journal.occupied_by_other('')
+            state = ('busy' if self._active
+                     else 'attention' if unresolved or not profiles
                      else 'available' if self._worker_running and profiles else 'attention')
             if self.health_reporter is None:
                 self.client.heartbeat(state, profiles)
@@ -175,7 +170,8 @@ class NodeAgent:
         if claim['attempt_id'] != attempt_id:
             raise ValueError('Claim does not match task attempt')
         record = {'task_id': task_id, 'attempt_id': attempt_id,
-                  'claim_id': claim['claim_id'], 'state': 'prepared'}
+                  'claim_id': claim['claim_id'], 'claim_expires_at': claim.get('expires_at'),
+                  'state': 'prepared'}
         work = self.journal.root / 'attempts' / task_id / attempt_id
         work.mkdir(parents=True, exist_ok=True)
         references = []
@@ -556,11 +552,36 @@ class NodeAgent:
                         if self.health_reporter is not None:
                             self.health_reporter.record_result(record['profile_id'], result, record['attempt_id'])
                         self._save_terminal_failure(record, result)
+                if (record.get('state') == 'execution_unknown'
+                        and not record.get('attention_reported')):
+                    self._report_attention(record['task_id'], record['attempt_id'],
+                        record.get('attention_code', 'execution_requires_reconciliation'))
             except Exception:
                 pass  # Incomplete local evidence remains occupied and unknown.
 
+    def _report_attention(self, task_id, attempt_id, code):
+        from render_bridge.readiness import ATTENTION_MESSAGES
+        if code not in ATTENTION_MESSAGES:
+            code = 'execution_requires_reconciliation'
+        try:
+            self.client.attention(task_id, attempt_id, code)
+        except Exception:
+            reported = False
+        else:
+            reported = True
+        record = self.journal.get(task_id)
+        if record and record.get('attempt_id') == attempt_id and record.get('state') == 'execution_unknown':
+            record.update(attention_code=code, attention_reported=reported)
+            try:
+                self.journal.save(record)
+            except Exception:
+                pass
+        return reported
+
     def _unknown(self, record):
         record['state'] = 'execution_unknown'
+        record.setdefault('attention_code', 'execution_requires_reconciliation')
+        record.setdefault('attention_reported', False)
         self.journal.save(record)
         try:
             self.client.unknown(record['task_id'], record['claim_id'])
