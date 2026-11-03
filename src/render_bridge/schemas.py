@@ -36,7 +36,7 @@ class TerminalFailureEvidence(StrictRequest):
     schema_version: Literal['1']
     thread_id: Key
     turn_id: Key
-    reason_code: Literal['auth_unavailable', 'quota_exhausted']
+    reason_code: Literal['auth_unavailable', 'quota_exhausted', 'codex_turn_timed_out']
     completion_sha256: SHA256
 
 

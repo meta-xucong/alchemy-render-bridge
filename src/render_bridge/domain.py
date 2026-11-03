@@ -859,10 +859,16 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
         from .readiness import ATTENTION_MESSAGES
         attention = con.execute("SELECT code FROM task_attention WHERE task_id=?", (row["id"],)).fetchone()
         detail = None
+        terminal_failure = con.execute("SELECT payload FROM terminal_failures WHERE task_id=?", (row["id"],)).fetchone()
+        if terminal_failure:
+            evidence = json.loads(terminal_failure["payload"]).get("evidence", {})
+            if evidence.get("reason_code") == "codex_turn_timed_out":
+                code = "codex_turn_timed_out"
+                detail = {"code": code, "message": ATTENTION_MESSAGES[code]}
         cancel_pending_started = (state == "cancel_requested" and row["cancel_requested"]
                                   and attempt and attempt["start_grant_id"]
                                   and self._profile(row).execution_mode == "automatic")
-        if state in {"awaiting_user", "execution_unknown"} or cancel_pending_started:
+        if detail is None and (state in {"awaiting_user", "execution_unknown"} or cancel_pending_started):
             code = ("execution_reconciliation_overdue" if execution_lease_expired else
                     attention["code"] if attention else
                     "import_original" if state == "awaiting_user" else
