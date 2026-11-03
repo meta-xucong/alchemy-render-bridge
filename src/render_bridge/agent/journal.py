@@ -99,12 +99,12 @@ class AgentJournal:
     def terminal_recovery_records(self):
         with self.connection() as con:
             return [json.loads(row['record']) for row in con.execute(
-                "SELECT record FROM attempts WHERE state IN ('start_requested','execution_unknown','failure_report_pending') LIMIT 10")]
+                "SELECT record FROM attempts WHERE state IN ('start_requested','execution_unknown','failure_report_pending','timeout_report_pending') LIMIT 10")]
 
     def poll_recovery_records(self):
         with self.connection() as con:
             return [json.loads(row['record']) for row in con.execute(
-                "SELECT record FROM attempts WHERE state IN ('start_requested','execution_unknown','failure_report_pending') LIMIT 10")]
+                "SELECT record FROM attempts WHERE state IN ('start_requested','execution_unknown','failure_report_pending','timeout_report_pending') LIMIT 10")]
 
     def pending_artifact_records(self):
         with self.connection() as con:

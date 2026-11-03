@@ -410,7 +410,7 @@ class CodexExecutor:
         exit_code = event_summary.get('process_exit_code') if isinstance(event_summary, dict) else None
         if type(exit_code) is not int:
             return None
-        evidence = {'schema_version': '1', 'stage': 'turn_wait',
+        evidence = {'schema_version': '1', 'stage': 'codex_execution',
                     'thread_id': thread_id, 'turn_id': turn_id,
                     'timeout_seconds': timeout_seconds, 'process_exit_code': exit_code,
                     'event_counts': event_summary.get('event_counts', {}),
@@ -436,10 +436,12 @@ class CodexExecutor:
             return None
         raw = path.read_bytes()
         evidence = json.loads(raw.decode('utf-8'))
-        if (evidence.get('schema_version') != '1' or evidence.get('stage') != 'turn_wait'
-                or not isinstance(evidence.get('thread_id'), str)
-                or not evidence['thread_id'] or not isinstance(evidence.get('turn_id'), str)
-                or not evidence['turn_id'] or type(evidence.get('timeout_seconds')) not in (int, float)
+        if (evidence.get('schema_version') != '1' or evidence.get('stage') != 'codex_execution'
+                or (evidence.get('thread_id') is not None and
+                    (not isinstance(evidence.get('thread_id'), str) or not evidence['thread_id']))
+                or (evidence.get('turn_id') is not None and
+                    (not isinstance(evidence.get('turn_id'), str) or not evidence['turn_id']))
+                or type(evidence.get('timeout_seconds')) not in (int, float)
                 or type(evidence.get('process_exit_code')) is not int):
             return None
         return ExecutionResult('terminal_failure', 'codex_turn_timed_out', details={
@@ -741,16 +743,27 @@ class CodexExecutor:
         cwd = str(files.path.resolve())
         session = None
         stage = 'initialize'
+        thread_id = None
+        turn_id = None
         try:
+            execution_deadline = time.monotonic() + config.timeout
+
+            def request_before_deadline(session, method, params):
+                remaining = execution_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('Codex execution deadline exceeded')
+                session.timeout = remaining
+                return session.request(method, params)
+
             with StdioSession([config.executable, '-c', 'mcp_servers={}',
                                '-c', 'plugins={}', '--enable', 'image_generation',
                                'app-server', '--stdio'],
                               files.path.resolve(), timeout=config.timeout) as session:
-                session.request('initialize', {'clientInfo': {
+                request_before_deadline(session, 'initialize', {'clientInfo': {
                     'name': 'alchemy-render-bridge', 'version': '1'}})
                 session.send({'method': 'initialized'})
                 stage = 'thread_start'
-                response = session.request('thread/start', {
+                response = request_before_deadline(session, 'thread/start', {
                     'model': config.model, 'cwd': cwd,
                     'approvalPolicy': config.approval_policy, 'approvalsReviewer': 'user',
                     'sandbox': 'workspace-write',
@@ -761,7 +774,7 @@ class CodexExecutor:
                 files.write_exclusive(files.path / 'codex-thread.json',
                                       json.dumps({'thread_id': thread_id}).encode())
                 stage = 'turn_start'
-                response = session.request('turn/start', {
+                response = request_before_deadline(session, 'turn/start', {
                     'threadId': thread_id, 'input': inputs, 'cwd': cwd,
                     'approvalPolicy': config.approval_policy, 'approvalsReviewer': 'user',
                     'sandboxPolicy': {'type': 'workspaceWrite', 'writableRoots': [cwd],
@@ -774,7 +787,7 @@ class CodexExecutor:
                                       json.dumps({'thread_id': thread_id, 'turn_id': turn_id}).encode())
                 events = session.events
                 stage = 'turn_wait'
-                deadline = time.monotonic() + config.timeout
+                deadline = execution_deadline
                 def ended():
                     return any(event.get('method') == 'turn/completed' and
                         event.get('params', {}).get('threadId') == thread_id and
@@ -798,7 +811,7 @@ class CodexExecutor:
         except PermissionError:
             return ExecutionResult('needs_attention', 'codex_requested_user_attention')
         except (OSError, EOFError, TimeoutError) as exc:
-            turn_timed_out = isinstance(exc, TimeoutError) and stage == 'turn_wait'
+            turn_timed_out = isinstance(exc, TimeoutError)
             reason = 'tool_missing' if isinstance(exc, FileNotFoundError) else 'probe_failed'
             self._write_execution_diagnostic(files, stage, exc, session)
             if turn_timed_out:

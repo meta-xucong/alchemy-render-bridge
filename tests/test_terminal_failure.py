@@ -126,7 +126,7 @@ class TerminalFailureTests(unittest.TestCase):
         agent,executor=self.configured();task=self.create('codex-image')
         def timed_out(request):
             files=AttemptFiles(executor.root,request,'codex-cli')
-            result=executor._terminal_timeout_failure(request,files,'timeout-thread','timeout-turn',
+            result=executor._terminal_timeout_failure(request,files,None,None,
                 600,{'process_exit_code':143,'event_counts':{'turn/completed':0},
                      'captured_lifecycle_events':0})
             self.assertEqual('terminal_failure',result.status)
@@ -175,7 +175,7 @@ class TerminalFailureTests(unittest.TestCase):
         self.assertEqual('codex_turn_timed_out',self.store.get_task(self.scope,task)['action_required_detail']['code'])
         self.assertFalse(resumed.journal.occupied_by_other('next'))
 
-    def test_timeout_report_failure_keeps_slot_occupied_until_server_confirms(self):
+    def test_timeout_report_failure_releases_local_slot_until_server_confirms(self):
         agent,executor=self.configured();task=self.create('codex-image')
         def timed_out(request):
             files=AttemptFiles(executor.root,request,'codex-cli')
@@ -185,7 +185,11 @@ class TerminalFailureTests(unittest.TestCase):
                 patch.object(self.client,'terminal_failure',side_effect=TimeoutError('confirmation unavailable')):
             self.assertEqual('failure_report_pending',agent.execute_task(task)['outcome'])
         self.assertEqual('running',self.store.get_task(self.scope,task)['state'])
-        self.assertTrue(agent.journal.occupied_by_other('next'))
+        self.assertEqual('timeout_report_pending',agent.journal.get(task)['state'])
+        self.assertFalse(agent.journal.occupied_by_other('next'))
+        with patch.object(self.client,'terminal_failure',side_effect=TimeoutError('confirmation unavailable')):
+            self.assertEqual('physical_slot_busy',agent.execute_task(self.create('fake-image','next'))['outcome'])
+            self.assertFalse(agent.journal.occupied_by_other('another'))
         agent.heartbeat()
         self.assertEqual('terminal_failed',agent.journal.get(task)['state'])
         self.assertFalse(agent.journal.occupied_by_other('next'))

@@ -143,9 +143,10 @@ for line in sys.stdin:
     def test_large_command_output_delta_burst_does_not_abort_image_turn(self):
         self.run_fixture(True, output_delta_count=500)
 
-    def test_turn_timeout_releases_only_after_context_confirms_local_process_exit(self):
-        for process_exit_code, expected in ((137, 'terminal_failure'), (None, 'execution_unknown')):
-            with self.subTest(process_exit_code=process_exit_code), tempfile.TemporaryDirectory() as directory:
+    def test_total_execution_timeout_releases_only_after_context_confirms_local_process_exit(self):
+        for timeout_at in ('initialize', 'thread/start', 'turn/start', 'turn_wait'):
+          for process_exit_code, expected in ((137, 'terminal_failure'), (None, 'execution_unknown')):
+            with self.subTest(timeout_at=timeout_at, process_exit_code=process_exit_code), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 request = ExecutionRequest('timeout-task', 'timeout-attempt', 'timeout prompt', {}, ())
                 config = CodexConfig(enabled=True, model='local-accepted-model',
@@ -159,12 +160,16 @@ for line in sys.stdin:
                     def __enter__(self): return self
                     def __exit__(self, *_): return False
                     def request(self, method, _params):
+                        if method == timeout_at:
+                            raise TimeoutError('fixture setup timeout')
                         if method == 'initialize': return {'result': {}}
                         if method == 'thread/start': return {'thread': {'id': 'timeout-thread'}}
                         if method == 'turn/start': return {'turn': {'id': 'timeout-turn'}}
                         raise AssertionError(method)
                     def send(self, _message): pass
-                    def receive(self, *, timeout=None): raise TimeoutError('fixture timeout')
+                    def receive(self, *, timeout=None):
+                        if timeout_at == 'turn_wait': raise TimeoutError('fixture timeout')
+                        raise AssertionError('wait only for the configured timeout stage')
                     def capture_notification(self, _event): pass
                     def diagnostic_summary(self):
                         return {'process_exit_code': process_exit_code, 'event_counts': {},

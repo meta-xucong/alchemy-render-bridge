@@ -2,9 +2,10 @@
 
 ## Correction model
 
-Expected behavior: after the configured 600-second Codex turn timeout, once the
-local Codex subprocess has been stopped and reaped, report a terminal timeout
-error and release the Bridge execution slot. The upstream request may still
+Expected behavior: one 600-second deadline covers Codex execution from
+app-server initialization through the image turn. Once the local Codex
+subprocess has been stopped and reaped, report a terminal timeout error and
+release the local Bridge execution slot. The upstream request may still
 complete; duplicate upstream execution is an accepted risk. Alchemy must not
 automatically retry through an API after this ambiguous post-admission timeout.
 
@@ -17,17 +18,21 @@ operator-selected timeout policy.
 
 The Codex executor is authoritative for proving its local process has exited.
 It may produce a timeout-specific terminal evidence record only after the
-turn-wait deadline fires and the session context closes successfully with a
+execution deadline fires and the session context closes successfully with a
 confirmed process exit code. The existing terminal-failure handshake remains
-authoritative for releasing the server slot: Bridge persists the evidence,
-reports it for the same task/attempt/thread/turn, and marks its local journal
-`terminal_failed` only after server confirmation. Failed reporting stays
-`failure_report_pending` and occupied until heartbeat retry succeeds.
+authoritative for releasing the server slot: Bridge persists the evidence and
+reports it for the same task/attempt. Once process exit is confirmed, the local
+journal enters `timeout_report_pending`, which is recoverable but does not
+occupy the local physical slot. The server-side slot is freed when it confirms
+the terminal failure; failed reporting is retried by heartbeat. Until then,
+the server can reject another execution while the local node is idle.
 
-Only `codex_turn_timed_out` gains terminal treatment. If process reaping cannot
-be confirmed, Bridge reports `codex_turn_timeout_unconfirmed`; generic unknown
-states and expired execution leases also remain occupied and require
-reconciliation. The terminal failure projection retains the timeout reason so
+Only the 600-second Codex execution timeout gains terminal treatment. A timeout before a thread
+or turn identity is returned remains bound to its Bridge task/attempt, so timeout
+evidence may omit those optional Codex IDs. If process reaping cannot be
+confirmed, Bridge reports `codex_turn_timeout_unconfirmed`; generic unknown
+states and expired execution leases remain occupied and require reconciliation.
+The terminal failure projection retains the timeout reason so
 Alchemy can show the correct message after the slot is released. Alchemy presents
 the timeout as a terminal error with possible upstream uncertainty and does not
 automatically route to the API. A later user-initiated generation may duplicate
