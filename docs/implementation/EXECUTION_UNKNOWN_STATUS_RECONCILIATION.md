@@ -1,5 +1,10 @@
 # Execution-unknown status and reconciliation
 
+The timeout-specific rule in `CODEX_TIMEOUT_TERMINAL_RELEASE.md` supersedes
+this document's hold-until-reconciliation rule only for a 600-second Codex
+turn timeout after confirmed local process exit. Generic unknown and overdue
+lease states remain held as described below.
+
 ## Correction model
 
 Expected behavior: a task whose renderer may have started must retain its local

@@ -152,6 +152,6 @@ class ReadinessTests(unittest.TestCase):
         for interval in (0, 1000):
             with self.assertRaises(ValueError):
                 HeartbeatLoop(self.agent, interval)
-        with patch.object(self.agent, 'heartbeat') as heartbeat:
+        with patch.object(self.agent, 'heartbeat') as heartbeat, patch('builtins.print'):
             with HeartbeatLoop(self.agent):
                 heartbeat.assert_called_once()

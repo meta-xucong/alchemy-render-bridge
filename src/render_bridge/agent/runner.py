@@ -101,7 +101,7 @@ class NodeAgent:
             return {'outcome': 'already_committed', 'task_id': task_id, 'receipt_id': task['receipt_id']}
         if record and record['state'] == 'complete':
             return {'outcome': 'already_committed', 'task_id': task_id, 'receipt_id': record['receipt_id']}
-        if record and record['state'] == 'failure_report_pending':
+        if record and record['state'] in ('failure_report_pending', 'timeout_report_pending'):
             return self._report_terminal_failure(record)
         if record and record['state'] == 'terminal_failed':
             return {'outcome': 'terminal_failed', 'task_id': task_id}
@@ -518,7 +518,10 @@ class NodeAgent:
                 raise ValueError('Attempt file content changed')
 
     def _save_terminal_failure(self, record, result):
-        record.update(state='failure_report_pending', terminal_failure=result.details['terminal_failure'])
+        evidence = result.details['terminal_failure']
+        state = ('timeout_report_pending' if evidence.get('reason_code') == 'codex_turn_timed_out'
+                 else 'failure_report_pending')
+        record.update(state=state, terminal_failure=evidence)
         self.journal.save(record)
         return self._report_terminal_failure(record)
 
@@ -542,7 +545,7 @@ class NodeAgent:
         # open a turn, or release a genuinely unknown execution from health alone.
         for record in self.journal.terminal_recovery_records():
             try:
-                if record['state'] == 'failure_report_pending':
+                if record['state'] in ('failure_report_pending', 'timeout_report_pending'):
                     self._report_terminal_failure(record)
                     continue
                 executor = self.registry.get(record.get('profile_id'))

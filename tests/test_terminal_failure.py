@@ -122,6 +122,78 @@ class TerminalFailureTests(unittest.TestCase):
         self.assertEqual('artifact_committed',agent.execute_task(self.create('fake-image','next'))['outcome'])
         self.assertEqual('failed',self.store.get_task(self.scope,task)['state'])
 
+    def test_confirmed_codex_timeout_is_terminal_and_releases_server_and_local_slots(self):
+        agent,executor=self.configured();task=self.create('codex-image')
+        def timed_out(request):
+            files=AttemptFiles(executor.root,request,'codex-cli')
+            result=executor._terminal_timeout_failure(request,files,None,None,
+                600,{'process_exit_code':143,'event_counts':{'turn/completed':0},
+                     'captured_lifecycle_events':0})
+            self.assertEqual('terminal_failure',result.status)
+            return result
+        with patch.object(executor,'preflight',return_value=None),patch.object(executor,'execute',side_effect=timed_out):
+            self.assertEqual('terminal_failed',agent.execute_task(task)['outcome'])
+        self.assertEqual('failed',self.store.get_task(self.scope,task)['state'])
+        projected=self.store.get_task(self.scope,task)
+        self.assertEqual('codex_turn_timed_out',projected['action_required_detail']['code'])
+        self.assertIn('upstream',projected['action_required_detail']['message'])
+        with self.store._connection() as con:
+            evidence=con.execute('SELECT payload FROM terminal_failures WHERE task_id=?',(task,)).fetchone()
+        self.assertEqual('codex_turn_timed_out',__import__('json').loads(evidence['payload'])['evidence']['reason_code'])
+        self.assertFalse(agent.journal.occupied_by_other('next'))
+        self.assertEqual('artifact_committed',agent.execute_task(self.create('fake-image','next'))['outcome'])
+
+    def test_timeout_without_confirmed_local_exit_stays_unknown_and_occupied(self):
+        agent,executor=self.configured();task=self.create('codex-image')
+        def not_reaped(request):
+            files=AttemptFiles(executor.root,request,'codex-cli')
+            result=executor._terminal_timeout_failure(request,files,'thread','turn',600,
+                {'process_exit_code':None,'event_counts':{},'captured_lifecycle_events':0})
+            self.assertIsNone(result)
+            from render_bridge.executors.base import ExecutionResult
+            return ExecutionResult('execution_unknown','codex_turn_timeout_unconfirmed')
+        with patch.object(executor,'preflight',return_value=None),patch.object(executor,'execute',side_effect=not_reaped):
+            self.assertEqual('execution_unknown',agent.execute_task(task)['outcome'])
+        self.assertEqual('execution_unknown',self.store.get_task(self.scope,task)['state'])
+        self.assertTrue(agent.journal.occupied_by_other('next'))
+
+    def test_reaped_timeout_evidence_survives_crash_before_server_report(self):
+        agent,executor=self.configured();task=self.create('codex-image')
+        def timed_out(request):
+            files=AttemptFiles(executor.root,request,'codex-cli')
+            return executor._terminal_timeout_failure(request,files,'thread','turn',600,
+                {'process_exit_code':143,'event_counts':{},'captured_lifecycle_events':0})
+        with patch.object(executor,'preflight',return_value=None),patch.object(executor,'execute',side_effect=timed_out), \
+                patch.object(agent,'_save_terminal_failure',side_effect=SystemExit('crash after local timeout evidence')):
+            with self.assertRaises(SystemExit):agent.execute_task(task)
+        self.assertTrue(agent.journal.occupied_by_other('next'))
+        resumed,_=self.configured()
+        with patch('subprocess.Popen',side_effect=AssertionError('must not launch a new turn')):
+            resumed.heartbeat()
+        self.assertEqual('terminal_failed',resumed.journal.get(task)['state'])
+        self.assertEqual('failed',self.store.get_task(self.scope,task)['state'])
+        self.assertEqual('codex_turn_timed_out',self.store.get_task(self.scope,task)['action_required_detail']['code'])
+        self.assertFalse(resumed.journal.occupied_by_other('next'))
+
+    def test_timeout_report_failure_releases_local_slot_until_server_confirms(self):
+        agent,executor=self.configured();task=self.create('codex-image')
+        def timed_out(request):
+            files=AttemptFiles(executor.root,request,'codex-cli')
+            return executor._terminal_timeout_failure(request,files,'thread','turn',600,
+                {'process_exit_code':0,'event_counts':{},'captured_lifecycle_events':0})
+        with patch.object(executor,'preflight',return_value=None),patch.object(executor,'execute',side_effect=timed_out), \
+                patch.object(self.client,'terminal_failure',side_effect=TimeoutError('confirmation unavailable')):
+            self.assertEqual('failure_report_pending',agent.execute_task(task)['outcome'])
+        self.assertEqual('running',self.store.get_task(self.scope,task)['state'])
+        self.assertEqual('timeout_report_pending',agent.journal.get(task)['state'])
+        self.assertFalse(agent.journal.occupied_by_other('next'))
+        with patch.object(self.client,'terminal_failure',side_effect=TimeoutError('confirmation unavailable')):
+            self.assertEqual('physical_slot_busy',agent.execute_task(self.create('fake-image','next'))['outcome'])
+            self.assertFalse(agent.journal.occupied_by_other('another'))
+        agent.heartbeat()
+        self.assertEqual('terminal_failed',agent.journal.get(task)['state'])
+        self.assertFalse(agent.journal.occupied_by_other('next'))
+
     def test_crash_after_completion_before_journal_projection_is_recovered_from_same_evidence(self):
         agent,executor=self.configured();task=self.create('codex-image')
         # Inject process death after durable Codex completion, before Agent's

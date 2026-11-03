@@ -34,10 +34,17 @@ class StrictRequest(BaseModel):
 
 class TerminalFailureEvidence(StrictRequest):
     schema_version: Literal['1']
-    thread_id: Key
-    turn_id: Key
-    reason_code: Literal['auth_unavailable', 'quota_exhausted']
+    thread_id: Key | None
+    turn_id: Key | None
+    reason_code: Literal['auth_unavailable', 'quota_exhausted', 'codex_turn_timed_out']
     completion_sha256: SHA256
+
+    @model_validator(mode='after')
+    def bound_turn_for_account_failures(self):
+        if self.reason_code in {'auth_unavailable', 'quota_exhausted'}:
+            if self.thread_id is None or self.turn_id is None:
+                raise ValueError('Account terminal failures require a bound Codex turn')
+        return self
 
 
 class TerminalFailureRequest(StrictRequest):
