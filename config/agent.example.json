@@ -7,6 +7,6 @@
     "accepted_cli_version": "",
     "image_capability_verified": false,
     "tool_policy_verified": false,
-    "timeout": 120
+    "timeout": 600
   }
 }
