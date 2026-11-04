@@ -19,7 +19,9 @@ class CodexLifecycleTests(unittest.TestCase):
                     reference=False,
                     terminal_failure=False, cli_version='codex-cli 0.157.1', output_delta_count=0,
                     image_event='imageGeneration', image_item_id='image-fixture',
-                    generated_under_codex_home=False, configured_codex_home=None):
+                    generated_under_codex_home=False, configured_codex_home=None,
+                    omit_turn_completed=False, execution_timeout=3,
+                    completed_item_count=1):
         original_bytes = (fixture_jpeg if actual_format == 'jpeg' else fixture_png)()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -48,6 +50,10 @@ for line in sys.stdin:
  elif stage==2:
   assert method=='thread/start' and p['approvalPolicy']=='on-request'
   assert p['sandbox']=='workspace-write' and p['model']=='local-accepted-model'
+  instructions=p.get('developerInstructions','').casefold()
+  assert 'current working directory' not in instructions
+  assert 'do not use shell commands to locate, copy, move, or convert the image' in instructions
+  assert 'savedpath' in instructions
   assert ('transparent_background=true' in p.get('developerInstructions','')) is INVOKE_TRANSPARENT
   assert ('referenced_image_paths set to' in p.get('developerInstructions','')) is HAS_REFERENCE
   assert REF_NAME in p.get('developerInstructions','') if HAS_REFERENCE else True
@@ -72,12 +78,14 @@ for line in sys.stdin:
    item={'type':IMAGE_EVENT_TYPE,'id':IMAGE_ITEM_ID,'status':'completed','result':'','savedPath':str(original)}
    if IMAGE_EVENT_TYPE=='Extension': item['kind']='image_gen.generation'
   else:
-   item={'type':'agentMessage','id':'message-fixture','text':'Image generated!'}
-  emit({'method':'item/completed','params':{'threadId':'thread-fixture','turnId':'turn-fixture','item':item,'completedAtMs':1}})
-  emit({'method':'turn/completed','params':{'threadId':'thread-fixture','turn':{'id':'turn-fixture','status':'completed','items':[item]}}})
+   item={'type':'agentMessage','id':'message-fixture','text':'private timeout payload'}
+  for index in range(COMPLETED_ITEM_COUNT):
+   emit({'method':'item/completed','params':{'threadId':'thread-fixture','turnId':'turn-fixture','item':item,'completedAtMs':index+1}})
+  if not OMIT_TURN_COMPLETED:
+   emit({'method':'turn/completed','params':{'threadId':'thread-fixture','turn':{'id':'turn-fixture','status':'completed','items':[item]}}})
  else: raise AssertionError('duplicate operation')
  stage+=1
-'''.replace('OUTPUT_DELTA_COUNT', str(output_delta_count)).replace('IMAGE_EVENT_TYPE', repr(image_event)).replace('IMAGE_ITEM_ID', repr(image_item_id)).replace('if IMAGE:', 'if ' + repr(image) + ':').replace('IMAGE_UNDER_CODEX_HOME', repr(generated_under_codex_home)).replace('base64.b64decode(PNG)', 'base64.b64decode(' + repr(base64.b64encode(original_bytes).decode()) + ')').replace('INVOKE_TRANSPARENT', repr(transparent and cli_version == 'codex-cli 0.163.0')).replace('HAS_REFERENCE', repr(reference)).replace('REF_NAME', repr('reference.png' if reference else '')).replace('EXPECTED_CODEX_HOME', repr(str(expected_codex_home))), encoding='utf-8')
+'''.replace('OUTPUT_DELTA_COUNT', str(output_delta_count)).replace('COMPLETED_ITEM_COUNT', str(completed_item_count)).replace('IMAGE_EVENT_TYPE', repr(image_event)).replace('IMAGE_ITEM_ID', repr(image_item_id)).replace('if IMAGE:', 'if ' + repr(image) + ':').replace('IMAGE_UNDER_CODEX_HOME', repr(generated_under_codex_home)).replace('OMIT_TURN_COMPLETED', repr(omit_turn_completed)).replace('base64.b64decode(PNG)', 'base64.b64decode(' + repr(base64.b64encode(original_bytes).decode()) + ')').replace('INVOKE_TRANSPARENT', repr(transparent and cli_version == 'codex-cli 0.163.0')).replace('HAS_REFERENCE', repr(reference)).replace('REF_NAME', repr('reference.png' if reference else '')).replace('EXPECTED_CODEX_HOME', repr(str(expected_codex_home))), encoding='utf-8')
             reference_path = root / 'reference.png'
             references = ()
             if reference:
@@ -95,7 +103,7 @@ for line in sys.stdin:
             request = ExecutionRequest('task', 'attempt', '原始完整 prompt', parameters, references)
             config = CodexConfig(enabled=True, model='local-accepted-model',
                                  accepted_cli_version=cli_version,
-                                 image_capability_verified=True, tool_policy_verified=True, approval_policy='on-request', timeout=3)
+                                 image_capability_verified=True, tool_policy_verified=True, approval_policy='on-request', timeout=execution_timeout)
             executor = CodexExecutor(root / 'data', config)
             def launch(argv, cwd, timeout, env=None):
                 self.assertEqual(argv, ['codex', '-c', 'mcp_servers={}',
@@ -112,7 +120,14 @@ for line in sys.stdin:
                     'pathlib.Path.home', return_value=root):
                 result = executor.execute(request)
                 self.assertEqual(launched.call_count, 1)
-                if image:
+                timeout_evidence = None
+                if omit_turn_completed:
+                    self.assertEqual(result.status, 'terminal_failure')
+                    self.assertEqual(result.code, 'codex_turn_timed_out')
+                    timeout_evidence = json.loads((root / 'data/task/attempt/codex-timeout-failure.json').read_text())
+                    self.assertEqual(timeout_evidence['completed_item_shapes'], {'agentMessage': completed_item_count})
+                    self.assertNotIn('private timeout payload', json.dumps(timeout_evidence))
+                elif image:
                     if image_item_id != 'image-fixture':
                         self.assertEqual(result.status, 'needs_attention')
                         self.assertEqual(result.code, 'codex_image_item_identity_mismatch')
@@ -131,15 +146,22 @@ for line in sys.stdin:
                 else:
                     self.assertEqual(result.status, 'needs_attention')
                     self.assertEqual(result.code, 'codex_single_image_event_required')
-                completion_evidence = json.loads((root / 'data/task/attempt/codex-completion.json').read_text())
-                self.assertEqual(completion_evidence['cli_version'], cli_version)
-                if output_delta_count:
+                completion_evidence = (json.loads((root / 'data/task/attempt/codex-completion.json').read_text())
+                                       if not omit_turn_completed else None)
+                if completion_evidence is not None:
+                    self.assertEqual(completion_evidence['cli_version'], cli_version)
+                if image and completion_evidence is not None:
+                    expected_shape = ('Extension:image_gen.generation'
+                                      if image_event == 'Extension' else image_event)
+                    self.assertEqual(completion_evidence['event_summary']['completed_item_shapes'],
+                                     {expected_shape: 1})
+                if output_delta_count and completion_evidence is not None:
                     summary = completion_evidence['event_summary']
                     self.assertEqual(summary['event_counts']['item/commandExecution/outputDelta'], output_delta_count)
                     self.assertEqual(summary['captured_lifecycle_events'], 2)
                     self.assertEqual(summary['ignored_notifications'], output_delta_count)
                     self.assertNotIn('ImageGen skill output chunk', json.dumps(completion_evidence))
-                if recover:
+                if recover and completion_evidence is not None:
                     (root / 'data/task/attempt/artifact.json').unlink()
                 with patch('render_bridge.executors.codex.probe_codex', side_effect=AssertionError('reprobe')):
                     replay = executor.execute(request)
@@ -150,6 +172,10 @@ for line in sys.stdin:
                 self.assertEqual(launched.call_count, 1)
                 folder = root / 'data/task/attempt'
                 self.assertEqual(json.loads((folder / 'codex-turn.json').read_text())['thread_id'], 'thread-fixture')
+
+    def test_timeout_persists_allowlisted_completed_item_shapes_without_payload(self):
+        self.run_fixture(False, omit_turn_completed=True, execution_timeout=0.5,
+                         completed_item_count=2)
 
     def test_full_terminal_failed_turn_and_replay_without_new_cli(self):
         self.run_fixture(False, terminal_failure=True)
@@ -221,6 +247,31 @@ for line in sys.stdin:
 
     def test_live_completion_accepts_verified_extension_image_item(self):
         self.run_fixture(True, image_event='Extension')
+
+    def test_extension_image_saved_under_codex_home_completes_lifecycle(self):
+        self.run_fixture(True, image_event='Extension', generated_under_codex_home=True)
+
+    def test_completed_item_shape_diagnostics_are_allowlisted_and_payload_free(self):
+        session = StdioSession.__new__(StdioSession)
+        session.events = []
+        session.event_counts = {'item/completed': 0, 'turn/completed': 0,
+                                'item/commandExecution/outputDelta': 0,
+                                'other_notification': 0}
+        session.completed_item_shapes = {}
+        session.ignored_notifications = 0
+        session.bytes_read = 0
+        session.structural_tokens = 0
+        session.process = type('Process', (), {'poll': lambda _self: 0})()
+        session.capture_notification({'method': 'item/completed', 'params': {'item': {
+            'type': 'unexpected-private-type', 'kind': 'private-kind',
+            'text': 'sensitive prompt payload'}}})
+        session.capture_notification({'method': 'item/completed', 'params': {'item': {
+            'type': ['malformed', 'private'], 'text': 'another sensitive payload'}}})
+        summary = session.diagnostic_summary()
+        self.assertEqual(summary['completed_item_shapes'], {'other': 2})
+        self.assertNotIn('sensitive prompt payload', json.dumps(summary))
+        self.assertNotIn('another sensitive payload', json.dumps(summary))
+        self.assertNotIn('unexpected-private-type', json.dumps(summary))
 
     def test_live_completion_rejects_item_path_identity_mismatch(self):
         self.run_fixture(True, image_item_id='another-image')

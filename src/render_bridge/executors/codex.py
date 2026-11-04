@@ -132,6 +132,7 @@ class StdioSession:
         self.event_counts = {'item/completed': 0, 'turn/completed': 0,
                              'item/commandExecution/outputDelta': 0,
                              'other_notification': 0}
+        self.completed_item_shapes = {}
         self.ignored_notifications = 0
         self.messages = queue.Queue(maxsize=MAX_QUEUED_MESSAGES)
         self.bytes_read = 0
@@ -263,6 +264,19 @@ class StdioSession:
         self.event_counts[counter] += 1
         params = value.get('params')
         item = params.get('item') if isinstance(params, dict) else None
+        if method == 'item/completed':
+            item_type = item.get('type') if isinstance(item, dict) else None
+            item_kind = item.get('kind') if isinstance(item, dict) else None
+            if item_type == 'Extension':
+                shape = ('Extension:image_gen.generation'
+                         if item_kind == 'image_gen.generation' else 'Extension:other')
+            elif isinstance(item_type, str) and item_type in {
+                    'imageGeneration', 'agentMessage', 'commandExecution',
+                    'fileChange', 'mcpToolCall', 'webSearch', 'reasoning', 'plan'}:
+                shape = item_type
+            else:
+                shape = 'other'
+            self.completed_item_shapes[shape] = self.completed_item_shapes.get(shape, 0) + 1
         image_item = (method == 'item/completed' and isinstance(item, dict)
                       and (item.get('type') == 'imageGeneration'
                            or (item.get('type') == 'Extension'
@@ -279,6 +293,7 @@ class StdioSession:
 
     def diagnostic_summary(self) -> dict:
         return {'event_counts': dict(self.event_counts),
+                'completed_item_shapes': dict(self.completed_item_shapes),
                 'captured_lifecycle_events': len(self.events),
                 'ignored_notifications': self.ignored_notifications,
                 'bytes_read': self.bytes_read,
@@ -421,6 +436,7 @@ class CodexExecutor:
                     'thread_id': thread_id, 'turn_id': turn_id,
                     'timeout_seconds': timeout_seconds, 'process_exit_code': exit_code,
                     'event_counts': event_summary.get('event_counts', {}),
+                    'completed_item_shapes': event_summary.get('completed_item_shapes', {}),
                     'captured_lifecycle_events': event_summary.get('captured_lifecycle_events', 0)}
         raw = json.dumps(evidence, sort_keys=True, ensure_ascii=False,
                          separators=(',', ':')).encode('utf-8')
@@ -724,7 +740,11 @@ class CodexExecutor:
             return ExecutionResult('needs_attention', 'codex_version_not_validated', details=probe)
         adapted = uses_codex_adapter(request.parameters, 'codex-image')
         native_options = codex_imagegen_arguments(request.parameters, probe['cli_version'])
-        instructions = 'Generate exactly one image using the image generation tool. Save the original in the current working directory. Do not substitute text, shell rendering, browsing, or unrelated tools for image generation.'
+        instructions = ('Generate exactly one image using the image generation tool. Let the tool save '
+            'the original in its native thread output location; the executor consumes the tool '
+            'item savedPath. Do not use shell commands to locate, copy, move, or convert the image. '
+            'Finish the turn after one completed image generation. Do not substitute text, '
+            'browsing, or unrelated tools for image generation.')
         if native_options['transparent_background']:
             instructions += ' Invoke the image generation tool with transparent_background=true and preserve alpha transparency.'
         if adapted and request.references:
