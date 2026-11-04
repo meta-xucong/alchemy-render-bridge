@@ -122,7 +122,8 @@ class StdioSession:
     the actual `codex app-server --stdio` transport requires later local approval.
     Closing the subprocess does not prove upstream execution was cancelled.
     """
-    def __init__(self, argv: Sequence[str], cwd: Path, *, timeout: float = 10):
+    def __init__(self, argv: Sequence[str], cwd: Path, *, timeout: float = 10,
+                 env: dict[str, str] | None = None):
         if isinstance(argv, (str, bytes)) or not argv:
             raise ValueError('Expected explicit argument vector')
         self.timeout = timeout
@@ -138,7 +139,7 @@ class StdioSession:
         self.closed = threading.Event()
         self.process = subprocess.Popen(list(argv), cwd=cwd, stdin=subprocess.PIPE,
                                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                        bufsize=0, shell=False)
+                                        bufsize=0, shell=False, env=env)
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
 
@@ -344,6 +345,12 @@ class CodexExecutor:
     def __init__(self, root: Path, config: CodexConfig | None = None):
         self.root = Path(root)
         self.config = config or CodexConfig()
+
+    @staticmethod
+    def _codex_home() -> Path:
+        configured_home = os.environ.get('CODEX_HOME')
+        home = Path(configured_home).expanduser() if configured_home else Path.home() / '.codex'
+        return home.resolve()
 
     def preflight(self, request: ExecutionRequest) -> ExecutionResult | None:
         """Check local acceptance and version only; never starts a thread or turn."""
@@ -741,6 +748,8 @@ class CodexExecutor:
         if not files.begin():
             return ExecutionResult('execution_unknown', 'codex_prior_start_requires_reconciliation')
         cwd = str(files.path.resolve())
+        codex_env = os.environ.copy()
+        codex_env['CODEX_HOME'] = str(self._codex_home())
         session = None
         stage = 'initialize'
         thread_id = None
@@ -758,7 +767,8 @@ class CodexExecutor:
             with StdioSession([config.executable, '-c', 'mcp_servers={}',
                                '-c', 'plugins={}', '--enable', 'image_generation',
                                'app-server', '--stdio'],
-                              files.path.resolve(), timeout=config.timeout) as session:
+                              files.path.resolve(), timeout=config.timeout,
+                              env=codex_env) as session:
                 request_before_deadline(session, 'initialize', {'clientInfo': {
                     'name': 'alchemy-render-bridge', 'version': '1'}})
                 session.send({'method': 'initialized'})
@@ -1014,8 +1024,7 @@ class CodexExecutor:
         if (not thread_id or Path(thread_id).name != thread_id
                 or '/' in thread_id or '\\' in thread_id):
             return False
-        configured_home = os.environ.get('CODEX_HOME')
-        codex_home = Path(configured_home) if configured_home else Path.home() / '.codex'
+        codex_home = CodexExecutor._codex_home()
         try:
             home = codex_home.resolve(strict=True)
             generated_root = codex_home / 'generated_images'
