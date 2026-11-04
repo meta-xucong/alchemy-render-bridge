@@ -43,3 +43,22 @@ The offline regression proves that artifact replay no longer performs a second
 local digest calculation. The guarded live test must then show local journal
 `complete`, a Bridge receipt for the same task/attempt, and zero active queue.
 It does not claim Alchemy history binding.
+
+## Follow-up root-cause correction
+
+The initial live `ValueError` was later traced to the path-containment guard at
+`_upload()` line 614, not to the digest comparison removed above. The test
+process had its temporary directory under the Codex sandbox and wrote its local
+state through a sandbox filesystem mapping: the logical Agent state root and
+the resolved backing path of its files differed. The recorded relative artifact
+therefore resolved outside the logical root, and the existing guard correctly
+stopped the upload in that sandbox context.
+
+To distinguish a product defect from the test environment, the same saved task
+and attempt were retried once outside the sandbox, using their resolved backing
+state directory. The existing containment guard passed and the task returned
+`artifact_committed`; read-only follow-up confirmed Bridge state `artifacts_ready`,
+local journal state `complete`, and the same attempt and receipt on both sides.
+No new image task was created. This evidence does not justify weakening or
+removing the path-containment guard, and it does not establish a production
+filesystem defect. No Alchemy history binding is claimed.
