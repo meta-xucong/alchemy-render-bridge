@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+from datetime import datetime, timezone
 
 from .client import NodeHTTPError
 from .journal import AgentJournal, InstanceLock
@@ -16,6 +17,22 @@ from render_bridge.image_options import validate_image_request, requested_output
 from .registry import ExecutorRegistry
 
 _KEY = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$')
+_SAFE_UPLOAD_ERROR_CODES = frozenset({
+    'claim_expired', 'stale_claim', 'upload_only_claim_required',
+    'upload_only_identity_mismatch', 'task_expired', 'task_not_executable',
+    'task_not_accepting', 'execution_not_started', 'claim_busy',
+    'upload_binding_mismatch', 'idempotency_conflict', 'output_format_mismatch',
+    'output_dimensions_mismatch', 'upload_not_ready', 'not_found',
+    'invalid_claim_mode', 'manual_profile_requires_manual_ready',
+    'upload_only_claim', 'physical_slot_busy', 'automatic_profile_requires_start',
+    'manual_capacity', 'invalid_scope', 'attempt_mismatch', 'node_binding_mismatch',
+    'storage_unavailable', 'storage_capacity', 'storage_integrity',
+    'hash_mismatch', 'size_mismatch', 'mime_mismatch', 'invalid_media',
+})
+
+
+def _safe_upload_error_code(value):
+    return value if isinstance(value, str) and value in _SAFE_UPLOAD_ERROR_CODES else 'bridge_error'
 
 
 def _bridge_reference_payloads(references):
@@ -624,12 +641,30 @@ class NodeAgent:
             self._unknown(record)
             return {'outcome': 'execution_unknown', 'task_id': record['task_id']}
         require_upload_only = rollout_artifact
+        upload_stage = 'claim_upload_only' if require_upload_only else 'create_upload'
+        upload_attempt = int(record.get('upload_diagnostic', {}).get('attempt_count', 0)) + 1
+        def mark_upload(stage, *, error_type=None, code=None):
+            diagnostic = {
+                'attempt_count': upload_attempt,
+                'stage': stage,
+                'last_attempt_at': datetime.now(timezone.utc).isoformat(),
+            }
+            if error_type:
+                diagnostic['error_type'] = error_type
+            if code:
+                diagnostic['error_code'] = code
+            record['upload_diagnostic'] = diagnostic
+            self.journal.save(record)
         if require_upload_only:
             try:
                 claim = self.client.claim(record['task_id'], 'upload_only')
             except Exception as exc:
+                safe_code = _safe_upload_error_code(getattr(exc, 'code', None))
+                mark_upload(upload_stage, error_type=type(exc).__name__,
+                            code=safe_code)
                 return {'outcome': 'upload_pending',
-                        'code': getattr(exc, 'code', 'upload_only_claim_unavailable'),
+                        'code': safe_code,
+                        'stage': upload_stage, 'error_type': type(exc).__name__,
                         'task_id': record['task_id']}
             if (claim.get('mode') != 'upload_only'
                     or claim.get('attempt_id') != record['attempt_id']
@@ -640,10 +675,12 @@ class NodeAgent:
             self.journal.save(record)
         try:
             try:
+                upload_stage = 'create_upload'
                 upload = self.client.create_upload(record['task_id'], record['claim_id'], payload)
             except NodeHTTPError as exc:
                 if exc.code not in ('claim_expired', 'stale_claim'):
                     raise
+                upload_stage = 'refresh_upload_claim'
                 claim = self.client.claim(record['task_id'], 'upload_only')
                 if (claim['attempt_id'] != record['attempt_id']
                         or (require_upload_only and claim.get('mode') != 'upload_only')
@@ -654,16 +691,20 @@ class NodeAgent:
                 if require_upload_only:
                     record['claim_mode'] = 'upload_only'
                 self.journal.save(record)
+                upload_stage = 'create_upload'
                 upload = self.client.create_upload(record['task_id'], record['claim_id'], payload)
             record['upload_id'] = upload['upload_id']
             self.journal.save(record)
+            upload_stage = 'put_upload'
             self.client.put_upload(upload['upload_id'], record['claim_id'], content, record['mime_type'])
+            upload_stage = 'commit'
             receipt = self.client.commit(upload['upload_id'], record['claim_id'])
             if (receipt.get('task_id') != record['task_id']
                     or receipt.get('attempt_id') != record['attempt_id']
                     or receipt.get('original_sha256') != record['sha256']):
                 raise ValueError('Receipt does not match saved artifact')
             record.update(state='complete', receipt_id=receipt['receipt_id'])
+            record.pop('upload_diagnostic', None)
             self.journal.save(record)
             return {'outcome': 'artifact_committed', 'task_id': record['task_id'], 'receipt_id': receipt['receipt_id']}
         except NodeHTTPError as exc:
@@ -671,7 +712,15 @@ class NodeAgent:
                 return {'outcome': 'needs_attention', 'code': exc.code, 'task_id': record['task_id']}
             if exc.code in ('task_not_executable', 'task_not_accepting', 'task_expired', 'task_canceled', 'task_cancelled'):
                 return {'outcome': 'not_executable', 'code': exc.code, 'task_id': record['task_id']}
-            return {'outcome': 'upload_pending', 'code': exc.code, 'task_id': record['task_id']}
-        except Exception:
+            safe_code = _safe_upload_error_code(exc.code)
+            mark_upload(upload_stage, error_type=type(exc).__name__, code=safe_code)
+            return {'outcome': 'upload_pending', 'code': safe_code,
+                    'stage': upload_stage, 'error_type': type(exc).__name__,
+                    'task_id': record['task_id']}
+        except Exception as exc:
             # Known bytes are retained; subsequent delivery retries only upload.
-            return {'outcome': 'upload_pending', 'task_id': record['task_id']}
+            safe_code = _safe_upload_error_code(getattr(exc, 'code', None))
+            mark_upload(upload_stage, error_type=type(exc).__name__, code=safe_code)
+            return {'outcome': 'upload_pending', 'stage': upload_stage,
+                    'error_type': type(exc).__name__, 'code': safe_code,
+                    'task_id': record['task_id']}

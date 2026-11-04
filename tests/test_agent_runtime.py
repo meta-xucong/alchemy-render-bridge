@@ -13,7 +13,9 @@ from fastapi.testclient import TestClient
 from render_bridge.agent import AgentBusy, HttpNodeClient, InstanceLock, NodeAgent
 from render_bridge.agent.client import validated_url
 from render_bridge.agent.hatchet_sidecar import (
-    TASK_NAME, make_submitter, make_worker, task_name_for_bridge_url,
+    TASK_NAME, delivery_event_signature, make_submitter, make_worker,
+    reconcile_pending_artifacts, should_log_delivery_event,
+    task_name_for_bridge_url,
 )
 from render_bridge.domain import BridgeStore, SourceScope
 from render_bridge.executors.fake import FakeExecutor
@@ -135,6 +137,54 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(delivered).hexdigest(), original_hash)
         self.assertEqual(delivered, original)
         self.assertEqual(self.fake.calls, 1)
+
+    def test_pull_worker_retries_transient_upload_failure_without_rerender(self):
+        task_id = self.create()
+        create_upload = self.client.create_upload
+        calls = 0
+
+        def fail_once(*args):
+            nonlocal calls
+            calls += 1
+            if calls <= 2:
+                error = ConnectionError('private transport detail')
+                error.code = 'authorization=secret'
+                raise error
+            return create_upload(*args)
+
+        self.client.create_upload = fail_once
+        first = self.agent.execute_task(task_id, self.fake)
+        self.assertEqual((first['outcome'], first['stage'], first['error_type'], first['code']),
+                         ('upload_pending', 'create_upload', 'ConnectionError', 'bridge_error'))
+        record = self.agent.journal.get(task_id)
+        self.assertEqual(record['upload_diagnostic']['attempt_count'], 1)
+        self.assertNotIn('private transport detail', str(record['upload_diagnostic']))
+        self.assertNotIn('authorization=secret', str(record['upload_diagnostic']))
+
+        execute_task = self.agent.execute_task
+        with patch.object(self.agent, 'execute_task',
+                          side_effect=lambda pending: execute_task(pending, self.fake)):
+            failed = reconcile_pending_artifacts(self.agent)
+            self.assertEqual(failed[0]['outcome'], 'upload_pending')
+            self.assertEqual(failed[0]['stage'], 'create_upload')
+            self.assertEqual(failed[0]['error_code'], 'bridge_error')
+            self.assertEqual(failed[0]['attempt_count'], 2)
+            self.assertNotIn('authorization=secret', str(failed))
+            events = reconcile_pending_artifacts(self.agent)
+        self.assertEqual(events, [{'task_id': task_id, 'outcome': 'artifact_committed'}])
+        self.assertEqual(self.agent.journal.get(task_id)['state'], 'complete')
+        self.assertEqual(self.fake.calls, 1)
+
+    def test_delivery_retry_logging_is_throttled_and_reports_state_changes(self):
+        event = {'outcome': 'upload_pending', 'stage': 'put_upload',
+                 'error_type': 'ConnectionError', 'error_code': 'bridge_error'}
+        previous = (delivery_event_signature(event), 10.0)
+        self.assertFalse(should_log_delivery_event(event, previous, 39.9))
+        self.assertTrue(should_log_delivery_event(event, previous, 40.0))
+        self.assertTrue(should_log_delivery_event(
+            {**event, 'stage': 'commit'}, previous, 11.0))
+        self.assertTrue(should_log_delivery_event(
+            {**event, 'outcome': 'artifact_committed'}, previous, 11.0))
 
     def test_upload_response_lost_after_server_received_bytes_replays_same_original(self):
         task_id = self.create('upload-response-lost')
