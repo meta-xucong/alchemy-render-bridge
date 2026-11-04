@@ -78,6 +78,28 @@ class AgentRuntimeTests(unittest.TestCase):
         self.agent.journal.save({'task_id':'unknown-task','attempt_id':'attempt-b','state':'execution_unknown'})
         self.assertEqual([row['task_id'] for row in self.agent.journal.pending_artifact_records()], ['upload-task'])
 
+    def test_canceled_saved_artifact_is_terminalized_without_retry_or_upload(self):
+        task_id = self.create('canceled-artifact')
+        task = self.client.task(task_id)
+        self.assertEqual(self.store.cancel_task(self.scope, task_id)['state'], 'canceled')
+        artifact = self.agent.journal.root / 'attempts' / task_id / task['attempt_id'] / 'result.original'
+        artifact.parent.mkdir(parents=True)
+        artifact.write_bytes(b'preserved local original')
+        self.agent.journal.save({
+            'task_id': task_id, 'attempt_id': task['attempt_id'], 'state': 'artifact_ready',
+            'artifact': str(artifact.relative_to(self.agent.journal.root)),
+        })
+
+        with patch.object(self.client, 'create_upload') as create_upload:
+            result = reconcile_pending_artifacts(self.agent)
+            self.assertEqual(result, [{'task_id': task_id, 'outcome': 'not_executable'}])
+            create_upload.assert_not_called()
+
+        self.assertEqual(self.agent.journal.get(task_id)['state'], 'canceled')
+        self.assertEqual(self.agent.journal.pending_artifact_records(), [])
+        self.assertTrue(artifact.is_file())
+        self.assertEqual(reconcile_pending_artifacts(self.agent), [])
+
     def test_node_pull_offer_executes_once_through_existing_receipt_flow(self):
         self.store.dispatch_mode = 'node_pull'
         self.agent._worker_running = True
