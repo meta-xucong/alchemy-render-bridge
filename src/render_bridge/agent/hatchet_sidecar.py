@@ -62,6 +62,45 @@ def dispatch_once(client, submit):
     return count
 
 
+def reconcile_pending_artifacts(node):
+    """Retry only journaled artifacts and return metadata-only outcomes."""
+    outcomes = []
+    for record in node.journal.pending_artifact_records():
+        task_id = record['task_id']
+        try:
+            result = node.execute_task(task_id)
+        except Exception as exc:
+            result = {'outcome': 'upload_pending', 'error_type': type(exc).__name__}
+        diagnostic = node.journal.get(task_id) or {}
+        upload = diagnostic.get('upload_diagnostic') or {}
+        event = {'task_id': task_id, 'outcome': result.get('outcome', 'upload_pending')}
+        for key in ('stage', 'error_type', 'code'):
+            if result.get(key):
+                event['error_code' if key == 'code' else key] = result[key]
+        if upload:
+            event['attempt_count'] = upload.get('attempt_count')
+            event['last_attempt_at'] = upload.get('last_attempt_at')
+            if not event.get('stage'):
+                event['stage'] = upload.get('stage')
+            if not event.get('error_type'):
+                event['error_type'] = upload.get('error_type')
+            if not event.get('error_code'):
+                event['error_code'] = upload.get('error_code')
+        outcomes.append(event)
+    return outcomes
+
+
+def delivery_event_signature(event):
+    return tuple(event.get(key) for key in
+                 ('outcome', 'stage', 'error_type', 'error_code'))
+
+
+def should_log_delivery_event(event, previous, now):
+    if previous is None or previous[0] != delivery_event_signature(event):
+        return True
+    return event.get('outcome') == 'upload_pending' and now - previous[1] >= 30
+
+
 def input_type():
     from pydantic import BaseModel, ConfigDict
     class TaskInput(BaseModel):
@@ -193,12 +232,17 @@ def main(argv=None):
                         node.execute_task(record['task_id'])
                     except Exception:
                         pass  # Original local journal remains the recovery authority.
+                last_delivery_events = {}
                 while True:
-                    for record in node.journal.pending_artifact_records():
-                        try:
-                            node.execute_task(record['task_id'])
-                        except Exception:
-                            pass  # Retry only the same saved artifact and task identity.
+                    for event in reconcile_pending_artifacts(node):
+                        now = time.monotonic()
+                        previous = last_delivery_events.get(event['task_id'])
+                        if should_log_delivery_event(event, previous, now):
+                            print(json.dumps({'event': 'artifact_delivery', **event}), flush=True)
+                            last_delivery_events[event['task_id']] = (
+                                delivery_event_signature(event), now)
+                        if event['outcome'] in ('artifact_committed', 'already_committed'):
+                            last_delivery_events.pop(event['task_id'], None)
                     try:
                         task_id = client.next_task()
                         if task_id:
