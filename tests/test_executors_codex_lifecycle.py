@@ -18,12 +18,21 @@ class CodexLifecycleTests(unittest.TestCase):
     def run_fixture(self, image, requested_format=None, actual_format='png', recover=False, transparent=False,
                     reference=False,
                     terminal_failure=False, cli_version='codex-cli 0.157.1', output_delta_count=0,
-                    image_event='imageGeneration', image_item_id='image-fixture'):
+                    image_event='imageGeneration', image_item_id='image-fixture',
+                    generated_under_codex_home=False, configured_codex_home=None):
         original_bytes = (fixture_jpeg if actual_format == 'jpeg' else fixture_png)()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             script = root / 'mock.py'
-            script.write_text('''import sys,json,pathlib,base64
+            if configured_codex_home is True:
+                codex_home_value = str(root / 'configured-codex-home')
+            elif configured_codex_home is not None:
+                codex_home_value = str(configured_codex_home)
+            else:
+                codex_home_value = ''
+            expected_codex_home = (Path(codex_home_value).expanduser().resolve()
+                                   if codex_home_value else (root / '.codex').resolve())
+            script.write_text('''import sys,json,pathlib,base64,os
 sys.stdin.reconfigure(encoding='utf-8')
 sys.stdout.reconfigure(encoding='utf-8')
 stage=0
@@ -31,6 +40,7 @@ def emit(value): print(json.dumps(value),flush=True)
 for line in sys.stdin:
  r=json.loads(line); method=r['method']; p=r.get('params',{})
  if stage==0:
+  assert os.environ.get('CODEX_HOME') == EXPECTED_CODEX_HOME
   assert method=='initialize' and p['clientInfo']['name']=='alchemy-render-bridge'
   emit({'id':r['id'],'result':{'userAgent':'mock'}})
  elif stage==1:
@@ -53,7 +63,11 @@ for line in sys.stdin:
   for index in range(OUTPUT_DELTA_COUNT):
    emit({'method':'item/commandExecution/outputDelta','params':{'delta':'ImageGen skill output chunk'}})
   if IMAGE:
-   original=pathlib.Path.cwd()/'image-fixture.png'
+   if IMAGE_UNDER_CODEX_HOME:
+    original=pathlib.Path(os.environ['CODEX_HOME'])/'generated_images'/'thread-fixture'/'image-fixture.png'
+    original.parent.mkdir(parents=True,exist_ok=True)
+   else:
+    original=pathlib.Path.cwd()/'image-fixture.png'
    original.write_bytes(base64.b64decode(PNG))
    item={'type':IMAGE_EVENT_TYPE,'id':IMAGE_ITEM_ID,'status':'completed','result':'','savedPath':str(original)}
    if IMAGE_EVENT_TYPE=='Extension': item['kind']='image_gen.generation'
@@ -63,7 +77,7 @@ for line in sys.stdin:
   emit({'method':'turn/completed','params':{'threadId':'thread-fixture','turn':{'id':'turn-fixture','status':'completed','items':[item]}}})
  else: raise AssertionError('duplicate operation')
  stage+=1
-'''.replace('OUTPUT_DELTA_COUNT', str(output_delta_count)).replace('IMAGE_EVENT_TYPE', repr(image_event)).replace('IMAGE_ITEM_ID', repr(image_item_id)).replace('if IMAGE:', 'if ' + repr(image) + ':').replace('base64.b64decode(PNG)', 'base64.b64decode(' + repr(base64.b64encode(original_bytes).decode()) + ')').replace('INVOKE_TRANSPARENT', repr(transparent and cli_version == 'codex-cli 0.163.0')).replace('HAS_REFERENCE', repr(reference)).replace('REF_NAME', repr('reference.png' if reference else '')), encoding='utf-8')
+'''.replace('OUTPUT_DELTA_COUNT', str(output_delta_count)).replace('IMAGE_EVENT_TYPE', repr(image_event)).replace('IMAGE_ITEM_ID', repr(image_item_id)).replace('if IMAGE:', 'if ' + repr(image) + ':').replace('IMAGE_UNDER_CODEX_HOME', repr(generated_under_codex_home)).replace('base64.b64decode(PNG)', 'base64.b64decode(' + repr(base64.b64encode(original_bytes).decode()) + ')').replace('INVOKE_TRANSPARENT', repr(transparent and cli_version == 'codex-cli 0.163.0')).replace('HAS_REFERENCE', repr(reference)).replace('REF_NAME', repr('reference.png' if reference else '')).replace('EXPECTED_CODEX_HOME', repr(str(expected_codex_home))), encoding='utf-8')
             reference_path = root / 'reference.png'
             references = ()
             if reference:
@@ -83,16 +97,19 @@ for line in sys.stdin:
                                  accepted_cli_version=cli_version,
                                  image_capability_verified=True, tool_policy_verified=True, approval_policy='on-request', timeout=3)
             executor = CodexExecutor(root / 'data', config)
-            def launch(argv, cwd, timeout):
+            def launch(argv, cwd, timeout, env=None):
                 self.assertEqual(argv, ['codex', '-c', 'mcp_servers={}',
                                         '-c', 'plugins={}', '--enable', 'image_generation',
                                         'app-server', '--stdio'])
-                return StdioSession([sys.executable, '-u', str(script)], cwd, timeout=timeout)
+                self.assertEqual(env['CODEX_HOME'], str(expected_codex_home))
+                return StdioSession([sys.executable, '-u', str(script)], cwd, timeout=timeout, env=env)
             with patch('render_bridge.executors.codex.probe_codex', return_value={
                     'cli_version': cli_version,
                     'schema_version_matches': True, 'stdio_advertised': True}), patch(
                     'render_bridge.executors.codex.StdioSession',
-                    side_effect=launch) as launched:
+                    side_effect=launch) as launched, patch.dict(
+                    os.environ, {'CODEX_HOME': codex_home_value}), patch(
+                    'pathlib.Path.home', return_value=root):
                 result = executor.execute(request)
                 self.assertEqual(launched.call_count, 1)
                 if image:
@@ -139,6 +156,22 @@ for line in sys.stdin:
 
     def test_full_image_lifecycle_and_replay(self):
         self.run_fixture(True)
+
+    def test_default_codex_home_output_is_collected_without_environment_configuration(self):
+        self.run_fixture(True, generated_under_codex_home=True)
+
+    def test_configured_codex_home_output_is_collected_and_shared_with_child(self):
+        self.run_fixture(True, generated_under_codex_home=True, configured_codex_home=True)
+
+    def test_relative_codex_home_is_shared_as_absolute_and_output_is_collected(self):
+        with tempfile.TemporaryDirectory(prefix='.tmp-codex-home-', dir=Path.cwd()) as codex_home:
+            self.run_fixture(True, generated_under_codex_home=True,
+                             configured_codex_home=Path(codex_home).name)
+
+    def test_relative_codex_home_is_resolved_before_use(self):
+        configured = '.codex-test-home'
+        with patch.dict(os.environ, {'CODEX_HOME': configured}):
+            self.assertEqual(CodexExecutor._codex_home(), Path(configured).resolve())
 
     def test_large_command_output_delta_burst_does_not_abort_image_turn(self):
         self.run_fixture(True, output_delta_count=500)
