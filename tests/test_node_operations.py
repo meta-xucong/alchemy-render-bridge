@@ -59,6 +59,42 @@ class NodeOperationsTests(unittest.TestCase):
         self.assertEqual(self.store.get_task(self.scope, task)['state'], 'execution_unknown')
         self.assertFalse(self.client.start(task, claim['claim_id'])['may_execute'])
 
+    def test_cancel_completed_artifact_releases_only_matching_cancel_requested_attempt(self):
+        task = self.create('codex-image')
+        claim = self.client.claim(task)
+        self.client.start(task, claim['claim_id'])
+        self.store.cancel_task(self.scope, task)
+        self.assertEqual('cancel_requested', self.store.get_task(self.scope, task)['state'])
+        path = f'/bridge/node/v1/tasks/{task}/cancel-completed'
+        response = self.client.http.post(path, json={'attempt_id': claim['attempt_id']})
+        self.assertEqual(200, response.status_code, response.text)
+        confirmation = response.json()
+        self.assertEqual({'task_id': task, 'attempt_id': claim['attempt_id'], 'status': 'canceled'}, confirmation)
+        self.assertEqual('canceled', self.store.get_task(self.scope, task)['state'])
+        repeated = self.client.http.post(path, json={'attempt_id': claim['attempt_id']})
+        self.assertEqual(200, repeated.status_code, repeated.text)
+        self.assertEqual(confirmation, repeated.json())
+        self.assertEqual(0, self.store.capabilities(self.scope)['queue']['active_tasks'])
+
+    def test_cancel_completed_rejects_wrong_attempt_active_or_uploaded_task(self):
+        task = self.create('codex-image')
+        claim = self.client.claim(task)
+        self.client.start(task, claim['claim_id'])
+        path = f'/bridge/node/v1/tasks/{task}/cancel-completed'
+        response = self.client.http.post(path, json={'attempt_id': 'wrong-attempt'})
+        self.assertEqual(409, response.status_code)
+        self.assertEqual('running', self.store.get_task(self.scope, task)['state'])
+        response = self.client.http.post(path, json={'attempt_id': claim['attempt_id']})
+        self.assertEqual(409, response.status_code)
+        self.assertEqual('running', self.store.get_task(self.scope, task)['state'])
+        self.client.create_upload(task, claim['claim_id'], {
+            'attempt_id': claim['attempt_id'], 'slot_id': 'primary',
+            'original_sha256': 'a' * 64, 'size': 2, 'mime_type': 'image/png'})
+        self.store.cancel_task(self.scope, task)
+        response = self.client.http.post(path, json={'attempt_id': claim['attempt_id']})
+        self.assertEqual(409, response.status_code)
+        self.assertEqual('cancel_requested', self.store.get_task(self.scope, task)['state'])
+
     def test_existing_receipt_source_read_and_ack_survive_revoke(self):
         task = self.create('fake-image')
         self.agent.execute_task(task)

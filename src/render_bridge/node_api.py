@@ -13,7 +13,7 @@ from pydantic import Field, StrictStr, StrictInt
 from .api import _APIError, _bounded_body, _json_request, _TOKEN
 from .domain import BridgeStore, SourceScope
 from .profiles import MAX_PROFILE_OUTPUT_BYTES
-from .schemas import StrictRequest, Key, SHA256, TerminalFailureRequest
+from .schemas import StrictRequest, Key, SHA256, TerminalFailureRequest, CancelCompletedRequest
 
 
 @dataclass(frozen=True)
@@ -156,6 +156,12 @@ def install_node_routes(app, store: BridgeStore, node_tokens: Mapping[str, NodeS
     async def terminal_failure(task_id: str, request: Request, identity: NodeScope = Depends(node)):
         data = await _json_request(request, TerminalFailureRequest, 4096)
         return await call_store(store.confirm_terminal_failure, identity.source_scope, task_id,
+                                identity.node_id, identity.executor_instance, data)
+
+    @app.post(prefix + '/tasks/{task_id}/cancel-completed')
+    async def cancel_completed(task_id: str, request: Request, identity: NodeScope = Depends(node)):
+        data = await _json_request(request, CancelCompletedRequest, 4096)
+        return await call_store(store.confirm_cancelled_completion, identity.source_scope, task_id,
                                 identity.node_id, identity.executor_instance, data)
 
     @app.post(prefix + '/tasks/{task_id}/unknown')

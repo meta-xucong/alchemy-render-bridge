@@ -52,6 +52,10 @@ class TerminalFailureRequest(StrictRequest):
     evidence: TerminalFailureEvidence
 
 
+class CancelCompletedRequest(StrictRequest):
+    attempt_id: Key
+
+
 class InputCreate(StrictRequest):
     input_key: Key
     original_sha256: SHA256

@@ -122,6 +122,10 @@ class NodeAgent:
             return self._report_terminal_failure(record)
         if record and record['state'] == 'terminal_failed':
             return {'outcome': 'terminal_failed', 'task_id': task_id}
+        if task['state'] == 'cancel_requested':
+            if record and record['state'] == 'artifact_ready':
+                return self._confirm_cancelled_completion(record)
+            return {'outcome': 'cancel_pending', 'task_id': task_id}
         if task['state'] in ('canceled', 'failed', 'expired'):
             if record and record['state'] == 'artifact_ready':
                 record['state'] = task['state']
@@ -559,6 +563,23 @@ class NodeAgent:
             return {'outcome': 'terminal_failed', 'task_id': record['task_id']}
         except Exception:
             return {'outcome': 'failure_report_pending', 'task_id': record['task_id']}
+
+    def _confirm_cancelled_completion(self, record):
+        try:
+            confirmation = self.client.cancel_completed(record['task_id'], record['attempt_id'])
+            if (confirmation.get('status') != 'canceled'
+                    or confirmation.get('task_id') != record['task_id']
+                    or confirmation.get('attempt_id') != record['attempt_id']):
+                raise ValueError('Cancellation confirmation binding mismatch')
+            record.update(state='canceled')
+            record.pop('cancel_completion_pending', None)
+            self.journal.save(record)
+            return {'outcome': 'cancel_completed', 'task_id': record['task_id']}
+        except Exception as exc:
+            record['cancel_completion_pending'] = True
+            self.journal.save(record)
+            return {'outcome': 'cancel_pending', 'error_type': type(exc).__name__,
+                    'task_id': record['task_id']}
 
     def _retry_terminal_reports(self):
         # Only reconcile existing execution evidence. Never dispatch, preflight,

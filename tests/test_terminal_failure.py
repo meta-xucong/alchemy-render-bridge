@@ -143,6 +143,60 @@ class TerminalFailureTests(unittest.TestCase):
         self.assertFalse(agent.journal.occupied_by_other('next'))
         self.assertEqual('artifact_committed',agent.execute_task(self.create('fake-image','next'))['outcome'])
 
+    def test_cancel_requested_completed_artifact_terminalizes_without_upload_or_reexecution(self):
+        agent,executor=self.configured();task=self.create('codex-image')
+        claim=self.client.claim(task);self.client.start(task,claim['claim_id'])
+        self.store.cancel_task(self.scope,task)
+        record={'task_id':task,'attempt_id':claim['attempt_id'],'state':'artifact_ready',
+                'artifact':'attempts/'+task+'/'+claim['attempt_id']+'/result.original',
+                'sha256':'a'*64,'size':1,'mime_type':'image/png'}
+        artifact=agent.journal.root/record['artifact'];artifact.parent.mkdir(parents=True)
+        artifact.write_bytes(b'complete-local-artifact')
+        agent.journal.save(record)
+        with patch.object(self.client,'create_upload',side_effect=AssertionError('canceled task must not upload')), \
+             patch.object(executor,'execute',side_effect=AssertionError('completed task must not execute again')):
+            result=agent.execute_task(task)
+        self.assertEqual('cancel_completed',result['outcome'])
+        self.assertEqual('canceled',self.store.get_task(self.scope,task)['state'])
+        self.assertEqual('canceled',agent.journal.get(task)['state'])
+        self.assertIsNone(self.store.get_task(self.scope,task)['receipt_id'])
+        self.assertFalse(agent.journal.occupied_by_other('next'))
+
+    def test_cancel_requested_without_durable_artifact_remains_latched(self):
+        agent,executor=self.configured();task=self.create('codex-image')
+        claim=self.client.claim(task);grant=self.client.start(task,claim['claim_id'])
+        agent.journal.save({'task_id':task,'attempt_id':claim['attempt_id'],
+                            'start_grant_id':grant['start_grant_id'],'state':'execution_unknown'})
+        self.store.cancel_task(self.scope,task)
+        with patch.object(self.client,'cancel_completed',side_effect=AssertionError('no artifact evidence')):
+            result=agent.execute_task(task)
+        self.assertEqual('cancel_pending',result['outcome'])
+        self.assertEqual('cancel_requested',self.store.get_task(self.scope,task)['state'])
+        self.assertTrue(agent.journal.occupied_by_other('next'))
+
+    def test_lost_cancel_confirmation_reconciles_same_attempt_without_upload(self):
+        agent,executor=self.configured();task=self.create('codex-image')
+        claim=self.client.claim(task);self.client.start(task,claim['claim_id'])
+        self.store.cancel_task(self.scope,task)
+        record={'task_id':task,'attempt_id':claim['attempt_id'],'state':'artifact_ready',
+                'artifact':'attempts/'+task+'/'+claim['attempt_id']+'/result.original',
+                'sha256':'a'*64,'size':1,'mime_type':'image/png'}
+        artifact=agent.journal.root/record['artifact'];artifact.parent.mkdir(parents=True)
+        artifact.write_bytes(b'complete-local-artifact')
+        agent.journal.save(record)
+        confirm=self.client.cancel_completed
+        def commit_then_lose_response(*args):
+            confirm(*args)
+            raise TimeoutError('confirmation response lost')
+        with patch.object(self.client,'cancel_completed',side_effect=commit_then_lose_response), \
+             patch.object(self.client,'create_upload',side_effect=AssertionError('canceled task must not upload')):
+            self.assertEqual('cancel_pending',agent.execute_task(task)['outcome'])
+        self.assertEqual('canceled',self.store.get_task(self.scope,task)['state'])
+        with patch.object(self.client,'create_upload',side_effect=AssertionError('must not replay upload')), \
+             patch.object(executor,'execute',side_effect=AssertionError('must not regenerate')):
+            self.assertEqual('not_executable',agent.execute_task(task)['outcome'])
+        self.assertEqual('canceled',agent.journal.get(task)['state'])
+
     def test_timeout_without_confirmed_local_exit_stays_unknown_and_occupied(self):
         agent,executor=self.configured();task=self.create('codex-image')
         def not_reaped(request):

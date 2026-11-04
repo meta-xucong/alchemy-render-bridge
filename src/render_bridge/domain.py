@@ -165,6 +165,8 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS terminal_failures (
                     task_id TEXT PRIMARY KEY, payload TEXT NOT NULL, confirmation TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS cancel_completions (
+                    task_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, confirmation TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS withdrawals (
                     source TEXT NOT NULL, workspace TEXT NOT NULL, withdrawal_key TEXT NOT NULL,
                     task_id TEXT NOT NULL UNIQUE, proof TEXT NOT NULL,
@@ -1107,6 +1109,37 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             con.execute('DELETE FROM task_attention WHERE task_id=?', (task_id,))
             self._audit(con, scope, 'terminal_failure_confirmed', task_id=task_id,
                         attempt_id=task['attempt_id'])
+            return confirmation
+
+    def confirm_cancelled_completion(self, scope, task_id, node_id, executor_instance, payload):
+        from .schemas import CancelCompletedRequest
+        try:
+            payload = CancelCompletedRequest.model_validate(payload).model_dump()
+        except ValueError:
+            _fail('invalid_cancel_completion')
+        with self._transaction() as con:
+            self._check_node_active(con, scope, node_id, executor_instance, required=True)
+            task = self._scoped(con, 'tasks', task_id, scope)
+            attempt = con.execute('SELECT * FROM attempts WHERE task_id=?', (task_id,)).fetchone()
+            if (self._profile(task).id != 'codex-image' or not attempt['start_grant_id']
+                    or payload['attempt_id'] != task['attempt_id']
+                    or attempt['original_node'] != node_id or attempt['original_executor'] != executor_instance):
+                _fail('cancel_completion_binding_mismatch', 409)
+            old = con.execute('SELECT * FROM cancel_completions WHERE task_id=?', (task_id,)).fetchone()
+            if old:
+                if old['attempt_id'] != payload['attempt_id']:
+                    _fail('cancel_completion_binding_mismatch', 409)
+                return json.loads(old['confirmation'])
+            if (task['state'] != 'cancel_requested' or not task['cancel_requested']
+                    or con.execute('SELECT 1 FROM receipts WHERE task_id=?', (task_id,)).fetchone()
+                    or con.execute('SELECT 1 FROM uploads WHERE task_id=?', (task_id,)).fetchone()):
+                _fail('cancel_completion_not_safe', 409)
+            confirmation = {'task_id': task_id, 'attempt_id': payload['attempt_id'], 'status': 'canceled'}
+            con.execute('INSERT INTO cancel_completions VALUES(?,?,?)',
+                        (task_id, payload['attempt_id'], _canonical(confirmation)))
+            con.execute("UPDATE tasks SET state='canceled' WHERE id=?", (task_id,))
+            self._audit(con, scope, 'cancel_completed', task_id=task_id,
+                        attempt_id=payload['attempt_id'])
             return confirmation
 
     def mark_execution_unknown(self, scope, task_id, claim_id):

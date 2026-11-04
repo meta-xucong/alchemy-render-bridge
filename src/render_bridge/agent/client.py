@@ -90,6 +90,10 @@ class HttpNodeClient:
         return self.request('POST', f'/tasks/{self.key(task_id)}/terminal-failure',
                             json={'attempt_id': attempt_id, 'evidence': evidence}).json()
 
+    def cancel_completed(self, task_id, attempt_id):
+        return self.request('POST', f'/tasks/{self.key(task_id)}/cancel-completed',
+                            json={'attempt_id': attempt_id}).json()
+
     def unknown(self, task_id, claim_id):
         return self.request('POST', f'/tasks/{self.key(task_id)}/unknown', json={'claim_id': claim_id}).json()
 
