@@ -3,30 +3,35 @@
 ## Intended behavior
 
 The Codex image tool saves its original under the user's Codex home. The Bridge
-app-server and any shell tool launched by that Codex turn must resolve the same
-home so the turn can finish and the existing event-bound output can be
-collected into the active Bridge attempt.
+executor resolves that same home for the app-server child and collects the
+original from the image-generation item's `savedPath`. The native path is
+authoritative; the executor does not require a shell step to copy the image.
 
 ## Observed mismatch
 
-In the VPS acceptance run, `image_gen.generation` completed. The following
-Codex shell step tried to locate `generated_images` through `$env:CODEX_HOME`,
-but that variable was empty. The shell step failed, the Codex turn never
-completed, and Bridge eventually reported its existing 600-second timeout.
+The original VPS run exposed a missing `CODEX_HOME` in the Codex child. After
+the environment fix was merged, a later real run saved two images under the
+native `CODEX_HOME/generated_images/<thread>` location, but the turn still
+timed out in `turn_wait` without a captured `turn/completed` event. Therefore
+the environment fix was necessary but not sufficient.
 
 ## Owning layer and correction
 
 The Bridge Codex executor owns the child process environment and output-path
-resolution. When `CODEX_HOME` is unset, both now use `Path.home() / '.codex'`;
-when it is configured, both use that configured path, resolving relative
-values in the Bridge process before passing them to the app-server child. This
-keeps both processes pointed at the same image output location used by Bridge's
-existing collection path.
+resolution. When `CODEX_HOME` is unset, it uses `Path.home() / '.codex'`; when
+configured, it resolves that value before passing it to the app-server child.
+The prompt contract now asks for one native image generation, treats the
+completed item's `savedPath` as the original, and ends the turn without shell,
+steps to locate, copy, move, or convert the image. Lifecycle diagnostics retain
+only allowlisted item type and kind labels and counts, never event payloads or
+prompt text. Those counters will help distinguish a missing terminal event
+from an unexpected item shape.
 
 ## Acceptance
 
 Deterministic lifecycle tests must prove that unset and configured
 `CODEX_HOME` values reach the app-server child consistently, relative values
-resolve to one absolute path, and the normal image event lifecycle returns one
-artifact. Real provider generation is reserved for final acceptance after the
-focused regression suite passes.
+resolve to one absolute path, and both `imageGeneration` and
+`Extension:image_gen.generation` events return the original artifact from
+`savedPath`. Final real-provider acceptance follows the complete focused test
+suite and independent code audit.
