@@ -31,7 +31,7 @@ class CodexLifecycleTests(unittest.TestCase):
             else:
                 codex_home_value = ''
             expected_codex_home = (Path(codex_home_value).expanduser().resolve()
-                                   if codex_home_value else root / '.codex')
+                                   if codex_home_value else (root / '.codex').resolve())
             script.write_text('''import sys,json,pathlib,base64,os
 sys.stdin.reconfigure(encoding='utf-8')
 sys.stdout.reconfigure(encoding='utf-8')
