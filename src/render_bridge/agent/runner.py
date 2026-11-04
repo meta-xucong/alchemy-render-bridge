@@ -123,6 +123,9 @@ class NodeAgent:
         if record and record['state'] == 'terminal_failed':
             return {'outcome': 'terminal_failed', 'task_id': task_id}
         if task['state'] in ('canceled', 'failed', 'expired'):
+            if record and record['state'] == 'artifact_ready':
+                record['state'] = task['state']
+                self.journal.save(record)
             return {'outcome': 'not_executable', 'task_id': task_id}
         profile_id = task['request']['execution_profile_id']
         validate_image_request(task['request']['parameters'], task['request']['references'], profile_id)
