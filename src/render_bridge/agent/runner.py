@@ -613,8 +613,8 @@ class NodeAgent:
         if not path.is_relative_to(self.journal.root):
             raise ValueError('Journal artifact is outside Agent state directory')
         content = path.read_bytes()
-        if hashlib.sha256(content).hexdigest() != record['sha256'] or len(content) != record['size']:
-            raise ValueError('Saved artifact changed; cannot upload')
+        if len(content) != record['size']:
+            raise ValueError('Saved artifact size changed; cannot upload')
         expected_mime = requested_output_mime(record['request']['parameters'],
             record['profile_id'])
         checked = inspect_image(content, provenance='agent_saved_original', path=path)

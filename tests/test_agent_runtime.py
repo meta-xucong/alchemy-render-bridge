@@ -11,6 +11,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from render_bridge.agent import AgentBusy, HttpNodeClient, InstanceLock, NodeAgent
+from render_bridge.agent import runner as agent_runner
 from render_bridge.agent.client import validated_url
 from render_bridge.agent.hatchet_sidecar import (
     TASK_NAME, delivery_event_signature, make_submitter, make_worker,
@@ -136,6 +137,17 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual((task['attempt_id'], receipt['attempt_id']), (record['attempt_id'], record['attempt_id']))
         self.assertEqual(hashlib.sha256(delivered).hexdigest(), original_hash)
         self.assertEqual(delivered, original)
+        self.assertEqual(self.fake.calls, 1)
+
+    def test_artifact_upload_replay_does_not_recompute_content_digest(self):
+        task_id = self.create()
+        create_upload = self.client.create_upload
+        self.client.create_upload = lambda *args: (_ for _ in ()).throw(ConnectionError())
+        self.assertEqual(self.agent.execute_task(task_id, self.fake)['outcome'], 'upload_pending')
+        self.client.create_upload = create_upload
+        with patch.object(agent_runner, 'hashlib', object()):
+            result = self.agent.execute_task(task_id, self.fake)
+        self.assertEqual(result['outcome'], 'artifact_committed')
         self.assertEqual(self.fake.calls, 1)
 
     def test_pull_worker_retries_transient_upload_failure_without_rerender(self):
