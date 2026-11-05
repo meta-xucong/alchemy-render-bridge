@@ -13,7 +13,7 @@ from pydantic import Field, StrictStr, StrictInt
 from .api import _APIError, _bounded_body, _json_request, _TOKEN
 from .domain import BridgeStore, SourceScope
 from .profiles import MAX_PROFILE_OUTPUT_BYTES
-from .schemas import StrictRequest, Key, SHA256, TerminalFailureRequest, CancelCompletedRequest
+from .schemas import StrictRequest, Key, TerminalFailureRequest, CancelCompletedRequest
 
 
 @dataclass(frozen=True)
@@ -60,7 +60,6 @@ class AttentionRequest(StrictRequest):
 class UploadMetadata(StrictRequest):
     attempt_id: Key
     slot_id: Literal['primary']
-    original_sha256: SHA256
     size: Annotated[int, Field(strict=True, ge=1, le=MAX_PROFILE_OUTPUT_BYTES)]
     mime_type: Literal['image/png', 'image/jpeg']
 

@@ -72,7 +72,7 @@ class FakeEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200, response.text)
         response = await self.client.get(f"/bridge/v1/artifacts/{receipt['artifact_id']}/content")
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(hashlib.sha256(response.content).hexdigest(), receipt["original_sha256"])
+        self.assertNotIn("original_sha256", receipt)
         # Independent external-side counter, not merely final artifact cardinality.
         for _ in range(100):
             try:
@@ -82,7 +82,7 @@ class FakeEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.starts.read_text().splitlines()), 1)
         ack = {
             "client_receipt_id": "mock-native-registration-1", "decision": "accepted",
-            "reason_code": "fixture_import_confirmed", "original_hash": receipt["original_sha256"],
+            "reason_code": "fixture_import_confirmed",
             "native_registration_ref": "mock-output-only",
         }
         first = await self.client.post(f"/bridge/v1/receipts/{receipt_id}/ack", json=ack)

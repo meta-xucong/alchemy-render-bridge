@@ -169,6 +169,8 @@ for line in sys.stdin:
                 self.assertEqual(replay.code, result.code)
                 if image and image_item_id == 'image-fixture':
                     self.assertEqual(replay.artifact.path.read_bytes(), original_bytes)
+                    cache = json.loads((root / 'data/task/attempt/artifact.json').read_text())
+                    self.assertNotIn('sha256', cache)
                 self.assertEqual(launched.call_count, 1)
                 folder = root / 'data/task/attempt'
                 self.assertEqual(json.loads((folder / 'codex-turn.json').read_text())['thread_id'], 'thread-fixture')
@@ -332,9 +334,9 @@ for line in sys.stdin:
             self.assertEqual(result.status, 'ready')
             self.assertEqual(result.artifact.path, root / 'bridge-data/task/attempt/artifact.original')
             self.assertEqual(result.artifact.path.read_bytes(), original)
-            self.assertEqual(result.artifact.sha256, replay.artifact.sha256)
-            self.assertEqual(json.loads((root / 'bridge-data/task/attempt/retention-files.json').read_text()),
-                             {'original': 'artifact.original', 'sha256': result.artifact.sha256})
+            self.assertEqual(replay.artifact.path.read_bytes(), result.artifact.path.read_bytes())
+            registry = json.loads((root / 'bridge-data/task/attempt/retention-files.json').read_text())
+            self.assertEqual(registry, {'original': 'artifact.original'})
 
     def test_codex_generated_image_from_another_thread_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

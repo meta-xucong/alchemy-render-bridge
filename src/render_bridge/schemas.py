@@ -137,10 +137,6 @@ class ReceiptAck(StrictRequest):
     client_receipt_id: Key
     decision: Literal["accepted", "rejected"]
     reason_code: Key
-    original_hash: SHA256
-    # Omission is supported, explicit null is not. The internal None default is
-    # hidden from the wire schema; factories also avoid exporting default:null.
-    normalized_hash: SHA256 | SkipJsonSchema[None] = Field(default_factory=lambda: None)
     native_registration_ref: OpaqueReference | SkipJsonSchema[None] = Field(
         default_factory=lambda: None
     )
@@ -149,9 +145,8 @@ class ReceiptAck(StrictRequest):
     @classmethod
     def optional_fields_must_not_be_null(cls, value: object) -> object:
         if isinstance(value, dict):
-            for field in ("normalized_hash", "native_registration_ref"):
-                if field in value and value[field] is None:
-                    raise ValueError("Optional fields must be omitted instead of null.")
+            if "native_registration_ref" in value and value["native_registration_ref"] is None:
+                raise ValueError("Optional fields must be omitted instead of null.")
         return value
 
 

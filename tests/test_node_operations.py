@@ -89,7 +89,7 @@ class NodeOperationsTests(unittest.TestCase):
         self.assertEqual('running', self.store.get_task(self.scope, task)['state'])
         self.client.create_upload(task, claim['claim_id'], {
             'attempt_id': claim['attempt_id'], 'slot_id': 'primary',
-            'original_sha256': 'a' * 64, 'size': 2, 'mime_type': 'image/png'})
+            'size': 2, 'mime_type': 'image/png'})
         self.store.cancel_task(self.scope, task)
         response = self.client.http.post(path, json={'attempt_id': claim['attempt_id']})
         self.assertEqual(409, response.status_code)
@@ -105,7 +105,7 @@ class NodeOperationsTests(unittest.TestCase):
         self.assertEqual(self.client.http.get('/bridge/v1/receipts/'+receipt_id, headers=headers).status_code, 200)
         self.assertEqual(self.client.http.get('/bridge/v1/artifacts/'+receipt['artifact_id']+'/content', headers=headers).status_code, 200)
         payload = {'client_receipt_id': 'secret-client-reason-not-in-audit', 'decision': 'accepted',
-                   'reason_code': 'private-user-reason', 'original_hash': receipt['original_sha256']}
+                   'reason_code': 'private-user-reason'}
         for _ in range(2):
             self.assertEqual(self.client.http.post('/bridge/v1/receipts/'+receipt_id+'/ack', json=payload, headers=headers).status_code, 200)
         events = self.store.audit_events(self.scope)['events']
@@ -126,7 +126,7 @@ class NodeOperationsTests(unittest.TestCase):
         content = fixture_png(32, 24)
         upload = self.client.create_upload(task, claim['claim_id'], {
             'attempt_id': claim['attempt_id'], 'slot_id': 'primary',
-            'original_sha256': hashlib.sha256(content).hexdigest(), 'size': len(content), 'mime_type': 'image/png'})
+            'size': len(content), 'mime_type': 'image/png'})
         self.toggle(False)
         with self.assertRaises(DomainError) as error:
             self.store.put_upload_content(self.scope, upload['upload_id'], claim['claim_id'], content)

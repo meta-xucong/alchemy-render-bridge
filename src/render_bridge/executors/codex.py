@@ -697,20 +697,25 @@ class CodexExecutor:
                 'rollout_sha256': digest, 'terminal_event': terminal_event,
                 **({'terminal_reason': terminal_reason} if terminal_reason is not None else {}),
                 'source_path': str(resolved),
-                'original_sha256': verified.sha256, 'size': verified.size,
+                'size': verified.size,
                 'mime_type': verified.mime_type,
                 'dimensions': {'width': verified.width, 'height': verified.height},
                 'bridge_binding': bridge_binding,
                 'review_only': review_only,
             }
             evidence_path = files.path / evidence_name
-            if _expected_evidence is not None and _expected_evidence != evidence:
-                raise ValueError('Persisted interrupted-image evidence changed')
+            if _expected_evidence is not None:
+                expected_evidence = dict(_expected_evidence)
+                expected_evidence.pop('original_sha256', None)
+                if expected_evidence != evidence:
+                    raise ValueError('Persisted interrupted-image evidence changed')
             try:
                 files.write_exclusive(evidence_path, json.dumps(
                     evidence, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
             except FileExistsError:
-                if json.loads(evidence_path.read_text(encoding='utf-8')) != evidence:
+                persisted_evidence = json.loads(evidence_path.read_text(encoding='utf-8'))
+                persisted_evidence.pop('original_sha256', None)
+                if persisted_evidence != evidence:
                     raise ValueError('Terminal-image evidence conflicts with persisted proof')
             artifact = files.save(content, provenance)
             if artifact.status != 'ready' or artifact.artifact is None:
@@ -954,12 +959,12 @@ class CodexExecutor:
         result = files.save(content, 'codex_image_event_locally_unverified')
         if result.artifact is not None:
             registry = files.path / 'retention-files.json'
-            registered = json.dumps({'original': 'artifact.original',
-                                     'sha256': result.artifact.sha256}).encode()
+            registered = json.dumps({'original': 'artifact.original'}).encode()
             try:
                 files.write_exclusive(registry, registered)
             except FileExistsError:
-                if registry.read_bytes() != registered:
+                persisted_registry = json.loads(registry.read_text(encoding='utf-8'))
+                if persisted_registry.get('original') != 'artifact.original':
                     raise ValueError('Generated original registration changed')
         return ExecutionResult(result.status, result.code, result.artifact,
                                {**result.details, 'thread_id': thread_id, 'turn_id': turn_id,

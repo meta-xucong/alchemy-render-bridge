@@ -18,8 +18,7 @@ class FakeExecutor:
             path = Path(reference['path'])
             if not path.is_file() or path.is_symlink() or path.stat().st_size > 16 * 1024 * 1024:
                 raise ValueError('Invalid staged reference')
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
-            if digest != reference['hash']:
+            if hashlib.sha256(path.read_bytes()).hexdigest() != reference['hash']:
                 raise ValueError('Staged reference hash differs')
             references.append({key: reference[key] for key in ('input_ref', 'role', 'hash')})
         files = AttemptFiles(self.root, request, 'fake-image')

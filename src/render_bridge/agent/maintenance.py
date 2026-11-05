@@ -24,7 +24,8 @@ def _owned_file(root, path):
     current = root
     for part in relative.parts:
         current /= part
-        if current.is_symlink():
+        if (current.is_symlink()
+                or (hasattr(current, 'is_junction') and current.is_junction())):
             raise ValueError('Symlink in managed path')
     if path.exists() and not stat.S_ISREG(path.stat().st_mode):
         raise ValueError('Managed media must be a regular file')
@@ -39,12 +40,14 @@ def _registered_files(journal, record):
     attempt = root / 'attempts' / tid / aid
     executor = root / 'executors' / tid / aid
     files = []
+    generated_files = []
     reference_hashes = {}
     if record.get('artifact'):
         artifact = _owned_file(root, record['artifact'])
         if artifact != attempt / 'result.original':
             raise ValueError('Unexpected registered artifact path')
         files.append(artifact)
+        generated_files.append(artifact)
     for index, reference in enumerate(record.get('request', {}).get('references', [])):
         path = _owned_file(root, reference['path'])
         if path != attempt / f'input-{index:02d}.original':
@@ -55,24 +58,32 @@ def _registered_files(journal, record):
     manifest = _owned_file(root, executor / 'artifact.json')
     if manifest.exists():
         data = json.loads(manifest.read_text())
-        if data['sha256'] != record.get('sha256') or data['request_sha256'] != record.get('request_sha256'):
+        if data.get('request_sha256') != record.get('request_sha256'):
             raise ValueError('Executor manifest does not match completed attempt')
         files.append(original)
+        generated_files.append(original)
         registry = _owned_file(root, executor / 'retention-files.json')
         if registry.exists():
             value = json.loads(registry.read_text())
             path = _owned_file(root, executor / value['original'])
-            if not path.is_relative_to(executor) or value['sha256'] != record.get('sha256'):
+            if not path.is_relative_to(executor):
                 raise ValueError('Registered generated original does not match attempt')
             files.append(path)
-    # Verify original bytes before scheduling deletion. Never discard changed files.
+            generated_files.append(path)
+    # Verify reference inputs by their reference hashes. Generated copies are
+    # bound by the task/attempt record and exact bytes before scheduling deletion.
+    canonical = _owned_file(root, record['artifact']) if record.get('artifact') else original
+    canonical_bytes = canonical.read_bytes() if canonical.exists() else None
     for path in files:
         if path.exists():
             if path.stat().st_size > 16 * 1024 * 1024:
                 raise ValueError('Managed media exceeds bounds')
-            expected = reference_hashes.get(path, record.get('sha256'))
-            if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
-                raise ValueError('Managed media changed')
+            if path in reference_hashes:
+                if hashlib.sha256(path.read_bytes()).hexdigest() != reference_hashes[path]:
+                    raise ValueError('Managed reference changed')
+            elif (path in generated_files and canonical_bytes is not None
+                    and path.read_bytes() != canonical_bytes):
+                raise ValueError('Managed generated original changed')
     return sorted({str(path.relative_to(root)) for path in files}), executor, manifest.exists()
 
 

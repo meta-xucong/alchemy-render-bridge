@@ -23,8 +23,7 @@ class AgentRetentionTests(unittest.TestCase):
         record = self.agent.journal.get(tid)
         if ack:
             self.store.ack_receipt(self.scope, record['receipt_id'], {
-                'client_receipt_id': key, 'decision': 'accepted', 'reason_code': 'fixture',
-                'original_hash': record['sha256']})
+                'client_receipt_id': key, 'decision': 'accepted', 'reason_code': 'fixture'})
         return tid, record
 
     def test_reclaims_only_managed_copies_and_never_rerenders(self):
@@ -106,7 +105,7 @@ class AgentRetentionTests(unittest.TestCase):
         generated = directory / 'generated-image.png'
         generated.write_bytes((directory / 'artifact.original').read_bytes())
         (directory / 'retention-files.json').write_text(json.dumps({
-            'original': generated.name, 'sha256': record['sha256']}))
+            'original': generated.name, 'sha256': 'legacy-generated-image-sha'}))
         self.maintain()
         self.now += 10
         self.assertEqual(self.maintain()['reclaimed'], 1)
@@ -132,8 +131,7 @@ class ManualRetentionTests(unittest.TestCase):
                                  confirmed_single_original=True)
         record = self.agent.journal.get(tid)
         self.store.ack_receipt(self.scope, record['receipt_id'], {
-            'client_receipt_id': tid, 'decision': 'rejected', 'reason_code': 'fixture',
-            'original_hash': record['sha256']})
+            'client_receipt_id': tid, 'decision': 'rejected', 'reason_code': 'fixture'})
         maintain_agent(self.agent, retention_seconds=10, clock=lambda: self.now)
         self.now += 10
         self.assertEqual(maintain_agent(self.agent, retention_seconds=10, clock=lambda: self.now)['reclaimed'], 1)
