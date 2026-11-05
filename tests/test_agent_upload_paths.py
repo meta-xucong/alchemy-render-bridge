@@ -34,14 +34,14 @@ class UploadPathTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "agent-state"
-            artifact = root / "attempts" / "task-fixture" / "attempt-fixture" / "result.original"
+            client = Client()
+            agent = NodeAgent(client, root, registry=ExecutorRegistry({}))
+            artifact = agent.journal.root / "attempts" / "task-fixture" / "attempt-fixture" / "result.original"
             artifact.parent.mkdir(parents=True)
             output = io.BytesIO()
             Image.new("RGB", (8, 8), "white").save(output, format="PNG")
             content = output.getvalue()
             artifact.write_bytes(content)
-            client = Client()
-            agent = NodeAgent(client, root, registry=ExecutorRegistry({}))
             agent.journal.save({
                 "task_id": "task-fixture", "attempt_id": "attempt-fixture", "claim_id": "claim-fixture",
                 "profile_id": "codex-image", "state": "artifact_ready",
@@ -74,15 +74,15 @@ class UploadPathTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "agent-state"
-            artifact = root / "attempts" / "task-fixture" / "attempt-fixture" / "result.original"
+            client = Client()
+            agent = NodeAgent(client, root, registry=ExecutorRegistry({}))
+            artifact = agent.journal.root / "attempts" / "task-fixture" / "attempt-fixture" / "result.original"
             artifact.parent.mkdir(parents=True)
             output = io.BytesIO()
             Image.new("RGB", (8, 8), "white").save(output, format="PNG")
             content = output.getvalue()
             artifact.write_bytes(content)
 
-            client = Client()
-            agent = NodeAgent(client, root, registry=ExecutorRegistry({}))
             record = {
                 "task_id": "task-fixture",
                 "attempt_id": "attempt-fixture",
