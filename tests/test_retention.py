@@ -16,6 +16,7 @@ class RetentionTests(unittest.TestCase):
     payload = test_domain.DomainTests.payload
     png = staticmethod(test_domain.DomainTests.png)
     metadata = staticmethod(test_domain.DomainTests.metadata)
+    output_metadata = staticmethod(test_domain.DomainTests.output_metadata)
     input = test_domain.DomainTests.input
     task = test_domain.DomainTests.task
     started = test_domain.DomainTests.started
@@ -33,11 +34,10 @@ class RetentionTests(unittest.TestCase):
         grant = self.store.start_execution(self.scope, tid, claim['claim_id'])
         data = self.png()
         upload = self.store.create_upload(self.scope, tid, claim['claim_id'],
-            {'attempt_id': grant['attempt_id'], 'slot_id': 'primary', **self.metadata(data)})
+            {'attempt_id': grant['attempt_id'], 'slot_id': 'primary', **self.output_metadata(data)})
         self.store.put_upload_content(self.scope, upload['upload_id'], claim['claim_id'], data)
         receipt = self.store.commit_upload(self.scope, upload['upload_id'], claim['claim_id'])
-        ack = {'client_receipt_id': key, 'decision': decision, 'reason_code': 'fixture',
-               'original_hash': receipt['original_sha256']}
+        ack = {'client_receipt_id': key, 'decision': decision, 'reason_code': 'fixture'}
         self.store.ack_receipt(self.scope, receipt['receipt_id'], ack)
         return request, task, receipt, ack
 
@@ -55,7 +55,7 @@ class RetentionTests(unittest.TestCase):
                              self.scope, receipt['artifact_id']).status, 410)
             self.assertEqual(self.store.create_task(self.scope, request)['remote_task_id'], task['remote_task_id'])
             self.assertEqual(self.store.ack_receipt(self.scope, receipt['receipt_id'], ack)['delivery_ack'], decision)
-            self.assertEqual(self.store.get_receipt(self.scope, receipt['receipt_id'])['original_sha256'], receipt['original_sha256'])
+            self.assertEqual(self.store.get_receipt(self.scope, receipt['receipt_id'])['receipt_id'], receipt['receipt_id'])
 
     def test_shared_input_and_unknown_are_protected(self):
         inp, data, _ = self.input()

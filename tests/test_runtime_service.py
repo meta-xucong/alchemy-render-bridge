@@ -76,16 +76,16 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         grant=(await self.req('POST',prefix+'/start',token='node-test',json={'claim_id':claim['claim_id']})).json()
         self.assertTrue(grant['may_execute'])
         self.assertFalse((await self.req('POST',prefix+'/start',token='node-test',json={'claim_id':claim['claim_id']})).json()['may_execute'])
-        content=fixture_png(32,32); digest=hashlib.sha256(content).hexdigest()
+        content=fixture_png(32,32)
         upload=(await self.req('POST',prefix+'/uploads',token='node-test',json={'claim_id':claim['claim_id'], 'payload':{
-            'attempt_id':claim['attempt_id'],'slot_id':'primary','original_sha256':digest,'size':len(content),'mime_type':'image/png'}})).json()
+            'attempt_id':claim['attempt_id'],'slot_id':'primary','size':len(content),'mime_type':'image/png'}})).json()
         up='/bridge/node/v1/uploads/'+upload['upload_id']
         await self.req('PUT',up+'/content',token='node-test',content=content,headers={'X-Bridge-Claim':claim['claim_id'],'Content-Type':'image/png'})
         receipt=(await self.req('POST',up+'/commit',token='node-test',json={'claim_id':claim['claim_id']})).json()
         downloaded=await self.req('GET','/bridge/v1/artifacts/'+receipt['artifact_id']+'/content')
         self.assertEqual(downloaded.content,content)
         await self.req('POST','/bridge/v1/receipts/'+receipt['receipt_id']+'/ack',json={
-            'client_receipt_id':'dynamic-result','decision':'accepted','reason_code':'fixture_verified','original_hash':digest})
+            'client_receipt_id':'dynamic-result','decision':'accepted','reason_code':'fixture_verified'})
         reopened=BridgeStore(self.root/'ledger.db',self.root/'objects')
         self.assertEqual(reopened.get_task(self.scope,tid)['delivery_ack'],'accepted')
 

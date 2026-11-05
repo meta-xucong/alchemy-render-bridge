@@ -23,7 +23,6 @@ class CodexContractUpgradeTests(unittest.TestCase):
         self.store = self.open_store()
         self.addCleanup(lambda: self.store.close())
         self.png = fixture_png()
-        self.sha = hashlib.sha256(self.png).hexdigest()
 
     def open_store(self):
         return BridgeStore(self.root/'db', self.root/'objects', clock=lambda: 1800000000,
@@ -41,7 +40,7 @@ class CodexContractUpgradeTests(unittest.TestCase):
         files = AttemptFiles(self.root/'local', request, 'codex-cli')
         files.write_exclusive(files.path/'artifact.original', self.png)
         files.write_exclusive(files.path/'artifact.json', json.dumps({
-            'request_sha256': request.digest, 'sha256': self.sha,
+            'request_sha256': request.digest, 'sha256': 'legacy-generated-image-sha',
             'size': len(self.png), 'mime_type':'image/png', 'width':32, 'height':32,
             'provenance':'codex_image_event_locally_unverified'}).encode())
         return files
@@ -50,17 +49,18 @@ class CodexContractUpgradeTests(unittest.TestCase):
         parameters = {'image_options':{'schema_version':'1','quality':'auto','output_format':'jpeg'}}
         request = ExecutionRequest('task','attempt','frozen',parameters)
         files = self.legacy_cache(request)
-        frozen = (files.path/'artifact.json').read_bytes()
+        original = (files.path/'artifact.original').read_bytes()
         with patch('render_bridge.executors.codex.StdioSession', side_effect=AssertionError('no new turn')):
             result = CodexExecutor(self.root/'local').execute(request)
         self.assertEqual((result.status,result.code), ('needs_attention','output_format_mismatch'))
-        self.assertEqual(result.artifact.sha256,self.sha)
-        self.assertEqual((files.path/'artifact.json').read_bytes(),frozen)
+        self.assertEqual(result.artifact.size,len(self.png))
+        self.assertEqual((files.path/'artifact.original').read_bytes(),original)
+        self.assertNotIn('sha256', result.artifact.__dict__)
         task = self.store.create_task(self.scope,self.payload(parameters))
         claim = self.store.claim_task(self.scope,task['remote_task_id'],node_id='node',executor_instance='exec')
         self.store.start_execution(self.scope,task['remote_task_id'],claim['claim_id'])
         upload = self.store.create_upload(self.scope,task['remote_task_id'],claim['claim_id'],{
-            'attempt_id':claim['attempt_id'],'slot_id':'primary','original_sha256':self.sha,
+            'attempt_id':claim['attempt_id'],'slot_id':'primary',
             'size':len(self.png),'mime_type':'image/png'})
         self.store.close(); self.store = self.open_store()
         with self.assertRaises(DomainError) as error:
@@ -70,10 +70,11 @@ class CodexContractUpgradeTests(unittest.TestCase):
         self.assertFalse(self.store.start_execution(self.scope,task['remote_task_id'],claim['claim_id'])['may_execute'])
 
     def test_legacy_eight_references_replay_and_cached_recovery_survive_reopen(self):
-        item = self.store.create_input(self.scope,{'input_key':'ref','original_sha256':self.sha,
+        reference_sha = hashlib.sha256(self.png).hexdigest()
+        item = self.store.create_input(self.scope,{'input_key':'ref','original_sha256':reference_sha,
                                                  'size':len(self.png),'mime_type':'image/png'})
         self.store.put_input_content(self.scope,item['input_id'],self.png)
-        refs = [{'input_ref':item['input_id'],'role':'reference','hash':self.sha} for _ in range(8)]
+        refs = [{'input_ref':item['input_id'],'role':'reference','hash':reference_sha} for _ in range(8)]
         payload = self.payload(references=refs)
         task = self.store.create_task(self.scope,payload)
         self.store.close(); self.store = self.open_store()
@@ -84,7 +85,7 @@ class CodexContractUpgradeTests(unittest.TestCase):
         with patch('render_bridge.executors.codex.StdioSession', side_effect=AssertionError('no new turn')):
             result = CodexExecutor(self.root/'local').recover_completed(request)
         self.assertEqual(result.status,'ready')
-        self.assertEqual(result.artifact.sha256,self.sha)
+        self.assertEqual(result.artifact.size,len(self.png))
         with self.assertRaises(ValueError):
             validate_image_request({'codex_adapter':CODEX_ADAPTER},refs,'codex-image')
 

@@ -51,6 +51,10 @@ class DomainTests(unittest.TestCase):
         return {"original_sha256": hashlib.sha256(data).hexdigest(),
                 "size": len(data), "mime_type": "image/png"}
 
+    @staticmethod
+    def output_metadata(data):
+        return {"size": len(data), "mime_type": "image/png"}
+
     def input(self, key="input-one"):
         content = self.png()
         payload = {"input_key": key, **self.metadata(content)}
@@ -84,7 +88,7 @@ class DomainTests(unittest.TestCase):
     def ready_upload(self):
         task, claim, grant = self.started()
         data = self.png()
-        payload = {"attempt_id": grant["attempt_id"], "slot_id": "primary", **self.metadata(data)}
+        payload = {"attempt_id": grant["attempt_id"], "slot_id": "primary", **self.output_metadata(data)}
         upload = self.store.create_upload(self.scope, task["remote_task_id"], claim["claim_id"], payload)
         self.store.put_upload_content(self.scope, upload["upload_id"], claim["claim_id"], data)
         return task, claim, upload, data
@@ -262,7 +266,7 @@ class DomainTests(unittest.TestCase):
         self.assertEqual(receipt, self.reopen().commit_upload(self.scope, upload["upload_id"], claim["claim_id"]))
         self.assertEqual((data, "image/png"), self.reopen().get_artifact_content(self.scope, receipt["artifact_id"]))
         ack = {"client_receipt_id": "client-receipt", "decision": "accepted",
-               "reason_code": "imported", "original_hash": receipt["original_sha256"],
+               "reason_code": "imported",
                "native_registration_ref": "opaque"}
         confirmed = self.store.ack_receipt(self.scope, receipt["receipt_id"], ack)
         self.assertEqual("accepted", confirmed["delivery_ack"])
@@ -328,7 +332,7 @@ class DomainTests(unittest.TestCase):
         task, execute_claim, grant = self.started_codex()
         self.store.mark_execution_unknown(self.scope, task["remote_task_id"], execute_claim["claim_id"])
         data = self.png()
-        payload = {"attempt_id": grant["attempt_id"], "slot_id": "primary", **self.metadata(data)}
+        payload = {"attempt_id": grant["attempt_id"], "slot_id": "primary", **self.output_metadata(data)}
         self.assert_error("upload_only_claim_required", self.store.create_upload, self.scope,
                           task["remote_task_id"], execute_claim["claim_id"], payload)
 
@@ -343,7 +347,7 @@ class DomainTests(unittest.TestCase):
     def test_unknown_codex_attempt_rejects_old_execute_during_existing_upload(self):
         task, execute_claim, grant = self.started_codex()
         data = self.png()
-        payload = {"attempt_id": grant["attempt_id"], "slot_id": "primary", **self.metadata(data)}
+        payload = {"attempt_id": grant["attempt_id"], "slot_id": "primary", **self.output_metadata(data)}
         upload = self.store.create_upload(self.scope, task["remote_task_id"], execute_claim["claim_id"], payload)
         self.store.put_upload_content(self.scope, upload["upload_id"], execute_claim["claim_id"], data)
         self.store.mark_execution_unknown(self.scope, task["remote_task_id"], execute_claim["claim_id"])
@@ -352,10 +356,10 @@ class DomainTests(unittest.TestCase):
         self.assert_error("upload_only_claim_required", self.store.commit_upload, self.scope,
                           upload["upload_id"], execute_claim["claim_id"])
 
-    def test_output_slot_attempt_hash_and_dimensions(self):
+    def test_output_slot_attempt_binding_and_dimensions(self):
         task, claim, grant = self.started()
         data = self.png((31, 32))
-        payload = {"attempt_id": grant["attempt_id"], "slot_id": "primary", **self.metadata(data)}
+        payload = {"attempt_id": grant["attempt_id"], "slot_id": "primary", **self.output_metadata(data)}
         self.assert_error("upload_binding_mismatch", self.store.create_upload, self.scope,
                           task["remote_task_id"], claim["claim_id"], dict(payload, attempt_id="other"))
         self.assert_error("upload_binding_mismatch", self.store.create_upload, self.scope,

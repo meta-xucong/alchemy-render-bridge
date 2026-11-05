@@ -127,8 +127,7 @@ class ReadinessTests(unittest.TestCase):
         view = self.store.get_task(self.scope, task)
         receipt = self.store.get_receipt(self.scope, view['receipt_id'])
         ack = self.store.ack_receipt(self.scope, receipt['receipt_id'], {
-            'client_receipt_id': 'client', 'decision': 'accepted', 'reason_code': 'fixture',
-            'original_hash': receipt['original_sha256']})
+            'client_receipt_id': 'client', 'decision': 'accepted', 'reason_code': 'fixture'})
         self.assertEqual(ack['delivery_ack'], 'accepted')
 
     def test_failed_heartbeat_retries_quickly_and_success_restores_normal_interval(self):

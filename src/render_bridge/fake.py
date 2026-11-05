@@ -1,7 +1,6 @@
 """Explicit in-process test executor; never a production dispatcher or real provider."""
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 import os
@@ -74,7 +73,6 @@ def run_fake_once(
         {
             "attempt_id": grant["attempt_id"],
             "slot_id": "primary",
-            "original_sha256": hashlib.sha256(content).hexdigest(),
             "size": len(content),
             "mime_type": "image/" + output_format,
         },

@@ -83,6 +83,14 @@ class AgentJournal:
             return json.loads(row['record']) if row else None
 
     def save(self, record):
+        record = dict(record)
+        record.pop('sha256', None)
+        for key in ('review_only_reconciliation', 'completed_rollout_reconciliation'):
+            proof = record.get(key)
+            if isinstance(proof, dict):
+                proof = dict(proof)
+                proof.pop('original_sha256', None)
+                record[key] = proof
         with self.connection() as con:
             old = con.execute('SELECT attempt_id FROM attempts WHERE task_id=?', (record['task_id'],)).fetchone()
             if old and old['attempt_id'] != record['attempt_id']:

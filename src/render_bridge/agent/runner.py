@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from .client import NodeHTTPError
 from .journal import AgentJournal, InstanceLock
+from .maintenance import _owned_file
 from render_bridge.domain import MAX_INPUT_BYTES
 from render_bridge.executors.base import ExecutionRequest, inspect_image
 from render_bridge.profiles import get_profile
@@ -122,6 +123,10 @@ class NodeAgent:
             return self._report_terminal_failure(record)
         if record and record['state'] == 'terminal_failed':
             return {'outcome': 'terminal_failed', 'task_id': task_id}
+        if task['state'] == 'cancel_requested':
+            if record and record['state'] == 'artifact_ready':
+                return self._confirm_cancelled_completion(record)
+            return {'outcome': 'cancel_pending', 'task_id': task_id}
         if task['state'] in ('canceled', 'failed', 'expired'):
             if record and record['state'] == 'artifact_ready':
                 record['state'] = task['state']
@@ -130,7 +135,11 @@ class NodeAgent:
         profile_id = task['request']['execution_profile_id']
         validate_image_request(task['request']['parameters'], task['request']['references'], profile_id)
         if record and record['state'] == 'artifact_ready':
-            if profile_id == 'codex-image' and not self._revalidate_codex_artifact(record, task):
+            if (profile_id == 'codex-image'
+                    and record.get('artifact_provenance') in {
+                        'codex_aborted_turn_review_only',
+                        'codex_completed_rollout_reconciled'}
+                    and not self._revalidate_codex_artifact(record, task)):
                 return {'outcome': 'execution_unknown', 'task_id': task_id}
             return self._upload(record)
         profile = get_profile(profile_id)
@@ -268,8 +277,8 @@ class NodeAgent:
 
     def _save_artifact(self, record, artifact, profile):
         content = Path(artifact.path).read_bytes()
-        if not 0 < len(content) <= profile.max_output_bytes or hashlib.sha256(content).hexdigest() != artifact.sha256:
-            raise ValueError('Executor artifact hash or size does not match')
+        if not 0 < len(content) <= profile.max_output_bytes:
+            raise ValueError('Executor artifact size does not match profile limits')
         saved = self.journal.root / 'attempts' / record['task_id'] / record['attempt_id'] / 'result.original'
         checked = inspect_image(content, provenance=artifact.provenance, path=saved)
         if (checked.mime_type != artifact.mime_type or checked.width * checked.height > profile.max_pixels
@@ -280,8 +289,9 @@ class NodeAgent:
             raise ValueError('Executor original does not match requested output format')
         self._save_bytes(saved, content)
         record.update(state='artifact_ready', artifact=str(saved.relative_to(self.journal.root)),
-                      sha256=checked.sha256, size=checked.size, mime_type=checked.mime_type,
+                      size=checked.size, mime_type=checked.mime_type,
                       artifact_provenance=artifact.provenance)
+        record.pop('sha256', None)
         self.journal.save(record)
 
     def _codex_rollout_proof_matches(self, record, proof, artifact, task):
@@ -310,7 +320,8 @@ class NodeAgent:
             and proof.get('task_id') == record.get('task_id') == task.get('remote_task_id')
             and proof.get('attempt_id') == record.get('attempt_id') == task.get('attempt_id')
             and proof.get('request_sha256') == request.digest == record.get('request_sha256')
-            and proof.get('original_sha256') == artifact.sha256
+            and all(isinstance(proof.get(key), str) and bool(proof[key])
+                    for key in ('thread_id', 'turn_id', 'image_item_id'))
             and binding.get('task_digest') == task_digest
             and isinstance(task_digest, str) and len(task_digest) == 64
             and all(char in '0123456789abcdef' for char in task_digest)
@@ -339,20 +350,24 @@ class NodeAgent:
             recovered = None
         artifact = getattr(recovered, 'artifact', None)
         if (getattr(recovered, 'status', None) != 'ready' or artifact is None
-                or artifact.sha256 != record.get('sha256')
                 or artifact.size != record.get('size')
                 or artifact.mime_type != record.get('mime_type')):
             self._unknown(record)
             return False
         try:
-            checked = inspect_image(Path(artifact.path).read_bytes(),
-                                    provenance=artifact.provenance,
-                                    path=Path(artifact.path))
+            recovered_path = Path(artifact.path)
+            recovered_content = recovered_path.read_bytes()
+            saved_path = _owned_file(self.journal.root, record['artifact'])
+            saved_content = saved_path.read_bytes()
+            if recovered_content != saved_content:
+                raise ValueError('Recovered Codex original differs from the journal artifact')
+            checked = inspect_image(recovered_content, provenance=artifact.provenance,
+                                    path=recovered_path)
             profile = get_profile('codex-image')
         except Exception:
             self._unknown(record)
             return False
-        if (checked.sha256 != record.get('sha256') or checked.size != record.get('size')
+        if (checked.size != record.get('size')
                 or checked.mime_type != record.get('mime_type')
                 or checked.width * checked.height > profile.max_pixels
                 or max(checked.width, checked.height) > profile.max_dimension):
@@ -362,10 +377,12 @@ class NodeAgent:
         if proof is not None:
             proof_field = ('review_only_reconciliation' if proof.get('review_only') is True
                            else 'completed_rollout_reconciliation')
+            prior_proof = record.get(proof_field)
+            if isinstance(prior_proof, dict):
+                prior_proof = dict(prior_proof)
+                prior_proof.pop('original_sha256', None)
             if (not self._codex_rollout_proof_matches(record, proof, artifact, task)
-                    or proof.get('original_sha256') != record.get('sha256')
-                    or (record.get(proof_field) is not None
-                        and record[proof_field] != proof)):
+                    or (prior_proof is not None and prior_proof != proof)):
                 self._unknown(record)
                 return False
             record[proof_field] = proof
@@ -440,7 +457,6 @@ class NodeAgent:
                     return {'outcome': 'execution_unknown', 'task_id': task_id}
                 proof = record.get(proof_field)
                 if (not proof or proof.get('contract') != contract
-                        or proof.get('original_sha256') != record.get('sha256')
                         or proof.get('attempt_id') != record.get('attempt_id')
                         or proof.get('task_id') != task_id or proof.get('review_only') is not review_only):
                     self._unknown(record)
@@ -560,6 +576,23 @@ class NodeAgent:
         except Exception:
             return {'outcome': 'failure_report_pending', 'task_id': record['task_id']}
 
+    def _confirm_cancelled_completion(self, record):
+        try:
+            confirmation = self.client.cancel_completed(record['task_id'], record['attempt_id'])
+            if (confirmation.get('status') != 'canceled'
+                    or confirmation.get('task_id') != record['task_id']
+                    or confirmation.get('attempt_id') != record['attempt_id']):
+                raise ValueError('Cancellation confirmation binding mismatch')
+            record.update(state='canceled')
+            record.pop('cancel_completion_pending', None)
+            self.journal.save(record)
+            return {'outcome': 'cancel_completed', 'task_id': record['task_id']}
+        except Exception as exc:
+            record['cancel_completion_pending'] = True
+            self.journal.save(record)
+            return {'outcome': 'cancel_pending', 'error_type': type(exc).__name__,
+                    'task_id': record['task_id']}
+
     def _retry_terminal_reports(self):
         # Only reconcile existing execution evidence. Never dispatch, preflight,
         # open a turn, or release a genuinely unknown execution from health alone.
@@ -612,19 +645,26 @@ class NodeAgent:
             pass  # Local latch remains authoritative for preventing a rerun.
 
     def _upload(self, record):
-        path = (self.journal.root / record['artifact']).resolve()
-        if not path.is_relative_to(self.journal.root):
-            raise ValueError('Journal artifact is outside Agent state directory')
+        # Keep containment checks in the same logical path namespace as the
+        # journal. Path.resolve() can cross Windows AppContainer virtualization
+        # from %LOCALAPPDATA% into Packages\...\LocalCache and falsely report
+        # an Agent-owned artifact as outside its state directory.
+        path = _owned_file(self.journal.root, record['artifact'])
         content = path.read_bytes()
         if len(content) != record['size']:
             raise ValueError('Saved artifact size changed; cannot upload')
         expected_mime = requested_output_mime(record['request']['parameters'],
             record['profile_id'])
         checked = inspect_image(content, provenance='agent_saved_original', path=path)
+        profile = get_profile(record['profile_id'])
+        if (len(content) > profile.max_output_bytes or checked.mime_type != record['mime_type']
+                or checked.width * checked.height > profile.max_pixels
+                or max(checked.width, checked.height) > profile.max_dimension):
+            return {'outcome': 'needs_attention', 'code': 'invalid_media', 'task_id': record['task_id']}
         if expected_mime and checked.mime_type != expected_mime:
             return {'outcome': 'needs_attention', 'code': 'output_format_mismatch', 'task_id': record['task_id']}
         payload = {'attempt_id': record['attempt_id'], 'slot_id': 'primary',
-                   'original_sha256': record['sha256'], 'size': record['size'], 'mime_type': record['mime_type']}
+                   'size': record['size'], 'mime_type': record['mime_type']}
         aborted_artifact = record.get('artifact_provenance') == 'codex_aborted_turn_review_only'
         completed_rollout_artifact = (record.get('artifact_provenance')
                                       == 'codex_completed_rollout_reconciled')
@@ -639,7 +679,6 @@ class NodeAgent:
                 or proof.get('contract') != expected_contract
                 or proof.get('task_id') != record.get('task_id')
                 or proof.get('attempt_id') != record.get('attempt_id')
-                or proof.get('original_sha256') != record.get('sha256')
                 or proof.get('review_only') is not expected_review_only):
             self._unknown(record)
             return {'outcome': 'execution_unknown', 'task_id': record['task_id']}
@@ -703,8 +742,7 @@ class NodeAgent:
             upload_stage = 'commit'
             receipt = self.client.commit(upload['upload_id'], record['claim_id'])
             if (receipt.get('task_id') != record['task_id']
-                    or receipt.get('attempt_id') != record['attempt_id']
-                    or receipt.get('original_sha256') != record['sha256']):
+                    or receipt.get('attempt_id') != record['attempt_id']):
                 raise ValueError('Receipt does not match saved artifact')
             record.update(state='complete', receipt_id=receipt['receipt_id'])
             record.pop('upload_diagnostic', None)

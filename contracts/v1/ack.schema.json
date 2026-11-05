@@ -21,16 +21,6 @@
       "title": "Reason Code",
       "type": "string"
     },
-    "original_hash": {
-      "pattern": "^[0-9a-f]{64}$",
-      "title": "Original Hash",
-      "type": "string"
-    },
-    "normalized_hash": {
-      "pattern": "^[0-9a-f]{64}$",
-      "title": "Normalized Hash",
-      "type": "string"
-    },
     "native_registration_ref": {
       "maxLength": 256,
       "minLength": 1,
@@ -41,8 +31,7 @@
   "required": [
     "client_receipt_id",
     "decision",
-    "reason_code",
-    "original_hash"
+    "reason_code"
   ],
   "title": "ReceiptAck",
   "type": "object"

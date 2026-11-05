@@ -76,12 +76,14 @@ class CodexAbortedImageReconciliationTests(unittest.TestCase):
                 evidence_path = executor.root / request.task_id / request.attempt_id / 'codex-aborted-image.json'
                 evidence = json.loads(evidence_path.read_text(encoding='utf-8'))
                 self.assertEqual(evidence['contract'], 'codex-aborted-image-reconcile/v1')
-                self.assertEqual(evidence['original_sha256'], hashlib.sha256(output.read_bytes()).hexdigest())
+                self.assertNotIn('original_sha256', evidence)
+                evidence['original_sha256'] = 'legacy-generated-image-sha'
+                evidence_path.write_text(json.dumps(evidence), encoding='utf-8')
                 (evidence_path.parent / 'artifact.json').unlink()
                 with patch('render_bridge.executors.codex.StdioSession', side_effect=AssertionError('no CLI')):
                     recovered = executor.recover_completed(request)
                 self.assertEqual(recovered.status, 'ready')
-                self.assertEqual(recovered.artifact.sha256, result.artifact.sha256)
+                self.assertEqual(recovered.artifact.path.read_bytes(), result.artifact.path.read_bytes())
 
     def test_one_bound_completed_rollout_reconciles_without_restarting_codex(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -105,7 +107,7 @@ class CodexAbortedImageReconciliationTests(unittest.TestCase):
                            side_effect=AssertionError('no CLI')):
                     recovered = executor.recover_completed(request)
                 self.assertEqual(recovered.status, 'ready')
-                self.assertEqual(recovered.artifact.sha256, result.artifact.sha256)
+                self.assertEqual(recovered.artifact.path.read_bytes(), result.artifact.path.read_bytes())
 
     def test_completed_rollout_rejects_aborted_terminal(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -273,8 +275,7 @@ class CodexAbortedImageReconciliationTests(unittest.TestCase):
                 self.upload_bytes = content
             def commit(self, upload_id, claim_id):
                 self.committed = {'receipt_id': 'receipt-fixture', 'task_id': self.request.task_id,
-                    'attempt_id': self.request.attempt_id,
-                    'original_sha256': self.payload['original_sha256']}
+                    'attempt_id': self.request.attempt_id}
                 return self.committed
 
         with tempfile.TemporaryDirectory() as temp:
@@ -327,8 +328,7 @@ class CodexAbortedImageReconciliationTests(unittest.TestCase):
                 self.upload_bytes = content
             def commit(self, upload_id, claim_id):
                 return {'receipt_id': 'receipt-fixture', 'task_id': self.request.task_id,
-                    'attempt_id': self.request.attempt_id,
-                    'original_sha256': self.payload['original_sha256']}
+                    'attempt_id': self.request.attempt_id}
 
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -378,8 +378,7 @@ class CodexAbortedImageReconciliationTests(unittest.TestCase):
                 self.upload_bytes = content
             def commit(self, upload_id, claim_id):
                 return {'receipt_id': 'receipt-fixture', 'task_id': self.request.task_id,
-                    'attempt_id': self.request.attempt_id,
-                    'original_sha256': self.payload['original_sha256']}
+                    'attempt_id': self.request.attempt_id}
 
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -595,8 +594,9 @@ class CodexAbortedImageReconciliationTests(unittest.TestCase):
             self.assertEqual(result['outcome'], 'already_committed')
             self.assertEqual(agent.journal.get('task-fixture')['state'], 'complete')
             self.assertEqual(agent.journal.get('task-fixture')['receipt_id'], 'receipt-server')
+            self.assertNotIn('original_sha256', agent.journal.get('task-fixture')['review_only_reconciliation'])
 
-    def test_artifact_ready_replay_rejects_codex_original_over_axis_limit(self):
+    def test_artifact_ready_replay_rejects_saved_original_over_axis_limit(self):
         class Client:
             def __init__(self, request):
                 self.request = request
@@ -627,18 +627,18 @@ class CodexAbortedImageReconciliationTests(unittest.TestCase):
             saved = agent.journal.root / 'attempts' / request.task_id / request.attempt_id / 'result.original'
             saved.parent.mkdir(parents=True)
             saved.write_bytes(content)
-            artifact = SimpleNamespace(path=saved, sha256=hashlib.sha256(content).hexdigest(),
-                size=len(content), mime_type='image/png', provenance='fixture')
+            artifact = SimpleNamespace(path=saved, size=len(content),
+                mime_type='image/png', provenance='fixture')
             agent.journal.save({'task_id': request.task_id, 'attempt_id': request.attempt_id,
                 'state': 'artifact_ready', 'claim_id': 'claim-fixture', 'profile_id': 'codex-image',
                 'request': request.payload(), 'request_sha256': request.digest,
-                'artifact': str(saved.relative_to(agent.journal.root)), 'sha256': artifact.sha256,
+                'artifact': str(saved.relative_to(agent.journal.root)), 'sha256': 'legacy-generated-image-sha',
                 'size': artifact.size, 'mime_type': artifact.mime_type})
             with patch.object(executor, 'recover_completed', return_value=SimpleNamespace(
                     status='ready', artifact=artifact, details={})):
                 result = agent._execute(request.task_id, None)
-            self.assertEqual(result['outcome'], 'execution_unknown')
-            self.assertTrue(client.unknown_called)
+            self.assertEqual(result['outcome'], 'needs_attention')
+            self.assertFalse(client.unknown_called)
             self.assertFalse(client.upload_called)
 
 

@@ -121,7 +121,7 @@ class AgentRuntimeTests(unittest.TestCase):
         task = self.store.get_task(self.scope, task_id)
         receipt = self.store.get_receipt(self.scope, task['receipt_id'])
         content, mime = self.store.get_artifact_content(self.scope, receipt['artifact_id'])
-        self.assertEqual(hashlib.sha256(content).hexdigest(), receipt['original_sha256'])
+        self.assertNotIn('original_sha256', receipt)
         self.assertEqual(mime, 'image/png')
 
     def test_long_render_uploads_after_execution_claim_expires(self):
@@ -150,14 +150,12 @@ class AgentRuntimeTests(unittest.TestCase):
         record = self.agent.journal.get(task_id)
         saved = self.root / 'agent' / record['artifact']
         original = saved.read_bytes()
-        original_hash = hashlib.sha256(original).hexdigest()
         restarted = NodeAgent(self.client, self.root / 'agent')
         self.assertEqual(restarted.execute_task(task_id, self.fake)['outcome'], 'artifact_committed')
         task = self.store.get_task(self.scope, task_id)
         receipt = self.store.get_receipt(self.scope, task['receipt_id'])
         delivered, _mime = self.store.get_artifact_content(self.scope, receipt['artifact_id'])
         self.assertEqual((task['attempt_id'], receipt['attempt_id']), (record['attempt_id'], record['attempt_id']))
-        self.assertEqual(hashlib.sha256(delivered).hexdigest(), original_hash)
         self.assertEqual(delivered, original)
         self.assertEqual(self.fake.calls, 1)
 
@@ -232,7 +230,6 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(self.agent.execute_task(task_id, self.fake)['outcome'], 'upload_pending')
         record = self.agent.journal.get(task_id)
         original = (self.root / 'agent' / record['artifact']).read_bytes()
-        original_hash = hashlib.sha256(original).hexdigest()
         self.client.put_upload = lambda upload_id, claim_id, content, mime_type: (
             sent.append(content), put(upload_id, claim_id, content, mime_type))[1]
         restarted = NodeAgent(self.client, self.root / 'agent')
@@ -241,7 +238,6 @@ class AgentRuntimeTests(unittest.TestCase):
         receipt = self.store.get_receipt(self.scope, task['receipt_id'])
         delivered, _mime = self.store.get_artifact_content(self.scope, receipt['artifact_id'])
         self.assertEqual(sent, [original, original])
-        self.assertEqual(hashlib.sha256(delivered).hexdigest(), original_hash)
         self.assertEqual((task['attempt_id'], receipt['attempt_id']), (record['attempt_id'], record['attempt_id']))
         self.assertEqual(self.fake.calls, 1)
 
@@ -259,7 +255,7 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(restarted.journal.get(task_id)['receipt_id'], receipt_id)
         receipt = self.store.get_receipt(self.scope, receipt_id)
         delivered, _mime = self.store.get_artifact_content(self.scope, receipt['artifact_id'])
-        self.assertEqual(hashlib.sha256(delivered).hexdigest(), receipt['original_sha256'])
+        self.assertEqual(_mime, 'image/png')
         self.assertEqual(self.fake.calls, 1)
 
     def test_start_response_unknown_never_executes_or_takes_another_slot(self):

@@ -45,7 +45,7 @@ class ProfileTests(unittest.TestCase):
         image.save(buf,format='PNG'); data=buf.getvalue()
         if noisy: self.assertGreater(len(data), 1_048_576)
         up=self.store.create_upload(self.scope,tid,claim['claim_id'],dict(attempt_id=claim['attempt_id'],
-            slot_id='primary',original_sha256=hashlib.sha256(data).hexdigest(),size=len(data),mime_type='image/png'))
+            slot_id='primary',size=len(data),mime_type='image/png'))
         self.store.put_upload_content(self.scope,up['upload_id'],claim['claim_id'],data)
         return up
 

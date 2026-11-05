@@ -92,7 +92,8 @@ class ConfiguredWorkerCallbackTests(unittest.TestCase):
             reopened = NodeAgent(self.client, self.state, registry=self.registry)
             self.worker(engine, reopened)
             self.assertEqual(engine.deliver(engine.deliveries[0])['outcome'], 'artifact_committed')
-            self.assertEqual(reopened.journal.get(task)['sha256'], record['sha256'])
+            self.assertNotIn('sha256', record)
+            self.assertNotIn('sha256', reopened.journal.get(task))
             execute.assert_called_once()
 
     def test_manual_callback_returns_attention_then_explicit_same_attempt_resume(self):

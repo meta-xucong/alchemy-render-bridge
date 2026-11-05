@@ -544,7 +544,6 @@ class SourceAPITests(unittest.IsolatedAsyncioTestCase):
             "client_receipt_id": "client-receipt-1",
             "decision": "accepted",
             "reason_code": "fixture_received",
-            "original_hash": receipt["original_sha256"],
             "native_registration_ref": "opaque-registration-1",
         }
         for token in ("test-token-b", "test-token-c"):
@@ -561,7 +560,7 @@ class SourceAPITests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.get(f"{BASE}/artifacts/{artifact_id}/content")
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.content, fixture_png())
-        self.assertEqual(hashlib.sha256(response.content).hexdigest(), receipt["original_sha256"])
+        self.assertNotIn("original_sha256", receipt)
         self.assertEqual(response.headers["content-type"], "image/png")
         self.assertEqual(response.headers["content-disposition"], "attachment")
         for _ in range(2):
@@ -589,25 +588,31 @@ class SourceAPITests(unittest.IsolatedAsyncioTestCase):
 
     async def test_ack_optional_non_null_schema_matches_runtime(self):
         schema = ReceiptAck.model_json_schema()
-        for field in ("normalized_hash", "native_registration_ref"):
-            self.assertNotIn(field, schema["required"])
-            definition = schema["properties"][field]
-            self.assertEqual(definition["type"], "string")
-            self.assertNotIn("anyOf", definition)
-            self.assertNotIn("default", definition)
+        self.assertNotIn("original_hash", schema["properties"])
+        self.assertNotIn("normalized_hash", schema["properties"])
+        self.assertNotIn("original_hash", schema["required"])
+        self.assertNotIn("normalized_hash", schema["required"])
+        definition = schema["properties"]["native_registration_ref"]
+        self.assertEqual(definition["type"], "string")
+        self.assertNotIn("anyOf", definition)
+        self.assertNotIn("default", definition)
         _task, receipt = await self.receipt()
         ack = {
             "client_receipt_id": "client-receipt-1",
             "decision": "accepted",
             "reason_code": "fixture_received",
-            "original_hash": receipt["original_sha256"],
         }
-        for field in ("normalized_hash", "native_registration_ref"):
+        for field in ("original_hash", "normalized_hash"):
             response = await self.client.post(
                 f"{BASE}/receipts/{receipt['receipt_id']}/ack",
-                json={**ack, field: None},
+                json={**ack, field: "unsupported"},
             )
             self.assertEqual(response.status_code, 422, response.text)
+        response = await self.client.post(
+            f"{BASE}/receipts/{receipt['receipt_id']}/ack",
+            json={**ack, "native_registration_ref": None},
+        )
+        self.assertEqual(response.status_code, 422, response.text)
         response = await self.client.post(
             f"{BASE}/receipts/{receipt['receipt_id']}/ack", json=ack
         )

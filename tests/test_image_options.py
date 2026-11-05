@@ -184,7 +184,7 @@ class ImageOptionsContractTests(unittest.TestCase):
         self.store.start_execution(self.scope, task, claim['claim_id'])
         content = fixture_png(32, 24)
         upload = self.store.create_upload(self.scope, task, claim['claim_id'], {
-            'attempt_id': claim['attempt_id'], 'slot_id': 'primary', 'original_sha256': hashlib.sha256(content).hexdigest(),
+            'attempt_id': claim['attempt_id'], 'slot_id': 'primary',
             'size': len(content), 'mime_type': 'image/png'})
         for _ in range(2):
             result = self.store.put_upload_content(self.scope, upload['upload_id'], claim['claim_id'], content)

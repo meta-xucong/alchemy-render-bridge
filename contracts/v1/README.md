@@ -22,6 +22,10 @@ is authoritative for which profiles are enabled and their per-profile limits.
   media acceptance, not Alchemy review approval or verified model provenance.
 - Manual tasks expose `awaiting_user` / `action_required`, do not occupy the
   automatic physical slot, and require explicit original-file import.
+- Node API `cancel-completed` is an additive operator/runtime acknowledgement
+  for an exact canceled Codex attempt whose Agent journal already has a durable
+  `artifact_ready` record; it does not upload or retry the image. See
+  `docs/implementation/CANCEL_COMPLETED_ARTIFACT.md`.
 
 The generated schema's widest numeric ranges are not a promise that every profile
 accepts them. The domain validates the frozen profile and configured capability

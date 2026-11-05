@@ -48,9 +48,9 @@ source_instance/workspace由已认证源应用可用范围产生或校验；浏�
 
 状态最少区分：queued、running、awaiting_user、uploading、artifacts_ready、execution_unknown、cancel_requested、canceled、failed、expired。技术引擎状态不直接暴露为原生Alchemy Job状态。Bridge内部dispatch_pending映射queued并可附reason=dispatch_pending，active映射running；API不要求Alchemy理解内部引擎状态。产物ready后保持artifacts_ready，单独delivery_ack={pending,accepted,rejected}表示确认；内部delivery_acknowledged映射该字段，不另造成第四套任务终态。
 
-receipt：receipt_id、task_id、attempt_id、slot_id、profile实际版本、artifact_id、original_sha256、size、MIME、dimensions、accepted_at。accepted_at表示Bridge媒体接收合格，不表示创意/像素审核通过。
+receipt：receipt_id、task_id、attempt_id、slot_id、profile实际版本、artifact_id、size、MIME、dimensions、accepted_at。输出 artifact 的上传、receipt、下载和 ACK 不使用图片内容 SHA；Bridge仍按size、MIME、尺寸及图像解码校验接收。accepted_at表示Bridge媒体接收合格，不表示创意/像素审核通过。
 
-ack：client_receipt_id、decision(accepted/rejected)、reason_code、可选不透明native_registration_ref、original_hash、可选normalized_hash。Bridge只保存客户确认，不验证客户业务表，也不能据此声明原生交付成功。
+ack：client_receipt_id、decision(accepted/rejected)、reason_code、可选不透明native_registration_ref。Bridge只保存客户确认，不验证客户业务表，也不能据此声明原生交付成功。输入 reference 的内容 hash 仍按输入合同验证。
 
 ## 5. 两端状态对应
 

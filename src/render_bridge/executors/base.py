@@ -46,7 +46,6 @@ class ExecutionRequest:
 @dataclass(frozen=True)
 class Artifact:
     path: Path
-    sha256: str
     size: int
     mime_type: str
     width: int
@@ -72,7 +71,7 @@ def inspect_image(content: bytes, *, provenance: str, path: Path) -> Artifact:
             raise ValueError('Image pixel count exceeds local executor limit')
         width, height, fmt = image.width, image.height, image.format
         image.verify()
-    return Artifact(path, hashlib.sha256(content).hexdigest(), len(content),
+    return Artifact(path, len(content),
                     'image/png' if fmt == 'PNG' else 'image/jpeg', width, height, provenance)
 
 
@@ -119,7 +118,7 @@ class AttemptFiles:
         data = json.loads(manifest.read_text(encoding='utf-8'))
         content_path = self.path / 'artifact.original'
         artifact = inspect_image(content_path.read_bytes(), provenance=data['provenance'], path=content_path)
-        if artifact.sha256 != data['sha256'] or data['request_sha256'] != self.digest:
+        if data.get('request_sha256') != self.digest or artifact.size != data.get('size'):
             raise ValueError('Cached artifact does not match attempt')
         return self._artifact_result(artifact)
 
@@ -137,7 +136,7 @@ class AttemptFiles:
         if cached:
             if cached.artifact is None:
                 return cached
-            if cached.artifact.sha256 != artifact.sha256:
+            if cached.artifact.path.read_bytes() != content:
                 raise ValueError('Attempt already contains a different original')
             return cached
         try:
@@ -145,7 +144,7 @@ class AttemptFiles:
         except FileExistsError:
             if path.read_bytes() != content:
                 raise ValueError('Uncommitted artifact differs; reconcile this attempt')
-        record = {'request_sha256': self.digest, 'sha256': artifact.sha256,
+        record = {'request_sha256': self.digest,
                   'size': artifact.size, 'mime_type': artifact.mime_type,
                   'width': artifact.width, 'height': artifact.height, 'provenance': provenance}
         try:

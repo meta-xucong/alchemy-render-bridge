@@ -59,6 +59,42 @@ class NodeOperationsTests(unittest.TestCase):
         self.assertEqual(self.store.get_task(self.scope, task)['state'], 'execution_unknown')
         self.assertFalse(self.client.start(task, claim['claim_id'])['may_execute'])
 
+    def test_cancel_completed_artifact_releases_only_matching_cancel_requested_attempt(self):
+        task = self.create('codex-image')
+        claim = self.client.claim(task)
+        self.client.start(task, claim['claim_id'])
+        self.store.cancel_task(self.scope, task)
+        self.assertEqual('cancel_requested', self.store.get_task(self.scope, task)['state'])
+        path = f'/bridge/node/v1/tasks/{task}/cancel-completed'
+        response = self.client.http.post(path, json={'attempt_id': claim['attempt_id']})
+        self.assertEqual(200, response.status_code, response.text)
+        confirmation = response.json()
+        self.assertEqual({'task_id': task, 'attempt_id': claim['attempt_id'], 'status': 'canceled'}, confirmation)
+        self.assertEqual('canceled', self.store.get_task(self.scope, task)['state'])
+        repeated = self.client.http.post(path, json={'attempt_id': claim['attempt_id']})
+        self.assertEqual(200, repeated.status_code, repeated.text)
+        self.assertEqual(confirmation, repeated.json())
+        self.assertEqual(0, self.store.capabilities(self.scope)['queue']['active_tasks'])
+
+    def test_cancel_completed_rejects_wrong_attempt_active_or_uploaded_task(self):
+        task = self.create('codex-image')
+        claim = self.client.claim(task)
+        self.client.start(task, claim['claim_id'])
+        path = f'/bridge/node/v1/tasks/{task}/cancel-completed'
+        response = self.client.http.post(path, json={'attempt_id': 'wrong-attempt'})
+        self.assertEqual(409, response.status_code)
+        self.assertEqual('running', self.store.get_task(self.scope, task)['state'])
+        response = self.client.http.post(path, json={'attempt_id': claim['attempt_id']})
+        self.assertEqual(409, response.status_code)
+        self.assertEqual('running', self.store.get_task(self.scope, task)['state'])
+        self.client.create_upload(task, claim['claim_id'], {
+            'attempt_id': claim['attempt_id'], 'slot_id': 'primary',
+            'size': 2, 'mime_type': 'image/png'})
+        self.store.cancel_task(self.scope, task)
+        response = self.client.http.post(path, json={'attempt_id': claim['attempt_id']})
+        self.assertEqual(409, response.status_code)
+        self.assertEqual('cancel_requested', self.store.get_task(self.scope, task)['state'])
+
     def test_existing_receipt_source_read_and_ack_survive_revoke(self):
         task = self.create('fake-image')
         self.agent.execute_task(task)
@@ -69,7 +105,7 @@ class NodeOperationsTests(unittest.TestCase):
         self.assertEqual(self.client.http.get('/bridge/v1/receipts/'+receipt_id, headers=headers).status_code, 200)
         self.assertEqual(self.client.http.get('/bridge/v1/artifacts/'+receipt['artifact_id']+'/content', headers=headers).status_code, 200)
         payload = {'client_receipt_id': 'secret-client-reason-not-in-audit', 'decision': 'accepted',
-                   'reason_code': 'private-user-reason', 'original_hash': receipt['original_sha256']}
+                   'reason_code': 'private-user-reason'}
         for _ in range(2):
             self.assertEqual(self.client.http.post('/bridge/v1/receipts/'+receipt_id+'/ack', json=payload, headers=headers).status_code, 200)
         events = self.store.audit_events(self.scope)['events']
@@ -90,7 +126,7 @@ class NodeOperationsTests(unittest.TestCase):
         content = fixture_png(32, 24)
         upload = self.client.create_upload(task, claim['claim_id'], {
             'attempt_id': claim['attempt_id'], 'slot_id': 'primary',
-            'original_sha256': hashlib.sha256(content).hexdigest(), 'size': len(content), 'mime_type': 'image/png'})
+            'size': len(content), 'mime_type': 'image/png'})
         self.toggle(False)
         with self.assertRaises(DomainError) as error:
             self.store.put_upload_content(self.scope, upload['upload_id'], claim['claim_id'], content)
