@@ -26,9 +26,9 @@ receives any bytes. It is supporting evidence, not a second authority.
 
 - Remove the local re-read digest comparison in `_upload()`; retain the recorded
   size check and image decode/format checks.
-- Keep sending the saved artifact's recorded `original_sha256` as the existing
-  API contract requires. Bridge continues to validate the upload and receipt
-  against that value.
+- Send the saved artifact's recorded size and MIME type. Generated output
+  hashes are not part of the upload, receipt, or ACK contract; reference-input
+  hashes remain unchanged.
 - Add a regression that fails the first upload reservation, then prevents the
   local runner module from accessing a digest function while retrying the same
   artifact. The retry must receive a receipt and the renderer must still have
@@ -39,8 +39,8 @@ shared API, routing, fallback, or receipt contract.
 
 ## Acceptance boundary
 
-The offline regression proves that artifact replay no longer performs a second
-local digest calculation. The guarded live test must then show local journal
+The offline regression proves that artifact replay does not calculate a
+generated-image digest. The guarded live test must then show local journal
 `complete`, a Bridge receipt for the same task/attempt, and zero active queue.
 It does not claim Alchemy history binding.
 

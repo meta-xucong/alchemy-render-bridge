@@ -19,6 +19,7 @@ class ConfiguredProcessTests(unittest.TestCase):
             self.assertTrue(result['manual_import_after_restart'])
             self.assertTrue(result['manual_wait_does_not_block_automatic'])
             self.assertEqual(result['manual_receipt_ack'], 'accepted')
+            self.assertNotIn('artifact_sha256', result)
             self.assertTrue(result['temporary_runtime_removed'])
             self.assertTrue(result['server_process_stopped'])
             self.assertTrue((output / 'synthetic.png').is_file())

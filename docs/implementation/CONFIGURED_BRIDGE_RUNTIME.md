@@ -28,7 +28,7 @@
 2. 复制 `config/bridge.example.json` 到本机工作目录，确认持久 `data_dir` 和身份；再执行上面的模块命令。
 3. 在另一套固定 Hatchet SDK 解释器中启动 `render_bridge.agent.hatchet_sidecar` 的 dispatcher 和 worker 入口。各入口的参数以该模块 `--help` 为准；服务端不安装或导入 SDK。
 4. 来源客户端调用 `/bridge/v1/tasks`。dispatcher 仅提交 `task_id` 给唯一任务 `bridge-node-execute-v1`；Agent 通过 Node HTTP 取得冻结请求及执行许可，再回传产物。
-5. 来源客户端查询任务、读取收据和下载产物，核验 hash 后按同 receipt 确认。
+5. 来源客户端查询任务、读取收据和下载产物，按文件大小与媒体类型核对后按同 receipt 确认。
 
 默认只绑定 `127.0.0.1:8787`。非 loopback 绑定必须显式配置 `tls_certfile` 和 `tls_keyfile`，客户端不能跳过证书验证。提供 TLS 配置能力不代表已部署、已配置证书或已验收双 VPS 通信。
 
@@ -40,7 +40,7 @@
 - `POST /bridge/node/v1/tasks/{task_id}/claim`，`{"mode":"execute"}` 或 `{"mode":"upload_only"}`：返回原 claim 视图，开发版租期 3600 秒。
 - `POST .../start`、`POST .../unknown`，`{"claim_id":"..."}`。
 - `GET .../inputs/{input_id}/content`，`X-Bridge-Claim` header：仅当前任务已绑定的输入。
-- `POST .../uploads`，`{"claim_id":"...","payload":{"attempt_id":"...","slot_id":"primary","original_sha256":"...","size":123,"mime_type":"image/png"}}`。
+- `POST .../uploads`，`{"claim_id":"...","payload":{"attempt_id":"...","slot_id":"primary","size":123,"mime_type":"image/png"}}`。
 - `PUT /bridge/node/v1/uploads/{upload_id}/content`：媒体字节，带 `X-Bridge-Claim` 和正确媒体类型。
 - `POST .../commit`，`{"claim_id":"..."}`：返回收据。
 - `GET /bridge/dispatch/v1/pending?limit=10`：返回 `{"items":[{"dispatch_key":"...","task_id":"..."}]}`。这是交接 outbox，不签发执行许可。

@@ -6,7 +6,6 @@ Only explicit synthetic outputs survive; temporary runtime state is removed.
 from __future__ import annotations
 import argparse
 from datetime import datetime, timedelta, timezone
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -118,12 +117,11 @@ def run_demo(output_dir: Path):
                 response = source.get('/bridge/v1/artifacts/' + receipt['artifact_id'] + '/content')
                 response.raise_for_status()
                 content = response.content
-                digest = hashlib.sha256(content).hexdigest()
-                if digest != receipt['original_sha256']:
-                    raise RuntimeError('Downloaded artifact hash mismatch')
+                if len(content) != receipt['size']:
+                    raise RuntimeError('Downloaded artifact size mismatch')
                 response = source.post('/bridge/v1/receipts/' + receipt_id + '/ack', json={
                     'client_receipt_id': 'configured-demo-ack', 'decision': 'accepted',
-                    'reason_code': 'synthetic_demo_verified', 'original_hash': digest})
+                    'reason_code': 'synthetic_demo_verified'})
                 response.raise_for_status()
                 starts = list((root / 'agent' / 'executors').rglob('started'))
                 if len(starts) != 1:
@@ -144,18 +142,19 @@ def run_demo(output_dir: Path):
                 response = source.get('/bridge/v1/receipts/' + manual_receipt_id)
                 response.raise_for_status()
                 manual_receipt = response.json()
-                if manual_receipt['original_sha256'] != digest or manual_receipt['execution_profile_id'] != 'midjourney-manual':
+                if (manual_receipt['size'] != len(content)
+                        or manual_receipt['execution_profile_id'] != 'midjourney-manual'):
                     raise RuntimeError('Manual receipt identity mismatch')
                 response = source.post('/bridge/v1/receipts/' + manual_receipt_id + '/ack', json={
                     'client_receipt_id': 'manual-demo-ack', 'decision': 'accepted',
-                    'reason_code': 'synthetic_manual_demo_verified', 'original_hash': digest})
+                    'reason_code': 'synthetic_manual_demo_verified'})
                 response.raise_for_status()
                 result = {'status': 'passed', 'mode': 'configured_processes_mock_dispatcher',
                           'source_transport': 'http', 'node_transport': 'http',
                           'server_process': True, 'agent_process': True,
                           'dynamic_outbox': True, 'same_origin_replay': True,
                           'agent_restart_replay': replay['outcome'], 'fake_render_starts': len(starts),
-                          'artifact_sha256': digest, 'artifact_bytes': len(content),
+                          'artifact_bytes': len(content),
                           'receipt_ack': 'accepted', 'manual_import_after_restart': True,
                           'manual_wait_does_not_block_automatic': True, 'manual_receipt_ack': 'accepted',
                           'real_hatchet': False, 'real_provider': False}
