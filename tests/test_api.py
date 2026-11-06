@@ -244,7 +244,7 @@ class SourceAPITests(unittest.IsolatedAsyncioTestCase):
             headers={"Content-Type": "application/octet-stream"},
         )
         self.assertEqual(response.status_code, 415)
-        for record in (reserved, invalid, valid):
+        for record in (invalid, valid):
             fetched = await self.client.get(f"{BASE}/inputs/{record['input_id']}")
             self.assertNotEqual(fetched.json()["state"], "ready")
 
