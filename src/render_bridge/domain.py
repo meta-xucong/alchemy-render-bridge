@@ -441,8 +441,6 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
 
     @staticmethod
     def _media_metadata(payload, *, output=False, profile=None):
-        if not output:
-            _hash(payload["original_sha256"])
         _integer(payload["size"], 1, (profile.max_output_bytes if profile else MAX_OUTPUT_BYTES) if output else MAX_INPUT_BYTES)
         if not isinstance(payload["mime_type"], str) or payload["mime_type"] not in _MIMES:
             _fail("unsupported_media_type", 415)
@@ -454,8 +452,6 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             _fail("file_too_large", 413)
         if len(content) != payload["size"]:
             _fail("size_mismatch", 422)
-        if not output and hashlib.sha256(content).hexdigest() != payload["original_sha256"]:
-            _fail("hash_mismatch", 422)
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("error", Image.DecompressionBombWarning)
@@ -530,7 +526,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                 "near_capacity": used * 100 >= capacity * 80,
                 "at_capacity": used >= capacity}
 
-    def _store_bytes(self, con, object_id, content, *, verify_hash=True):
+    def _store_bytes(self, con, object_id, content):
         file_name = object_id + ".blob"
         target = self.root / file_name
         try:
@@ -542,10 +538,8 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             # immutable object after validating its inode type, size, and bytes.
             if not stat.S_ISREG(existing.st_mode):
                 _fail("storage_integrity", 503)
-            payload = {"size": len(content)}
-            if verify_hash:
-                payload["original_sha256"] = hashlib.sha256(content).hexdigest()
-            self._read_bytes(file_name, payload, verify_hash=verify_hash)
+            if self._read_bytes(file_name, {"size": len(content)}) != content:
+                _fail("storage_integrity", 503)
             # A prior rename may have succeeded but directory fsync failed.
             # Retrying the same bytes must not bypass the durability barrier.
             self._sync_artifact_directory()
@@ -565,7 +559,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                 os.unlink(temp_name)
         return file_name
 
-    def _read_bytes(self, file_name, payload, *, verify_hash=True):
+    def _read_bytes(self, file_name, payload):
         if not re.fullmatch(r"(?:in|up)_[0-9a-f]{32}\.blob", file_name or ""):
             _fail("storage_unavailable", 503)
         try:
@@ -583,20 +577,20 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                 content = handle.read(MAX_PROFILE_OUTPUT_BYTES + 1)
         except OSError:
             _fail("storage_unavailable", 503)
-        if len(content) != payload["size"] or (verify_hash and
-                hashlib.sha256(content).hexdigest() != payload["original_sha256"]):
+        if len(content) != payload["size"]:
             _fail("storage_integrity", 503)
         return content
 
     def _input_view(self, row):
         data = json.loads(row["payload"])
+        data.pop("original_sha256", None)
         return {"input_id": row["id"], **data, "state": row["state"],
                 "expires_at": _utc(row["expires"]),
                 "dimensions": json.loads(row["dimensions"]) if row["dimensions"] else None}
 
     def create_input(self, scope, payload):
         source, workspace = self._scope(scope)
-        _object(payload, ("input_key", "original_sha256", "size", "mime_type"))
+        _object(payload, ("input_key", "size", "mime_type"))
         _text(payload["input_key"])
         self._media_metadata(payload)
         digest = _digest(payload)
@@ -748,9 +742,8 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
         if not isinstance(refs, list) or len(refs) > 8:
             _fail("invalid_references")
         for ref in refs:
-            _object(ref, ("input_ref", "role", "hash"))
+            _object(ref, ("input_ref", "role"))
             _text(ref["input_ref"])
-            _hash(ref["hash"])
             if ref["role"] != "reference":
                 _fail("unsupported_reference_role", 422)
         _object(payload["output_slot"], ("slot_id", "count"))
@@ -806,8 +799,6 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                     _fail("input_not_ready", 409)
                 if row["expires"] <= self.clock():
                     _fail("input_expired", 410)
-                if json.loads(row["payload"])["original_sha256"] != ref["hash"]:
-                    _fail("input_hash_mismatch", 422)
                 self._read_bytes(row["file_name"], json.loads(row["payload"]))
             task_id, attempt_id = _id("task"), _id("attempt")
             con.execute("INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?)",
@@ -1211,11 +1202,11 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                     "height": parameters.get("height", 32)}):
                 _fail("output_dimensions_mismatch", 422)
             if row["state"] in {"ready", "committed"}:
-                self._read_bytes(row["file_name"], payload, verify_hash=False)
+                self._read_bytes(row["file_name"], payload)
                 return self._upload_view(row)
             if task["cancel_requested"] or task["state"] in _TERMINAL:
                 _fail("task_not_accepting", 409)
-            file_name = self._store_bytes(con, upload_id, content, verify_hash=False)
+            file_name = self._store_bytes(con, upload_id, content)
             con.execute("UPDATE uploads SET state='ready',file_name=?,dimensions=? WHERE id=?",
                         (file_name, _canonical(dimensions), upload_id))
             return self._upload_view(con.execute("SELECT * FROM uploads WHERE id=?", (upload_id,)).fetchone())
@@ -1233,7 +1224,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             if upload["state"] != "ready":
                 _fail("upload_not_ready", 409)
             payload = json.loads(upload["payload"])
-            self._read_bytes(upload["file_name"], payload, verify_hash=False)
+            self._read_bytes(upload["file_name"], payload)
             receipt_id, artifact_id = _id("receipt"), _id("artifact")
             manifest = {
                 "receipt_id": receipt_id, "task_id": task["id"],
@@ -1271,7 +1262,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             if upload["state"] == "expired":
                 _fail("artifact_expired", 410)
             payload = json.loads(upload["payload"])
-            return self._read_bytes(upload["file_name"], payload, verify_hash=False), payload["mime_type"]
+            return self._read_bytes(upload["file_name"], payload), payload["mime_type"]
 
     def ack_receipt(self, scope, receipt_id, payload):
         source, workspace = self._scope(scope)

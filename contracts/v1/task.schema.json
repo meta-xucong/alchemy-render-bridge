@@ -97,17 +97,11 @@
           "const": "reference",
           "title": "Role",
           "type": "string"
-        },
-        "hash": {
-          "pattern": "^[0-9a-f]{64}$",
-          "title": "Hash",
-          "type": "string"
         }
       },
       "required": [
         "input_ref",
-        "role",
-        "hash"
+        "role"
       ],
       "title": "InputReference",
       "type": "object"

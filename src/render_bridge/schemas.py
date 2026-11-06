@@ -58,7 +58,6 @@ class CancelCompletedRequest(StrictRequest):
 
 class InputCreate(StrictRequest):
     input_key: Key
-    original_sha256: SHA256
     size: Annotated[StrictInt, Field(ge=1, le=MAX_INPUT_BYTES)]
     mime_type: Literal["image/png", "image/jpeg"]
 
@@ -89,7 +88,6 @@ class ImageParameters(StrictRequest):
 class InputReference(StrictRequest):
     input_ref: Key
     role: Literal["reference"]
-    hash: SHA256
 
 
 class OutputSlot(StrictRequest):

@@ -1,7 +1,6 @@
 import copy
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-import hashlib
 import io
 import os
 from pathlib import Path
@@ -48,8 +47,7 @@ class DomainTests(unittest.TestCase):
 
     @staticmethod
     def metadata(data):
-        return {"original_sha256": hashlib.sha256(data).hexdigest(),
-                "size": len(data), "mime_type": "image/png"}
+        return {"size": len(data), "mime_type": "image/png"}
 
     @staticmethod
     def output_metadata(data):
@@ -156,7 +154,7 @@ class DomainTests(unittest.TestCase):
         ready, data, metadata = self.input()
         self.assertEqual(ready["input_id"], self.reopen().create_input(self.scope, metadata)["input_id"])
         self.assertEqual(ready, self.store.put_input_content(self.scope, ready["input_id"], data))
-        refs = [{"input_ref": ready["input_id"], "role": "reference", "hash": ready["original_sha256"]}]
+        refs = [{"input_ref": ready["input_id"], "role": "reference"}]
         task = self.store.create_task(self.scope, self.payload(references=refs))
         unused, _, unused_metadata = self.input("unused")
         self.now += 3601
@@ -166,25 +164,23 @@ class DomainTests(unittest.TestCase):
         self.assertEqual("expired", self.store.get_input(self.scope, unused["input_id"])["state"])
         self.assertEqual(unused["input_id"], self.store.create_input(self.scope, unused_metadata)["input_id"])
         self.assert_error("input_expired", self.store.put_input_content, self.scope, unused["input_id"], data)
-        changed = dict(unused_metadata, original_sha256="f" * 64)
+        changed = dict(unused_metadata, size=unused_metadata["size"] + 1)
         self.assert_error("idempotency_conflict", self.store.create_input, self.scope, changed)
 
-    def test_inputs_require_ready_scope_hash_and_expiry(self):
+    def test_inputs_require_ready_scope_and_expiry(self):
         data = self.png()
         reserved = self.store.create_input(self.scope, {"input_key": "x", **self.metadata(data)})
-        ref = {"input_ref": reserved["input_id"], "role": "reference", "hash": self.metadata(data)["original_sha256"]}
+        ref = {"input_ref": reserved["input_id"], "role": "reference"}
         self.assert_error("input_not_ready", self.store.create_task, self.scope, self.payload(references=[ref]))
         self.store.put_input_content(self.scope, reserved["input_id"], data)
         self.assert_error("not_found", self.store.create_task, self.other_workspace, self.payload(references=[ref]))
-        bad = dict(ref, hash="a" * 64)
-        self.assert_error("input_hash_mismatch", self.store.create_task, self.scope, self.payload(references=[bad]))
         self.now += 3601
         self.assert_error("input_expired", self.store.create_task, self.scope, self.payload(references=[ref]))
 
     def test_references_order_in_digest(self):
         a, _, _ = self.input("a")
         b, _, _ = self.input("b")
-        refs = [{"input_ref": row["input_id"], "role": "reference", "hash": row["original_sha256"]}
+        refs = [{"input_ref": row["input_id"], "role": "reference"}
                 for row in (a, b)]
         self.store.create_task(self.scope, self.payload(references=refs))
         self.assert_error("idempotency_conflict", self.store.create_task, self.scope,
@@ -194,8 +190,6 @@ class DomainTests(unittest.TestCase):
         data = self.png()
         row = self.store.create_input(self.scope, {"input_key": "x", **self.metadata(data)})
         self.assert_error("size_mismatch", self.store.put_input_content, self.scope, row["input_id"], data[:-1])
-        changed = bytes([data[0] ^ 1]) + data[1:]
-        self.assert_error("hash_mismatch", self.store.put_input_content, self.scope, row["input_id"], changed)
         invalid = b"not an image"
         bad = self.store.create_input(self.scope, {"input_key": "invalid", **self.metadata(invalid)})
         self.assert_error("invalid_media", self.store.put_input_content, self.scope, bad["input_id"], invalid)
@@ -428,7 +422,7 @@ class DomainTests(unittest.TestCase):
         path.unlink()
         self.assert_error("storage_unavailable", self.store.get_input, self.scope, ready["input_id"])
         self.assert_error("storage_unavailable", self.store.put_input_content, self.scope, ready["input_id"], data)
-        refs = [{"input_ref": ready["input_id"], "role": "reference", "hash": ready["original_sha256"]}]
+        refs = [{"input_ref": ready["input_id"], "role": "reference"}]
         self.assert_error("storage_unavailable", self.store.create_task, self.scope, self.payload(references=refs))
 
     def test_origin_keys_are_recoverable_path_segments_but_binding_is_opaque(self):

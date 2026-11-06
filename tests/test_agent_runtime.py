@@ -1,5 +1,4 @@
 """Small configured-Agent contract suite. No model, account, or Hatchet service."""
-import hashlib
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -295,21 +294,22 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(len(start_calls), 1)
         self.assertEqual(self.fake.calls, 0)
 
-    def test_references_downloaded_in_order_and_verified(self):
+    def test_references_downloaded_in_order_by_bound_input_id(self):
         refs = []
+        expected = []
         for i in range(2):
             content = fixture_png(10+i, 10+i)
-            digest = hashlib.sha256(content).hexdigest()
-            value = self.store.create_input(self.scope, {'input_key': f'input-{i}', 'original_sha256': digest,
+            value = self.store.create_input(self.scope, {'input_key': f'input-{i}',
                                                          'size': len(content), 'mime_type': 'image/png'})
             self.store.put_input_content(self.scope, value['input_id'], content)
-            refs.append({'input_ref': value['input_id'], 'role': 'reference', 'hash': digest})
+            refs.append({'input_ref': value['input_id'], 'role': 'reference'})
+            expected.append(content)
         task_id = self.create(references=refs)
         self.assertEqual(self.agent.execute_task(task_id, self.fake)['outcome'], 'artifact_committed')
         attempt = self.store.get_task(self.scope, task_id)['attempt_id']
         work = self.root / 'agent' / 'attempts' / task_id / attempt
-        self.assertEqual(hashlib.sha256((work / 'input-00.original').read_bytes()).hexdigest(), refs[0]['hash'])
-        self.assertEqual(hashlib.sha256((work / 'input-01.original').read_bytes()).hexdigest(), refs[1]['hash'])
+        self.assertEqual((work / 'input-00.original').read_bytes(), expected[0])
+        self.assertEqual((work / 'input-01.original').read_bytes(), expected[1])
 
     def test_two_instances_do_not_share_a_state_lock(self):
         path = self.root / 'agent' / 'agent.lock'

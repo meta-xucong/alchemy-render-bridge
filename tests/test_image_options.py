@@ -114,14 +114,14 @@ class ImageOptionsContractTests(unittest.TestCase):
         self.assertEqual(TaskCreate.model_validate(payload).parameters.model_dump(exclude_unset=True), parameters)
 
     def test_codex_reference_limit_matches_native_tool_limit(self):
-        refs = [{'input_ref': f'ref-{index}', 'role': 'reference', 'hash': '0' * 64} for index in range(5)]
+        refs = [{'input_ref': f'ref-{index}', 'role': 'reference'} for index in range(5)]
         validate_image_request({'codex_adapter': 'codex_cli_imagegen_v1'}, refs, 'codex-image')
         with self.assertRaises(ValueError):
-            validate_image_request({'codex_adapter': 'codex_cli_imagegen_v1'}, refs + [{'input_ref': 'ref-5', 'role': 'reference', 'hash': '1' * 64}], 'codex-image')
+            validate_image_request({'codex_adapter': 'codex_cli_imagegen_v1'}, refs + [{'input_ref': 'ref-5', 'role': 'reference'}], 'codex-image')
 
     def test_manual_references_rejected_before_export_or_claim(self):
         payload = self.payload('midjourney-manual')
-        payload['references'] = [{'input_ref': 'ref', 'role': 'reference', 'hash': '0'*64}]
+        payload['references'] = [{'input_ref': 'ref', 'role': 'reference'}]
         self.assertEqual(self.client.post('/bridge/v1/tasks', json=payload).status_code, 422)
         with self.assertRaises(DomainError):
             self.store.create_task(self.scope, payload)

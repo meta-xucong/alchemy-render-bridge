@@ -13,8 +13,8 @@ Alchemy仅发送已授权的冻结请求与素材；Render Bridge仅返回状态
 | API | 目的 | 幂等/权限 |
 |---|---|---|
 | GET /bridge/v1/capabilities | 查询批准profile与限制 | 按源应用/workspace过滤，未知能力禁用 |
-| POST /bridge/v1/inputs | 创建输入会话 | source+workspace+input_key；同内容返回同input_id，不同内容409 |
-| PUT /bridge/v1/inputs/{id}/content | 流式上传输入 | 同hash重试；完整后才ready |
+| POST /bridge/v1/inputs | 创建输入会话 | source+workspace+input_key；相同input_key与媒体元数据返回同input_id，不同元数据409 |
+| PUT /bridge/v1/inputs/{id}/content | 流式上传输入 | 同input_key重试；完整后才ready |
 | GET /bridge/v1/inputs/{id} | 查询ready | 同作用域可读，不全局hash查询 |
 | POST /bridge/v1/tasks | 创建异步任务 | origin_key同内容返回原task，不同409 |
 | GET /bridge/v1/tasks/by-origin/{key} | 创建回应丢失恢复 | 必须绑定认证作用域，key本身不是权限 |
@@ -36,7 +36,7 @@ HTTP重试仅对已定义幂等操作进行；429/503尊重Retry-After并有总�
 
 ## 3. 请求合同
 
-字段：schema_version、origin_key、binding_id（不透明）、operation、execution_profile_id/revision、prompt、parameters、按顺序的references(input_ref/role/hash)、output_slot(count=1)、deadline、routing=bridge_only。
+字段：schema_version、origin_key、binding_id（不透明）、operation、execution_profile_id/revision、prompt、parameters、按顺序的references(input_ref/role)、output_slot(count=1)、deadline、routing=bridge_only。输入由稳定input_key、input_ref、size与MIME标识；不计算或校验图片内容SHA。
 
 source_instance/workspace由已认证源应用可用范围产生或校验；浏览器不可用自填owner让后台代签越权请求。Bridge不持有Alchemy用户会话凭据；Alchemy负责每次访问/取消/导入的原生权限判断。
 
@@ -50,7 +50,7 @@ source_instance/workspace由已认证源应用可用范围产生或校验；浏�
 
 receipt：receipt_id、task_id、attempt_id、slot_id、profile实际版本、artifact_id、size、MIME、dimensions、accepted_at。输出 artifact 的上传、receipt、下载和 ACK 不使用图片内容 SHA；Bridge仍按size、MIME、尺寸及图像解码校验接收。accepted_at表示Bridge媒体接收合格，不表示创意/像素审核通过。
 
-ack：client_receipt_id、decision(accepted/rejected)、reason_code、可选不透明native_registration_ref。Bridge只保存客户确认，不验证客户业务表，也不能据此声明原生交付成功。输入 reference 的内容 hash 仍按输入合同验证。
+ack：client_receipt_id、decision(accepted/rejected)、reason_code、可选不透明native_registration_ref。Bridge只保存客户确认，不验证客户业务表，也不能据此声明原生交付成功。
 
 ## 5. 两端状态对应
 
@@ -86,7 +86,7 @@ Bridge端用模拟Alchemy调用者测试协议/执行；Alchemy端用Mock Bridge
 - 重复创建/投递/receipt/ack，start一次，原生登记一次。
 - 每一HTTP响应丢失、Agent/服务重启、取消与accept竞争、导入前权限变化。
 - Bridge停机/无配置/功能关闭，原Alchemy正常。
-- 跨workspace/项目/来源身份、错误hash/格式/超限文件拒绝。
+- 跨workspace/项目/来源身份、错误格式/超限文件拒绝。
 - FakeRenderer仅测试目录，无真实计费、无正式导出或记忆污染。
 
 “独立模块预览成功”不等于“原生结果登记通过”；如果旧系统缺接缝，必须在联合报告中明确FAIL/证据不足并等待扩展点批准。

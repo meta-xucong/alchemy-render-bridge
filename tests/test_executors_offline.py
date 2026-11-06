@@ -1,5 +1,4 @@
 """No credentials, external tools or services: all subprocesses are fixtures."""
-import hashlib
 import io
 import json
 from pathlib import Path
@@ -33,10 +32,10 @@ class OfflineExecutorTests(unittest.TestCase):
         self.assertEqual(first.status, 'ready')
         self.assertEqual(first.artifact.provenance, 'synthetic_fixture')
 
-    def test_fake_staged_references_are_checked_in_frozen_order(self):
+    def test_fake_staged_references_are_bound_in_frozen_order(self):
         path = self.root / 'reference.png'
         path.write_bytes(fixture_png())
-        refs = ({'input_ref': 'ref-1', 'role': 'reference', 'hash': hashlib.sha256(path.read_bytes()).hexdigest(), 'path': str(path)},)
+        refs = ({'input_ref': 'ref-1', 'role': 'reference', 'path': str(path)},)
         request = ExecutionRequest('task-1', 'attempt-1', 'test', {}, refs)
         result = FakeExecutor(self.root).execute(request)
         self.assertEqual(result.artifact.provenance, 'synthetic_not_conditioned_on_references')

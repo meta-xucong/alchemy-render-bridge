@@ -1,5 +1,4 @@
 """Configured dynamic task handoff and node HTTP contract, without a real engine."""
-import hashlib
 import io
 import struct
 from datetime import datetime, timedelta, timezone
@@ -208,10 +207,9 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         caps=(await self.req('GET','/bridge/v1/capabilities')).json()
         self.assertEqual(caps['limits']['max_input_bytes'],16*1024*1024)
         self.assertEqual(caps['limits']['max_input_image_pixels'],16_777_216)
-        digest=hashlib.sha256(data).hexdigest()
-        inp=(await self.req('POST','/bridge/v1/inputs',json={'input_key':'ref','original_sha256':digest,'size':len(data),'mime_type':'image/png'})).json()
+        inp=(await self.req('POST','/bridge/v1/inputs',json={'input_key':'ref','size':len(data),'mime_type':'image/png'})).json()
         await self.req('PUT','/bridge/v1/inputs/'+inp['input_id']+'/content',content=data,headers={'Content-Type':'image/png'})
-        payload=self.payload();payload['references']=[{'input_ref':inp['input_id'],'role':'reference','hash':digest}]
+        payload=self.payload();payload['references']=[{'input_ref':inp['input_id'],'role':'reference'}]
         task=(await self.req('POST','/bridge/v1/tasks',json=payload)).json()
         prefix='/bridge/node/v1/tasks/'+task['remote_task_id']
         claim=(await self.req('POST',prefix+'/claim',token='node-test',json={'mode':'execute'})).json()

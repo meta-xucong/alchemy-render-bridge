@@ -1,7 +1,6 @@
 """Explicit acknowledgement-aware cleanup of registered Agent-owned media copies."""
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import stat
@@ -41,7 +40,6 @@ def _registered_files(journal, record):
     executor = root / 'executors' / tid / aid
     files = []
     generated_files = []
-    reference_hashes = {}
     if record.get('artifact'):
         artifact = _owned_file(root, record['artifact'])
         if artifact != attempt / 'result.original':
@@ -53,7 +51,6 @@ def _registered_files(journal, record):
         if path != attempt / f'input-{index:02d}.original':
             raise ValueError('Unexpected registered reference path')
         files.append(path)
-        reference_hashes[path] = reference['hash']
     original = _owned_file(root, executor / 'artifact.original')
     manifest = _owned_file(root, executor / 'artifact.json')
     if manifest.exists():
@@ -70,18 +67,14 @@ def _registered_files(journal, record):
                 raise ValueError('Registered generated original does not match attempt')
             files.append(path)
             generated_files.append(path)
-    # Verify reference inputs by their reference hashes. Generated copies are
-    # bound by the task/attempt record and exact bytes before scheduling deletion.
+    # Reference paths and generated copies are bound by the task/attempt record.
     canonical = _owned_file(root, record['artifact']) if record.get('artifact') else original
     canonical_bytes = canonical.read_bytes() if canonical.exists() else None
     for path in files:
         if path.exists():
             if path.stat().st_size > 16 * 1024 * 1024:
                 raise ValueError('Managed media exceeds bounds')
-            if path in reference_hashes:
-                if hashlib.sha256(path.read_bytes()).hexdigest() != reference_hashes[path]:
-                    raise ValueError('Managed reference changed')
-            elif (path in generated_files and canonical_bytes is not None
+            if (path in generated_files and canonical_bytes is not None
                     and path.read_bytes() != canonical_bytes):
                 raise ValueError('Managed generated original changed')
     return sorted({str(path.relative_to(root)) for path in files}), executor, manifest.exists()

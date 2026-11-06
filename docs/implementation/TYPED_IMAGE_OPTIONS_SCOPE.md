@@ -32,7 +32,7 @@ When present, all three fields are required, with no coercion or defaults:
 {"schema_version":"1","quality":{"values":["auto"],"semantics":"unspecified_only"},"output_format":{"values":["png","jpeg"],"semantics":"original_artifact_postcondition"},"input_fidelity":{"values":[],"semantics":"omitted_only"},"references":{"max_count":8,"semantics":"local_image_input_unverified"}}
 ```
 
-Fake references use `hash_checked_not_conditioning`; manual uses max_count 0 and
+Fake references use `identity_bound_not_conditioning`; manual uses max_count 0 and
 `not_supported`. Existing parameter_contract version/revisions remain unchanged;
 accepted_parameters adds image_options. Its unsupported_parameters are names at
 the top level, not a denial of the explicitly advertised nested contract.

@@ -7,11 +7,6 @@
       "title": "Input Key",
       "type": "string"
     },
-    "original_sha256": {
-      "pattern": "^[0-9a-f]{64}$",
-      "title": "Original Sha256",
-      "type": "string"
-    },
     "size": {
       "maximum": 16777216,
       "minimum": 1,
@@ -29,7 +24,6 @@
   },
   "required": [
     "input_key",
-    "original_sha256",
     "size",
     "mime_type"
   ],
