@@ -1,6 +1,5 @@
 """Full lifecycle through a fixed local Python fixture, never the real CLI."""
 import base64
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -90,7 +89,7 @@ for line in sys.stdin:
             references = ()
             if reference:
                 reference_path.write_bytes(fixture_png())
-                references = ({'path': str(reference_path), 'hash': hashlib.sha256(reference_path.read_bytes()).hexdigest()},)
+                references = ({'path': str(reference_path)},)
             if terminal_failure:
                 script.write_text(script.read_text(encoding='utf-8').replace("'status':'completed','items':[item]", "'status':'failed','items':[item],'error':{'codexErrorInfo':'usageLimitExceeded'}"), encoding='utf-8')
             parameters = {'codex_adapter': 'codex_cli_imagegen_v1'}

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import hashlib
 import json
 import tempfile
 import threading
@@ -78,7 +77,6 @@ class SourceAPITests(unittest.IsolatedAsyncioTestCase):
         content = fixture_png() if content is None else content
         payload = {
             "input_key": key,
-            "original_sha256": hashlib.sha256(content).hexdigest(),
             "size": len(content),
             "mime_type": "image/png",
         }
@@ -199,11 +197,10 @@ class SourceAPITests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(response.json()["state"], "ready")
         fetched = await self.client.get(f"{BASE}/inputs/{first['input_id']}")
-        self.assertEqual(fetched.json()["original_sha256"], hashlib.sha256(content).hexdigest())
+        self.assertNotIn("original_sha256", fetched.json())
         changed = {
             "input_key": "input-1",
-            "original_sha256": "0" * 64,
-            "size": len(content),
+            "size": len(content) + 1,
             "mime_type": "image/png",
         }
         conflict = await self.client.post(f"{BASE}/inputs", json=changed)
@@ -231,15 +228,7 @@ class SourceAPITests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, 404, response.text)
         self.assertEqual(consumed, [])
 
-    async def test_upload_rejects_bad_hash_bad_media_and_wrong_content_type(self):
-        reserved, content = await self.reserve_input(original_sha256="0" * 64)
-        response = await self.client.put(
-            f"{BASE}/inputs/{reserved['input_id']}/content",
-            content=content,
-            headers={"Content-Type": "image/png"},
-        )
-        self.assertGreaterEqual(response.status_code, 400)
-        self.assertLess(response.status_code, 500)
+    async def test_upload_rejects_bad_media_and_wrong_content_type(self):
         invalid, content = await self.reserve_input(b"not a PNG image", key="invalid-media")
         response = await self.client.put(
             f"{BASE}/inputs/{invalid['input_id']}/content",
@@ -303,7 +292,6 @@ class SourceAPITests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("forged-owner-secret", response.text)
         reserved = {
             "input_key": "input-1",
-            "original_sha256": "0" * 64,
             "size": 5,
             "mime_type": "image/png",
             "workspace_id": "workspace-b",
@@ -370,7 +358,6 @@ class SourceAPITests(unittest.IsolatedAsyncioTestCase):
         payload["references"] = [{
             "input_ref": reserved["input_id"],
             "role": "reference",
-            "hash": reserved["original_sha256"],
         }]
         response = await self.client.post(f"{BASE}/tasks", json=payload)
         self.assertGreaterEqual(response.status_code, 400)
@@ -421,14 +408,13 @@ class SourceAPITests(unittest.IsolatedAsyncioTestCase):
     async def test_input_size_is_strict_and_metadata_has_no_coercion(self):
         payload = {
             "input_key": "input-1",
-            "original_sha256": "0" * 64,
             "size": 1,
             "mime_type": "image/png",
         }
         for field, value in (
             ("size", True), ("size", "1"), ("size", 1.0), ("size", 0),
             ("size", MAX_INPUT_BYTES + 1), ("mime_type", "text/html"),
-            ("original_sha256", "G" * 64),
+            ("original_sha256", "legacy-image-hash-field"),
         ):
             response = await self.client.post(
                 f"{BASE}/inputs", json={**payload, field: value}
@@ -457,7 +443,7 @@ class SourceAPITests(unittest.IsolatedAsyncioTestCase):
         payload["output_slot"]["extra"] = 1
         variants.append(payload)
         payload = task_payload()
-        payload["references"] = [{"input_ref": "a", "role": "reference", "hash": "0" * 64}] * 9
+        payload["references"] = [{"input_ref": "a", "role": "reference"}] * 9
         variants.append(payload)
         for payload in variants:
             response = await self.client.post(f"{BASE}/tasks", json=payload)

@@ -1,6 +1,5 @@
 """Profile routing and human round-trip. No login, external turn, or Discord."""
 import json
-import hashlib
 import io
 import random
 import tempfile
@@ -83,12 +82,11 @@ class AgentProfilesTests(unittest.TestCase):
         self.assertGreater(len(content), 4 * 1_048_576)
         self.assertLessEqual(len(content), 16 * 1_048_576)
 
-        digest = hashlib.sha256(content).hexdigest()
         uploaded = self.store.create_input(self.scope, {'input_key': 'large-reference',
-            'original_sha256': digest, 'size': len(content), 'mime_type': 'image/png'})
+            'size': len(content), 'mime_type': 'image/png'})
         self.store.put_input_content(self.scope, uploaded['input_id'], content)
         task = self.create('codex-image', 'large-reference-task', references=[{
-            'input_ref': uploaded['input_id'], 'role': 'reference', 'hash': digest}])
+            'input_ref': uploaded['input_id'], 'role': 'reference'}])
         self.registry.executors['codex-image'] = FakeExecutor(self.state / 'large-reference-output')
 
         result = self.agent.execute_task(task)

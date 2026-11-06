@@ -72,7 +72,7 @@ Each source capabilities profile gains `parameter_contract` with its own
   `manual_user_selected` for fake, Codex, or Midjourney respectively.
 - `seed_semantics`: `accepted_not_applied`, `text_instruction_only`, or
   `manual_user_selected` respectively. Accepting seed is not reproducibility.
-- `reference_semantics`: `hash_checked_not_conditioning`,
+- `reference_semantics`: `identity_bound_not_conditioning`,
   `local_image_input_unverified`, or `not_supported` respectively.
 - `unsupported_parameters`: `quality`, `output_format`, `input_fidelity` at the
   top level of `parameters`. The nested contract below is separate. Unlisted parameters are not implicitly supported; the accepted list is closed.

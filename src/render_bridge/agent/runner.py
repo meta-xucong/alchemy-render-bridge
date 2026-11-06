@@ -28,7 +28,7 @@ _SAFE_UPLOAD_ERROR_CODES = frozenset({
     'upload_only_claim', 'physical_slot_busy', 'automatic_profile_requires_start',
     'manual_capacity', 'invalid_scope', 'attempt_mismatch', 'node_binding_mismatch',
     'storage_unavailable', 'storage_capacity', 'storage_integrity',
-    'hash_mismatch', 'size_mismatch', 'mime_mismatch', 'invalid_media',
+    'size_mismatch', 'mime_mismatch', 'invalid_media',
 })
 
 
@@ -206,8 +206,8 @@ class NodeAgent:
         references = []
         for index, reference in enumerate(task['request']['references']):
             content = self.client.input_content(task_id, reference['input_ref'], claim['claim_id'])
-            if len(content) > MAX_INPUT_BYTES or hashlib.sha256(content).hexdigest() != reference['hash']:
-                raise ValueError('Input reference hash or size does not match')
+            if len(content) > MAX_INPUT_BYTES:
+                raise ValueError('Input reference exceeds size limit')
             path = work / f'input-{index:02d}.original'
             self._save_bytes(path, content)
             references.append({**reference, 'path': str(path)})

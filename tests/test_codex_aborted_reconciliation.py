@@ -1,4 +1,3 @@
-import hashlib
 import io
 import json
 import os
@@ -334,8 +333,7 @@ class CodexAbortedImageReconciliationTests(unittest.TestCase):
             root = Path(temp)
             ref_file = root / 'reference.original'
             ref_file.write_bytes(b'local reference')
-            reference = {'input_ref': 'input-fixture', 'role': 'reference',
-                'hash': hashlib.sha256(ref_file.read_bytes()).hexdigest(), 'path': str(ref_file)}
+            reference = {'input_ref': 'input-fixture', 'role': 'reference', 'path': str(ref_file)}
             home, request, executor, rollout, output = self.setup_case(root, references=(reference,))
             client = Client(request)
             agent = NodeAgent(client, root / 'private' / 'agent',

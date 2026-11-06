@@ -767,8 +767,6 @@ class CodexExecutor:
             path = Path(ref['path'])
             if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_ARTIFACT_BYTES:
                 raise ValueError('Reference original unavailable')
-            if hashlib.sha256(path.read_bytes()).hexdigest() != ref['hash']:
-                raise ValueError('Reference original hash mismatch')
             inputs.append({'type': 'localImage', 'path': str(path.resolve())})
         if not files.begin():
             return ExecutionResult('execution_unknown', 'codex_prior_start_requires_reconciliation')

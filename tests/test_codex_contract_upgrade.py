@@ -1,5 +1,4 @@
 """Frozen legacy contracts survive reopen; native defaults require explicit opt-in."""
-import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -70,11 +69,10 @@ class CodexContractUpgradeTests(unittest.TestCase):
         self.assertFalse(self.store.start_execution(self.scope,task['remote_task_id'],claim['claim_id'])['may_execute'])
 
     def test_legacy_eight_references_replay_and_cached_recovery_survive_reopen(self):
-        reference_sha = hashlib.sha256(self.png).hexdigest()
-        item = self.store.create_input(self.scope,{'input_key':'ref','original_sha256':reference_sha,
+        item = self.store.create_input(self.scope,{'input_key':'ref',
                                                  'size':len(self.png),'mime_type':'image/png'})
         self.store.put_input_content(self.scope,item['input_id'],self.png)
-        refs = [{'input_ref':item['input_id'],'role':'reference','hash':reference_sha} for _ in range(8)]
+        refs = [{'input_ref':item['input_id'],'role':'reference'} for _ in range(8)]
         payload = self.payload(references=refs)
         task = self.store.create_task(self.scope,payload)
         self.store.close(); self.store = self.open_store()

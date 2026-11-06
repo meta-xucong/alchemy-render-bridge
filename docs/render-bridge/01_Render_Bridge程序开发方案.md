@@ -45,13 +45,13 @@ Task从dispatch_pending/queued/active到artifacts_ready，再到delivery_acknowl
 
 ## 5. 文件闭环
 
-输入由API上传到Bridge输入会话，客户端提供稳定reference和真实hash；上传完成返回input_ref；POST回应丢失时以同input_key与内容摘要重发，返回同input_id。素材不通过Hatchet payload，也不让节点任意抓取Alchemy内网地址。任务引用已完成、授权范围匹配的input_ref，引用顺序/角色写入digest；创建任务事务同时固定引用，保证queued/unknown期间不会被未绑定会话TTL清理。
+输入由API上传到Bridge输入会话，以稳定input_key创建输入身份，并按size、MIME、尺寸及像素限制接收图片；不计算或校验图片内容SHA。上传完成返回input_ref；POST回应丢失时以同input_key恢复同input_id。素材不通过Hatchet payload，也不让节点任意抓取Alchemy内网地址。任务按input_ref和role引用输入，引用顺序/角色写入任务身份；创建任务事务同时固定引用，保证queued/unknown期间不会被未绑定会话TTL清理。
 
 首版采用上传输入，避免为了云端回拉额外暴露Alchemy媒体接口。可复用相同workspace内的短期输入会话，但禁止全局hash当公开读取凭证。
 
-输出：Agent获得upload_id→流式上传→服务端hash/媒体校验→不可变ready对象→事务内写receipt和待确认记录。Alchemy通过受权API读取manifest及字节，Bridge不推送到Alchemy，也不写原业务output。
+输出：Agent获得upload_id→流式上传→服务端媒体校验→不可变ready对象→事务内写receipt和待确认记录。Alchemy通过受权API读取manifest及字节，Bridge不推送到Alchemy，也不写原业务output。
 
-客户端确认包含accepted或rejected及稳定client_receipt_id。同receipt重试幂等；重复不同确认冲突。源应用保留原始hash和导入后hash的责任不由Bridge猜测。
+客户端确认包含accepted或rejected及稳定client_receipt_id。同receipt重试幂等；重复不同确认冲突。源应用按稳定任务、回执和本地存储身份完成导入对账，不传递图片内容SHA。
 
 ## 6. 对Alchemy公开的API
 

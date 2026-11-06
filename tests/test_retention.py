@@ -59,7 +59,7 @@ class RetentionTests(unittest.TestCase):
 
     def test_shared_input_and_unknown_are_protected(self):
         inp, data, _ = self.input()
-        refs = [{'input_ref': inp['input_id'], 'role': 'reference', 'hash': inp['original_sha256']}]
+        refs = [{'input_ref': inp['input_id'], 'role': 'reference'}]
         self.acknowledged(references=refs)
         task = self.store.create_task(self.scope, self.payload('unknown', refs))
         claim = self.store.claim_task(self.scope, task['remote_task_id'], node_id='node', executor_instance='instance')
@@ -82,7 +82,7 @@ class RetentionTests(unittest.TestCase):
 
     def test_terminal_unstarted_releases_pins_but_queued_keeps_them(self):
         inp, _, _ = self.input()
-        refs = [{'input_ref': inp['input_id'], 'role': 'reference', 'hash': inp['original_sha256']}]
+        refs = [{'input_ref': inp['input_id'], 'role': 'reference'}]
         task = self.store.create_task(self.scope, self.payload('canceled', refs))
         queued = self.store.create_task(self.scope, self.payload('queued', refs))
         self.store.cancel_task(self.scope, task['remote_task_id'])
@@ -113,7 +113,7 @@ class RetentionTests(unittest.TestCase):
         with patch('render_bridge.domain.MAX_STORAGE_BYTES', 2 * len(self.png())):
             for index in range(105):
                 inp, _, payload = self.input(str(index))
-                refs = [{'input_ref': inp['input_id'], 'role': 'reference', 'hash': inp['original_sha256']}]
+                refs = [{'input_ref': inp['input_id'], 'role': 'reference'}]
                 self.acknowledged(str(index), references=refs)
                 self.maintain()
                 self.now += 3601

@@ -1,6 +1,5 @@
 """Deterministic local fixture executor; never calls a model."""
 from pathlib import Path
-import hashlib
 import json
 from render_bridge.fake import fixture_png, fixture_jpeg
 from render_bridge.image_options import validate_image_request
@@ -18,9 +17,7 @@ class FakeExecutor:
             path = Path(reference['path'])
             if not path.is_file() or path.is_symlink() or path.stat().st_size > 16 * 1024 * 1024:
                 raise ValueError('Invalid staged reference')
-            if hashlib.sha256(path.read_bytes()).hexdigest() != reference['hash']:
-                raise ValueError('Staged reference hash differs')
-            references.append({key: reference[key] for key in ('input_ref', 'role', 'hash')})
+            references.append({key: reference[key] for key in ('input_ref', 'role')})
         files = AttemptFiles(self.root, request, 'fake-image')
         cached = files.cached()
         if cached:

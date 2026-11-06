@@ -1,7 +1,6 @@
 """Source HTTP -> isolated executor -> receipt/download/ack contract tests."""
 from __future__ import annotations
 
-import hashlib
 import json
 import tempfile
 import unittest
@@ -47,19 +46,20 @@ class FakeEndToEndTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_source_to_fake_to_download_ack_and_replays(self):
         content = fixture_png(16, 16)
-        digest = hashlib.sha256(content).hexdigest()
         input_response = await self.client.post("/bridge/v1/inputs", json={
-            "input_key": "input-e2e", "original_sha256": digest,
+            "input_key": "input-e2e",
             "size": len(content), "mime_type": "image/png",
         })
         self.assertLess(input_response.status_code, 300, input_response.text)
+        self.assertNotIn("original_sha256", input_response.json())
         input_id = input_response.json()["input_id"]
         response = await self.client.put(f"/bridge/v1/inputs/{input_id}/content", content=content, headers={"Content-Type": "image/png"})
         self.assertLess(response.status_code, 300, response.text)
-        request = self.task_request(references=[{"input_ref": input_id, "role": "reference", "hash": digest}])
+        request = self.task_request(references=[{"input_ref": input_id, "role": "reference"}])
         response = await self.client.post("/bridge/v1/tasks", json=request)
         self.assertLess(response.status_code, 300, response.text)
         task = response.json()
+        self.assertEqual(task["request"]["references"], [{"input_ref": input_id, "role": "reference"}])
         task_id = task["remote_task_id"]
         # HTTP creation and repeated GETs must not execute a provider.
         self.assertFalse(self.starts.exists())

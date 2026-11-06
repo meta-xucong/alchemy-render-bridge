@@ -17,8 +17,8 @@ grant, enforce the server upload limits and reconcile cancellation before upload
 reuses the cached original for the same attempt. A changed request cannot reuse
 the same attempt. A start with no result stays unknown rather than rerendering.
 References, when supplied, are ordered dictionaries with `input_ref`, `role`,
-`hash`, and a staged local `path`. They are hash-checked and recorded, **not used
-as conditioning for the synthetic image**. Fake dimensions remain 1–1024 per side
+and a staged local `path`. They are recorded, **not used as conditioning for
+the synthetic image**. Fake dimensions remain 1–1024 per side
 and the fake profile's 1 MiB output limit still applies. Reference input uses
 the shared 16 MiB / 16,777,216-pixel Bridge contract.
 
@@ -120,7 +120,7 @@ acceptance before its capability flags may be enabled. The lifecycle requires
 server approval and tool requests are never automatically approved, and human
 attention is required when they arise. It uses workspace-write limited to the
 attempt, excludes temporary writable roots, and denies sandbox network access. Ordered
-references are hash-checked and sent as schema-defined localImage inputs. The
+references are sent as schema-defined localImage inputs. The
 original prompt is preserved as the first text input; rendering parameters are
 additional instructions, not invented structured image API arguments.
 
@@ -144,7 +144,7 @@ while real local end-to-end capability acceptance remains required.
 
 ## Verification and stopping point
 
-Offline tests cover Fake replay, stale-start preservation, reference hashing,
+Offline tests cover Fake replay, stale-start preservation, reference inputs,
 manual binding/import/replay, exact Codex image ownership, text-only rejection,
 mock stdio, full enabled lifecycle/image replay, full text-only lifecycle rejection,
 and no auto-approval. Real Codex/Midjourney generation, Discord delivery,
