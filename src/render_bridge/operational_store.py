@@ -1,6 +1,6 @@
 """Single configured-node authorization and bounded metadata audit storage."""
 EVENTS = frozenset({
-    'node_configured', 'terminal_failure_confirmed', 'node_revoked', 'node_reactivated', 'task_created',
+    'harness_result_committed', 'node_configured', 'terminal_failure_confirmed', 'node_revoked', 'node_reactivated', 'task_created',
     'start_granted', 'manual_ready', 'execution_unknown', 'task_attention',
     'cancel_requested', 'cancel_completed', 'canceled', 'withdrawn_before_start', 'receipt_committed', 'delivery_accepted', 'delivery_rejected',
 })

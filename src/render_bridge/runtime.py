@@ -16,6 +16,7 @@ from .api import create_app
 from .domain import BridgeStore, SourceScope
 from .node_api import NodeScope
 from .profiles import enabled_profile_ids
+from .harness import HarnessConfig
 
 
 def create_runtime_app(*, store, source_tokens, node_tokens, dispatch_tokens):
@@ -47,6 +48,7 @@ class RuntimeConfig:
     maintenance_batch_size: int = 100
     max_storage_bytes: int | None = None
     dispatch_mode: str = 'hatchet'
+    harness: dict | None = None
 
     @classmethod
     def load(cls, path):
@@ -58,7 +60,19 @@ class RuntimeConfig:
         config.validate()
         return config
 
+    def harness_config(self):
+        if self.harness is None:
+            return None
+        if not isinstance(self.harness, dict) or any(key in self.harness for key in
+                ('source_id', 'workspace_id', 'node_id', 'executor_instance')):
+            raise ValueError('Harness scope is inherited from the runtime, not overridden')
+        return HarnessConfig.from_dict(dict(self.harness, source_id=self.source_id,
+            workspace_id=self.workspace_id, node_id=self.node_id, executor_instance=self.executor_instance))
+
     def validate(self):
+        harness = self.harness_config()
+        if harness is not None and self.dispatch_mode != 'node_pull':
+            raise ValueError('Harness requires node_pull')
         enabled_profile_ids(self.enabled_profiles)
         if self.max_storage_bytes is not None and (type(self.max_storage_bytes) is not int or not 1 <= self.max_storage_bytes <= 1024 ** 4):
             raise ValueError("max_storage_bytes must be an integer from 1 through 1 TiB")
@@ -107,7 +121,7 @@ class RuntimeConfig:
         store = BridgeStore(self.data_dir / 'bridge.sqlite', self.data_dir / 'artifacts',
                             enabled_profiles=self.enabled_profiles, accepting_new_tasks=self.accepting_new_tasks,
                             max_queued_tasks=self.max_queued_tasks, max_storage_bytes=self.max_storage_bytes,
-                            dispatch_mode=self.dispatch_mode)
+                            dispatch_mode=self.dispatch_mode, harness=self.harness_config())
         scope = SourceScope(self.source_id, self.workspace_id)
         app = create_runtime_app(store=store, source_tokens={source: scope},
             node_tokens={node: NodeScope(self.source_id, self.workspace_id, self.node_id, self.executor_instance)},

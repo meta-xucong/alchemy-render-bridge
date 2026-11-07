@@ -14,6 +14,7 @@ from .api import _APIError, _bounded_body, _json_request, _TOKEN
 from .domain import BridgeStore, SourceScope
 from .profiles import MAX_PROFILE_OUTPUT_BYTES
 from .schemas import StrictRequest, Key, TerminalFailureRequest, CancelCompletedRequest
+from .harness import HarnessHeartbeat, Observation, ResultSubmission, MAX_RESULT_BYTES
 
 
 @dataclass(frozen=True)
@@ -114,6 +115,24 @@ def install_node_routes(app, store: BridgeStore, node_tokens: Mapping[str, NodeS
         data = await _json_request(request, HeartbeatRequest, 4096)
         return await call_store(store.report_heartbeat, identity.source_scope, identity.node_id,
                                 identity.executor_instance, data['state'], data['profiles'], data.get('profile_health'))
+
+    @app.post(prefix + '/harness-heartbeat')
+    async def harness_heartbeat(request: Request, identity: NodeScope = Depends(node)):
+        data = await _json_request(request, HarnessHeartbeat, 4096)
+        return await call_store(store.report_harness_heartbeat, identity.source_scope,
+                                identity.node_id, identity.executor_instance, data)
+
+    @app.post(prefix + '/tasks/{task_id}/harness-observation')
+    async def harness_observation(task_id: str, request: Request, identity: NodeScope = Depends(node)):
+        data = await _json_request(request, Observation, 4096)
+        return await call_store(store.report_harness_observation, identity.source_scope, task_id,
+                                identity.node_id, identity.executor_instance, data)
+
+    @app.post(prefix + '/tasks/{task_id}/harness-result')
+    async def harness_result(task_id: str, request: Request, identity: NodeScope = Depends(node)):
+        data = await _json_request(request, ResultSubmission, MAX_RESULT_BYTES + 4096)
+        return await call_store(store.report_harness_result, identity.source_scope, task_id,
+                                identity.node_id, identity.executor_instance, data)
 
     @app.get(prefix + '/tasks/next')
     async def next_task(identity: NodeScope = Depends(node)):
