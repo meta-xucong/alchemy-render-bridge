@@ -1,5 +1,6 @@
 """Real BridgeStore/HTTP Harness extension tests; all native output synthetic."""
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import copy
@@ -96,13 +97,13 @@ class HarnessTests(unittest.TestCase):
     def test_same_physical_ledger_tables_and_no_dispatch(self):
         task = self.create()
         self.assertEqual(self.store.capabilities(SOURCE)['harness_contract'], CONTRACT)
-        with sqlite3.connect(self.store.db_path) as con:
+        with closing(sqlite3.connect(self.store.db_path)) as con, con:
             self.assertEqual(con.execute('SELECT count(*) FROM tasks').fetchone()[0], 1)
             self.assertEqual(con.execute('SELECT count(*) FROM attempts').fetchone()[0], 1)
             self.assertEqual(con.execute('SELECT count(*) FROM dispatch_outbox').fetchone()[0], 0)
         restarted = self.new_store()
         self.assertEqual(restarted.get_task(SOURCE, task['remote_task_id']), task)
-        with sqlite3.connect(self.store.db_path) as con:
+        with closing(sqlite3.connect(self.store.db_path)) as con, con:
             self.assertEqual(con.execute('SELECT count(*) FROM dispatch_outbox').fetchone()[0], 0)
 
     def test_hundred_concurrent_same_operation_one_task(self):
@@ -151,7 +152,7 @@ class HarnessTests(unittest.TestCase):
                 value = envelope()
                 change(value)
                 self.assert_error('invalid_harness_request', lambda: self.store.create_task(SOURCE, value))
-        with sqlite3.connect(self.store.db_path) as con:
+        with closing(sqlite3.connect(self.store.db_path)) as con, con:
             self.assertEqual(con.execute('SELECT count(*) FROM tasks').fetchone()[0], 0)
 
     def test_offer_claim_start_and_duplicate_grant(self):
@@ -321,7 +322,7 @@ class HarnessTests(unittest.TestCase):
         image = BridgeStore(db, self.root/'image-objects', dispatch_mode='node_pull')
         image.provision_node(SOURCE, 'node', 'executor')
         image.report_heartbeat(SOURCE, 'node', 'executor', 'available', ['fake-image'])
-        with sqlite3.connect(db) as con:
+        with closing(sqlite3.connect(db)) as con, con:
             con.execute('DROP TABLE instance_mode')  # pre-mode-pin ledger migration
         with self.assertRaisesRegex(ValueError, 'image heartbeats'):
             BridgeStore(db, self.root/'image-objects', dispatch_mode='node_pull', harness=config())
@@ -337,7 +338,7 @@ class HarnessTests(unittest.TestCase):
                    'deadline':datetime.now(timezone.utc).__add__(timedelta(hours=1)).isoformat()}
         task = image.create_task(SOURCE, payload)
         image.cancel_task(SOURCE, task['remote_task_id'])
-        with sqlite3.connect(db) as con:
+        with closing(sqlite3.connect(db)) as con, con:
             con.execute('DROP TABLE instance_mode')  # pre-mode-pin ledger migration
         with self.assertRaisesRegex(ValueError, 'image tasks'):
             BridgeStore(db, self.root/'image-task-objects', dispatch_mode='node_pull', harness=config())
@@ -381,7 +382,7 @@ class HarnessTests(unittest.TestCase):
                 results = list(pool.map(open_store, ('image', 'harness')))
             winners = [value for value in results if value is not None]
             self.assertEqual(len(winners), 1)
-            with sqlite3.connect(db) as con:
+            with closing(sqlite3.connect(db)) as con, con:
                 self.assertEqual(con.execute('SELECT mode FROM instance_mode').fetchone()[0], winners[0])
 
     def test_expired_or_removed_binding_does_not_offer_work(self):
