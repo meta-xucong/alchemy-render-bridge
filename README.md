@@ -1,5 +1,7 @@
 # Alchemy Render Bridge
 
+Opt-in Native Harness typed HTTP extension: [P1b scope/configuration](docs/implementation/NATIVE_HARNESS_P1B.md). Disabled by default; synthetic-only, same Bridge task/claim/start ledger; not a real WorkBuddy or production acceptance claim.
+
 An optional API-based bridge between Alchemy applications and local rendering tools.
 
 Remote VPS-source adaptation: [bounded storage and HTTPS runbook](docs/implementation/REMOTE_SOURCE_READINESS.md). This is optional configuration; existing local defaults remain unchanged.

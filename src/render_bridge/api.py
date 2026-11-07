@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import asyncio
 import threading
 from collections.abc import Mapping
 from types import MappingProxyType
@@ -22,11 +23,16 @@ import anyio
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, RootModel, ValidationError
 from starlette.exceptions import HTTPException
 
 from .domain import MAX_INPUT_BYTES, BridgeStore, DomainError, SourceScope
 from .schemas import InputCreate, ReceiptAck, TaskCreate, WithdrawalRequest
+from .harness import HarnessCreate
+
+
+class CombinedTaskCreate(RootModel[TaskCreate | HarnessCreate]):
+    pass
 
 
 _RequestModel = TypeVar("_RequestModel", bound=BaseModel)
@@ -148,10 +154,11 @@ def create_app(
             raise ValueError("Invalid request size limit.")
     # Snapshot configuration: a caller cannot accidentally mutate auth mid-read.
     tokens = MappingProxyType(dict(source_tokens))
-    # A single admitted store operation runs off the event loop. The nonblocking
-    # gate rejects extra work before the thread pool, rather than accumulating an
-    # unbounded queue. This is bounded fixture admission, not production capacity.
-    store_gate = threading.BoundedSemaphore(1)
+    # One synchronous store operation runs off the event loop. Dedicated Harness
+    # instances admit one additional bounded HTTP waiter so an ordinary Facade
+    # read does not reject a concurrent Node start. Image admission stays unchanged.
+    # This is not a task queue or a retry of an ambiguous execution request.
+    store_gate = threading.BoundedSemaphore(2 if store.harness is not None else 1)
     store_thread_limiter = anyio.CapacityLimiter(1)
 
     async def call_store(method, *args):
@@ -172,10 +179,19 @@ def create_app(
                 # while the synchronous transaction is still running.
                 store_gate.release()
 
+        worker = None
         try:
-            return await anyio.to_thread.run_sync(
+            operation = anyio.to_thread.run_sync(
                 invoke, abandon_on_cancel=False, limiter=store_thread_limiter
             )
+            if store.harness is not None:
+                # Raw asyncio request cancellation otherwise releases AnyIO's
+                # limiter while its synchronous worker still runs. Preserve the
+                # worker's limiter ownership until actual completion.
+                worker = asyncio.create_task(operation)
+                worker.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
+                return await asyncio.shield(worker)
+            return await operation
         except BaseException:
             with state_lock:
                 if not state["started"]:
@@ -183,6 +199,8 @@ def create_app(
                     # gate nor permit delayed execution after admission is free.
                     state["canceled"] = True
                     store_gate.release()
+                    if worker is not None:
+                        worker.cancel()
             raise
 
     app = FastAPI(
@@ -222,7 +240,10 @@ def create_app(
 
     @app.exception_handler(DomainError)
     async def domain_error_handler(_request: Request, exc: DomainError):
-        return _error_response(exc.code, exc.status)
+        response = _error_response(exc.code, exc.status)
+        if getattr(exc, 'accepted', None) is not None:
+            response.headers['X-Native-Accepted'] = str(exc.accepted).lower()
+        return response
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(_request: Request, _exc: RequestValidationError):
@@ -270,7 +291,7 @@ def create_app(
     async def create_task(request: Request, scope: SourceScope = Depends(source_scope)):
         return await call_store(
             store.create_task,
-            scope, await _json_request(request, TaskCreate, max_json_bytes)
+            scope, await _json_request(request, CombinedTaskCreate, max_json_bytes)
         )
 
     # Keep this route before /tasks/{task_id}.
