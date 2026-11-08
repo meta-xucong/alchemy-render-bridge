@@ -449,7 +449,7 @@ class BridgeStore(HarnessMixin, OperationsMixin, AvailabilityMixin):
                 'harness_admission': {'accepting_new_tasks': bool(self.harness.accepting_new
                     and self.accepting_new_tasks and active_count == 0 and node['state'] == 'available'
                     and HARNESS_PROFILE_ID in node['reported_profiles']),
-                    'synthetic_only': True, 'max_physical_slots': 1}}
+                    'synthetic_only': self.harness.execution_mode == 'synthetic', 'max_physical_slots': 1}}
                if self.harness is not None and (scope.source_id, scope.workspace_id) == (self.harness.source_id, self.harness.workspace_id) else {}),
             "schema_version": "1",
             "admission": {"accepting_new_tasks": accepting,

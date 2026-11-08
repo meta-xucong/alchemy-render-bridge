@@ -17,6 +17,10 @@ class LocalTrialTests(unittest.TestCase):
         with self.assertRaises(ValueError): replace(self.config,execution_mode='production')
         with self.assertRaises(ValueError): replace(self.config,allowed_owners=(('a','b'),('c','d')))
         with self.assertRaises(ValueError): replace(config(),execution_mode='workbuddy_local_trial')
+    def test_synthetic_capability_default_unchanged(self):
+        with tempfile.TemporaryDirectory() as root:
+            store=BridgeStore(Path(root)/'ledger.db',Path(root)/'objects',dispatch_mode='node_pull',harness=config())
+            self.assertTrue(store.capabilities(SourceScope('source','workspace'))['harness_admission']['synthetic_only'])
     def payload(self):
         p=envelope(); p['request']['binding']=self.binding.wire()
         p['request']['client_request']['model']=self.binding.model_alias
@@ -26,6 +30,7 @@ class LocalTrialTests(unittest.TestCase):
             store=BridgeStore(Path(root)/'ledger.db',Path(root)/'objects',dispatch_mode='node_pull',harness=self.config)
             scope=SourceScope('source','workspace'); store.provision_node(scope,'node','executor')
             store.report_harness_heartbeat(scope,'node','executor',{'state':'available','binding_digests':[digest(self.binding.wire())]})
+            self.assertFalse(store.capabilities(scope)['harness_admission']['synthetic_only'])
             p=self.payload()
             # Explicit multi-message request rejected before task creation.
             bad=copy.deepcopy(p); bad['request']['client_request']['messages'].insert(0,{'role':'assistant','content':'old'})
