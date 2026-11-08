@@ -31,6 +31,7 @@ from .profiles import get_profile, enabled_profile_ids, MAX_PROFILE_OUTPUT_BYTES
 from .image_options import validate_image_request, requested_output_mime
 from .operational_store import OperationsMixin
 from .availability import AvailabilityMixin, HEALTH_DDL
+from .harness import HarnessMixin, HarnessConfig, DDL as HARNESS_DDL, CONTRACT as HARNESS_CONTRACT, PROFILE as HARNESS_PROFILE_ID, is_harness
 
 MAX_INPUT_BYTES = 16 * 1_048_576
 MAX_OUTPUT_BYTES = 1_048_576
@@ -41,7 +42,7 @@ PROFILE_REVISION = "1"
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _ORIGIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _MIMES = {"image/png": "PNG", "image/jpeg": "JPEG"}
-_TERMINAL = {"canceled", "failed", "expired", "artifacts_ready"}
+_TERMINAL = {"canceled", "failed", "expired", "artifacts_ready", "harness_terminal"}
 
 
 class DomainError(Exception):
@@ -120,7 +121,7 @@ def _utc(timestamp):
     return datetime.fromtimestamp(timestamp, timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-class BridgeStore(OperationsMixin, AvailabilityMixin):
+class BridgeStore(HarnessMixin, OperationsMixin, AvailabilityMixin):
     """SQLite-backed isolated fixture store; separate instances may share a DB.
 
     POSIX writes synchronize the file and its containing directory. Windows
@@ -131,7 +132,10 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
 
     def __init__(self, db_path, artifact_root, *, clock=None, enabled_profiles=("fake-image",),
                  accepting_new_tasks=True, max_queued_tasks=10, max_storage_bytes=None,
-                 dispatch_mode="hatchet"):
+                 dispatch_mode="hatchet", harness=None):
+        if harness is not None and (type(harness) is not HarnessConfig or dispatch_mode != 'node_pull'):
+            raise ValueError('Harness requires explicit HarnessConfig and node_pull mode')
+        self.harness = harness
         self.enabled_profiles = enabled_profile_ids(enabled_profiles)
         self.db_path = str(db_path)
         if self.db_path == ":memory:":
@@ -237,6 +241,35 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                     UNIQUE(source, workspace, client_receipt_id));
             """)
             con.executescript(HEALTH_DDL)
+            con.executescript(HARNESS_DDL)
+            con.execute("CREATE TABLE IF NOT EXISTS instance_mode (singleton INTEGER PRIMARY KEY CHECK(singleton=1), mode TEXT NOT NULL CHECK(mode IN ('image','harness')))")
+            # Pin even empty ledgers, serializing competing constructors. Switching
+            # an existing service's mode requires offline migration, never a live
+            # object retaining a different mode from another constructor.
+            con.execute('BEGIN IMMEDIATE')
+            try:
+                mode = 'harness' if harness is not None else 'image'
+                old_mode = con.execute('SELECT mode FROM instance_mode WHERE singleton=1').fetchone()
+                if old_mode is not None and old_mode['mode'] != mode:
+                    raise ValueError('Ledger mode mismatch; dedicated Harness/image ledger required')
+                if harness is None and con.execute('SELECT 1 FROM harness_instance').fetchone():
+                    raise ValueError('Harness ledger requires dedicated Harness configuration')
+                if harness is not None:
+                    expected = (harness.ledger_instance, harness.source_id, harness.workspace_id,
+                                harness.node_id, harness.executor_instance)
+                    if any(not is_harness(row) for row in con.execute('SELECT payload FROM tasks')):
+                        raise ValueError('Harness requires a dedicated ledger without image tasks')
+                    if con.execute('SELECT 1 FROM node_heartbeats').fetchone():
+                        raise ValueError('Harness requires a dedicated ledger without image heartbeats')
+                    con.execute('INSERT OR IGNORE INTO harness_instance VALUES(1,?,?,?,?,?)', expected)
+                    pinned = con.execute('SELECT ledger_instance,source,workspace,node,executor FROM harness_instance WHERE singleton=1').fetchone()
+                    if tuple(pinned) != expected:
+                        raise ValueError('Harness ledger identity changed; offline reconciliation required')
+                con.execute('INSERT OR IGNORE INTO instance_mode VALUES(1,?)', (mode,))
+                con.commit()
+            except BaseException:
+                con.rollback()
+                raise
             if 'revalidation_generation' not in {r[1] for r in con.execute('PRAGMA table_info(profile_health)')}:
                 con.execute('ALTER TABLE profile_health ADD COLUMN revalidation_generation INTEGER NOT NULL DEFAULT 0')
             con.execute("""INSERT OR IGNORE INTO dispatch_outbox(dispatch_key,task_id)
@@ -331,6 +364,8 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             _fail("upload_only_claim_required", 409)
 
     def report_heartbeat(self, scope, node_id, executor_instance, state, profiles, profile_health=None):
+        if self.harness is not None:
+            _fail("harness_instance_image_disabled", 409)
         source, workspace = self._scope(scope)
         if state not in {"available", "busy", "attention"}:
             _fail("invalid_node_status")
@@ -355,6 +390,14 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                 WHERE h.source=? AND h.workspace=? ORDER BY h.seen DESC LIMIT 1""",
                               (source, workspace)).fetchone()
             registered = con.execute("SELECT active FROM node_registry WHERE source=? AND workspace=?", (source, workspace)).fetchall()
+            if self.harness is not None:
+                cfg = self.harness
+                active = con.execute("SELECT active FROM node_registry WHERE source=? AND workspace=? AND node=? AND executor=?",
+                                     (source, workspace, cfg.node_id, cfg.executor_instance)).fetchone()
+                typed = self._harness_presence(con, source, workspace, cfg.node_id, cfg.executor_instance) if active and active['active'] else None
+                if typed is not None:
+                    row = {'seen': typed['seen'], 'state': typed['state'],
+                           'profiles': _canonical(['harness-invoke'])}
         authorization = "unknown" if not registered else "active" if any(r["active"] for r in registered) else "revoked"
         return {"state": ("attention" if authorization == "revoked" else "unknown" if row is None else "offline" if self.clock() - row["seen"] >= 90 else row["state"]),
                 "authorization": authorization,
@@ -370,6 +413,8 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
         with self._transaction() as con:
             self._check_node_active(con, scope, node_id, executor_instance)
             task = self._scoped(con, "tasks", task_id, scope)
+            if is_harness(task):
+                _fail('harness_observation_endpoint_required', 409)
             if task["attempt_id"] != attempt_id:
                 _fail("attempt_mismatch", 409)
             attempt = con.execute("SELECT * FROM attempts WHERE task_id=?", (task_id,)).fetchone()
@@ -400,6 +445,12 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             accepting = (accepting and node["state"] in {"available", "busy"}
                          and any(p in node["reported_profiles"] for p in self.enabled_profiles))
         return {
+            **({'harness_contract': HARNESS_CONTRACT, 'ledger_instance': self.harness.ledger_instance,
+                'harness_admission': {'accepting_new_tasks': bool(self.harness.accepting_new
+                    and self.accepting_new_tasks and active_count == 0 and node['state'] == 'available'
+                    and HARNESS_PROFILE_ID in node['reported_profiles']),
+                    'synthetic_only': self.harness.execution_mode == 'synthetic', 'max_physical_slots': 1}}
+               if self.harness is not None and (scope.source_id, scope.workspace_id) == (self.harness.source_id, self.harness.workspace_id) else {}),
             "schema_version": "1",
             "admission": {"accepting_new_tasks": accepting,
                           "mode": "enabled" if accepting else "draining"},
@@ -435,7 +486,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
     def _active_task_count(self, con):
         now = self.clock()
         active = con.execute("""SELECT t.* FROM tasks t JOIN attempts a ON a.task_id=t.id
-            WHERE t.state NOT IN ('canceled','failed','expired','artifacts_ready')
+            WHERE t.state NOT IN ('canceled','failed','expired','artifacts_ready','harness_terminal')
             AND (t.deadline>? OR a.start_grant_id IS NOT NULL)""", (now,)).fetchall()
         return sum(self._profile(row).execution_mode != "manual" or row["deadline"] > now for row in active)
 
@@ -766,6 +817,10 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
         return deadline
 
     def create_task(self, scope, payload):
+        if isinstance(payload, dict) and payload.get('schema_version') == HARNESS_CONTRACT:
+            return self.create_harness_task(scope, payload)
+        if self.harness is not None:
+            _fail('harness_instance_image_disabled', 409)
         source, workspace = self._scope(scope)
         deadline = self._validate_task(payload)
         digest = _digest(payload)
@@ -820,22 +875,44 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             self._check_node_active(con, scope, node_id, executor_instance, required=True)
             heartbeat = con.execute("SELECT * FROM node_heartbeats WHERE source=? AND workspace=? AND node=? AND executor=?",
                                     (source, workspace, node_id, executor_instance)).fetchone()
-            if (heartbeat is None or self.clock() - heartbeat["seen"] >= 90
-                    or heartbeat["state"] != "available"):
-                return {"task_id": None}
-            profiles = json.loads(heartbeat["profiles"])
-            rows = con.execute("SELECT * FROM tasks WHERE source=? AND workspace=? AND state='queued' AND deadline>? ORDER BY created,id",
+            # Each reporter can withdraw/expire only its own capability family.
+            profiles = (json.loads(heartbeat["profiles"]) if heartbeat is not None
+                        and 0 <= self.clock() - heartbeat["seen"] < 90
+                        and heartbeat["state"] == "available" else [])
+            if self.harness is not None:
+                profiles = []
+            typed = self._harness_presence(con, source, workspace, node_id, executor_instance)
+            if typed is not None and typed['state'] == 'available':
+                profiles.append('harness-invoke')
+            rows = con.execute("SELECT * FROM tasks WHERE source=? AND workspace=? AND state IN ('queued','harness_queued') AND deadline>? ORDER BY created,id",
                                (source, workspace, self.clock())).fetchall()
             for row in rows:
+                if is_harness(row):
+                    if self.harness is None:
+                        continue
+                    self._harness_node(con, scope, node_id, executor_instance)
+                    payload = json.loads(row['payload'])
+                    self._harness_owner(scope, payload)
+                    from .harness import digest as binding_digest
+                    if typed is None or binding_digest(payload['request']['binding']) not in json.loads(typed['bindings']):
+                        continue
+                    if payload['request']['binding'] not in [b.wire() for b in self.harness.bindings]:
+                        continue
                 if self._profile(row).id in profiles:
                     return {"task_id": row["id"]}
             return {"task_id": None}
 
     @staticmethod
     def _profile(task):
+        if is_harness(task):
+            from .profiles import ExecutionProfile
+            return ExecutionProfile(HARNESS_PROFILE_ID, '1', 'automatic', 262144, 0, 0,
+                                    'synthetic_only', 'unsupported', 'unsupported')
         return get_profile(json.loads(task["payload"]).get("execution_profile_id", "fake-image"))
 
     def _task_view(self, con, row):
+        if is_harness(row):
+            return self._harness_view(con, row)
         state = row["state"]
         attempt = con.execute("SELECT * FROM attempts WHERE task_id=?", (row["id"],)).fetchone()
         claim = con.execute("SELECT * FROM claims WHERE task_id=?", (row["id"],)).fetchone()
@@ -884,7 +961,13 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
 
     def get_task(self, scope, task_id):
         with self._read_transaction() as con:
-            return self._task_view(con, self._scoped(con, "tasks", task_id, scope))
+            task = self._scoped(con, "tasks", task_id, scope)
+            if not is_harness(task):
+                return self._task_view(con, task)
+        with self._transaction() as con:
+            task = self._scoped(con, "tasks", task_id, scope)
+            self._expire_harness_before_start(con, scope, task)
+            return self._harness_view(con, task)
 
     def get_task_by_origin(self, scope, origin_key):
         source, workspace = self._scope(scope)
@@ -894,7 +977,10 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                               (source, workspace, origin_key)).fetchone()
             if not row:
                 _fail("not_found", 404)
-            return self._task_view(con, row)
+            if not is_harness(row):
+                return self._task_view(con, row)
+            task_id = row['id']
+        return self.get_task(scope, task_id)
 
     def withdraw_before_start(self, scope, task_id, payload):
         """Permanent proof-bearing fence, serialized with both kinds of start grant."""
@@ -908,6 +994,8 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
         source, workspace = self._scope(scope)
         with self._transaction() as con:
             task = self._scoped(con, 'tasks', task_id, scope)
+            if is_harness(task):
+                _fail('harness_withdrawal_not_supported', 409)
             if any(payload[k] != task[v] for k, v in
                    (('origin_key', 'origin_key'), ('attempt_id', 'attempt_id'), ('task_digest', 'digest'))):
                 _fail('withdrawal_binding_mismatch', 409)
@@ -949,6 +1037,8 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
     def cancel_task(self, scope, task_id):
         with self._transaction() as con:
             task = self._scoped(con, "tasks", task_id, scope)
+            if is_harness(task):
+                return self._cancel_harness(con, scope, task)
             if task["state"] not in _TERMINAL:
                 started = con.execute("SELECT start_grant_id FROM attempts WHERE task_id=?",
                                       (task_id,)).fetchone()[0]
@@ -972,6 +1062,11 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             self._check_node_active(con, scope, node_id, executor_instance)
             task = self._scoped(con, "tasks", task_id, scope)
             attempt = con.execute("SELECT * FROM attempts WHERE task_id=?", (task_id,)).fetchone()
+            if is_harness(task):
+                self._harness_node(con, scope, node_id, executor_instance)
+                self._harness_owner(scope, json.loads(task['payload']))
+                if attempt['start_grant_id'] or mode != 'execute':
+                    _fail('execution_already_started', 409)
             if (mode == "upload_only" and self._profile(task).id == "codex-image"
                     and attempt["start_grant_id"]
                     and (attempt["original_node"] != node_id
@@ -1013,6 +1108,9 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             if self._profile(task).execution_mode != "automatic":
                 _fail("manual_profile_requires_manual_ready", 409)
             claim = self._check_claim(con, task, claim_id)
+            if is_harness(task):
+                self._harness_node(con, scope, claim['node'], claim['executor'])
+                self._harness_owner(scope, json.loads(task['payload']))
             attempt = con.execute("SELECT * FROM attempts WHERE task_id=?", (task_id,)).fetchone()
             if attempt["start_grant_id"]:
                 return {"start_grant_id": attempt["start_grant_id"],
@@ -1025,7 +1123,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                 _fail("task_expired", 409)
             occupied = con.execute("""SELECT t.* FROM attempts a JOIN tasks t ON t.id=a.task_id
                 WHERE a.start_grant_id IS NOT NULL AND t.id!=?
-                AND t.state NOT IN ('artifacts_ready','canceled','failed','expired')""",
+                AND t.state NOT IN ('artifacts_ready','canceled','failed','expired','harness_terminal')""",
                                    (task_id,)).fetchall()
             if any(self._profile(row).execution_mode == "automatic" for row in occupied):
                 _fail("physical_slot_busy", 409)
@@ -1035,6 +1133,9 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                         (grant, claim["node"], claim["executor"], self.clock(), attempt["id"]))
             con.execute("DELETE FROM task_attention WHERE task_id=?", (task_id,))
             con.execute("UPDATE tasks SET state='running' WHERE id=?", (task_id,))
+            if is_harness(task):
+                con.execute("UPDATE harness_tasks SET liveness='may_be_running' WHERE task_id=?", (task_id,))
+                self._append_harness_status(con, task_id, code='START_GRANTED')
             self._audit(con, scope, "start_granted", task_id=task_id, attempt_id=attempt["id"])
             return {"start_grant_id": grant, "attempt_id": attempt["id"], "may_execute": True}
 
@@ -1055,7 +1156,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                     _fail("task_expired", 409)
                 pending = con.execute("""SELECT t.* FROM tasks t JOIN attempts a ON a.task_id=t.id
                     WHERE a.start_grant_id IS NOT NULL
-                    AND t.state NOT IN ('artifacts_ready','canceled','failed','expired')""").fetchall()
+                    AND t.state NOT IN ('artifacts_ready','canceled','failed','expired','harness_terminal')""").fetchall()
                 if sum(self._profile(row).execution_mode == "manual" and row["deadline"] > self.clock() for row in pending) >= 3:
                     _fail("manual_capacity", 429)
                 con.execute("""UPDATE attempts SET start_grant_id=?,original_node=?,original_executor=?,
@@ -1140,6 +1241,8 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
     def mark_execution_unknown(self, scope, task_id, claim_id):
         with self._transaction() as con:
             task = self._scoped(con, "tasks", task_id, scope)
+            if is_harness(task):
+                _fail('harness_observation_endpoint_required', 409)
             if self._profile(task).execution_mode != "automatic":
                 _fail("manual_profile_requires_manual_ready", 409)
             self._check_claim(con, task, claim_id)
@@ -1157,6 +1260,8 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
         _object(payload, ("attempt_id", "slot_id", "size", "mime_type"))
         with self._transaction() as con:
             task = self._scoped(con, "tasks", task_id, scope)
+            if is_harness(task):
+                _fail('harness_result_endpoint_required', 409)
             self._media_metadata(payload, output=True, profile=self._profile(task))
             claim = self._check_claim(con, task, claim_id)
             self._require_upload_claim_mode(task, claim)

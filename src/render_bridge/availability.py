@@ -82,10 +82,11 @@ class AvailabilityMixin:
         source, workspace = self._scope(scope)
         with self._read_transaction() as con:
             revision = con.execute('SELECT revision FROM health_revision WHERE singleton=1').fetchone()[0]
-            occupied = con.execute("""SELECT t.payload FROM tasks t JOIN attempts a ON a.task_id=t.id
+            occupied = con.execute("""SELECT t.* FROM tasks t JOIN attempts a ON a.task_id=t.id
                 WHERE t.source=? AND t.workspace=? AND a.start_grant_id IS NOT NULL
-                AND t.state NOT IN ('artifacts_ready','canceled','failed','expired')""", (source, workspace)).fetchall()
-            busy = {json.loads(row['payload'])['execution_profile_id'] for row in occupied}
+                AND t.state NOT IN ('artifacts_ready','canceled','failed','expired','harness_terminal')""", (source, workspace)).fetchall()
+            busy = {self._profile(row).id for row in occupied}
+            automatic_busy = any(self._profile(row).execution_mode == 'automatic' for row in occupied)
             items = []
             for profile in map(get_profile, self.enabled_profiles):
                 rows = con.execute('''SELECT h.* FROM profile_health h JOIN node_registry n
@@ -98,7 +99,7 @@ class AvailabilityMixin:
                 fresh = row is not None and 0 <= self.clock()-row['seen'] < 90
                 items.append({'profile_id': profile.id, 'profile_revision': profile.revision,
                     'health': row['health'] if fresh else 'unknown',
-                    'capacity': 'busy' if profile.id in busy or (profile.execution_mode == 'automatic' and any(get_profile(p).execution_mode == 'automatic' for p in busy)) else 'idle',
+                    'capacity': 'busy' if profile.id in busy or (profile.execution_mode == 'automatic' and automatic_busy) else 'idle',
                     'reason_code': row['reason'] if fresh else 'stale' if row else 'unverified',
                     'evidence_kind': row['evidence'] if row else 'none',
                     'observed_at': _utc(row['seen']) if row else None,

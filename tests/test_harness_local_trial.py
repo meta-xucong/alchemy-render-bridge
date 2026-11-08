@@ -1,0 +1,63 @@
+"""Real Bridge ledger admission, never native inference."""
+from dataclasses import replace, fields
+import copy
+import tempfile
+from pathlib import Path
+import unittest
+from render_bridge.domain import BridgeStore, DomainError, SourceScope
+from render_bridge.harness import HarnessBinding, HarnessConfig, digest
+from test_harness import config, envelope
+
+class LocalTrialTests(unittest.TestCase):
+    def setUp(self):
+        self.binding=HarnessBinding(binding_id='wb',revision=1,model_alias='workbuddy-test',native_model='test-model')
+        self.config=config(bindings=(self.binding,),execution_mode='workbuddy_local_trial')
+    def test_explicit_mode_single_owner(self):
+        with self.assertRaises(ValueError): replace(self.config,execution_mode='synthetic')
+        with self.assertRaises(ValueError): replace(self.config,execution_mode='production')
+        with self.assertRaises(ValueError): replace(self.config,allowed_owners=(('a','b'),('c','d')))
+        with self.assertRaises(ValueError): replace(config(),execution_mode='workbuddy_local_trial')
+    def test_synthetic_capability_default_unchanged(self):
+        with tempfile.TemporaryDirectory() as root:
+            store=BridgeStore(Path(root)/'ledger.db',Path(root)/'objects',dispatch_mode='node_pull',harness=config())
+            self.assertTrue(store.capabilities(SourceScope('source','workspace'))['harness_admission']['synthetic_only'])
+    def payload(self):
+        p=envelope(); p['request']['binding']=self.binding.wire()
+        p['request']['client_request']['model']=self.binding.model_alias
+        p['request_digest']=digest(p['request']['client_request']); return p
+    def test_single_user_admission_and_replay(self):
+        with tempfile.TemporaryDirectory() as root:
+            store=BridgeStore(Path(root)/'ledger.db',Path(root)/'objects',dispatch_mode='node_pull',harness=self.config)
+            scope=SourceScope('source','workspace'); store.provision_node(scope,'node','executor')
+            store.report_harness_heartbeat(scope,'node','executor',{'state':'available','binding_digests':[digest(self.binding.wire())]})
+            self.assertFalse(store.capabilities(scope)['harness_admission']['synthetic_only'])
+            p=self.payload()
+            # Explicit multi-message request rejected before task creation.
+            bad=copy.deepcopy(p); bad['request']['client_request']['messages'].insert(0,{'role':'assistant','content':'old'})
+            bad['request']['messages']=copy.deepcopy(bad['request']['client_request']['messages'])
+            bad['request_digest']=digest(bad['request']['client_request'])
+            with self.assertRaises(DomainError): store.create_harness_task(scope,bad)
+            accepted=store.create_harness_task(scope,p)
+            store.harness=replace(self.config,execution_mode='harness_local_trial' if self.config.execution_mode == 'workbuddy_local_trial' else 'workbuddy_local_trial',accepting_new=False,bindings=())
+            replay=store.create_harness_task(scope,p)
+            self.assertEqual(accepted['remote_task_id'],replay['remote_task_id'])
+            fresh=copy.deepcopy(p); fresh['origin_key']='new-operation'
+            with self.assertRaises(DomainError): store.create_harness_task(scope,fresh)
+
+class MultiHarnessTrialTests(LocalTrialTests):
+    def setUp(self):
+        self.binding=HarnessBinding(binding_id='h2-test',revision=1,model_alias='codex-test',native_model='test-model')
+        self.config=config(bindings=(self.binding,),execution_mode='harness_local_trial')
+
+    def test_config_roundtrip(self):
+        wire={f.name:getattr(self.config,f.name) for f in fields(self.config)}
+        wire['allowed_owners']=[list(owner) for owner in self.config.allowed_owners]
+        wire['bindings']=[self.binding.wire()]
+        self.assertEqual(HarnessConfig.from_dict(wire),self.config)
+
+    def test_alias_modes(self):
+        with self.assertRaises(ValueError): replace(self.config,execution_mode='workbuddy_local_trial')
+        replace(self.config,bindings=(self.binding.model_copy(update={'model_alias':'workbuddy-test'}),))
+        with self.assertRaises(ValueError): replace(self.config,bindings=(self.binding.model_copy(update={'native_model':'fake-text'}),))
+
+if __name__=='__main__': unittest.main()
