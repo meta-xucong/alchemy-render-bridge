@@ -128,7 +128,7 @@ for line in sys.stdin:
                     self.assertEqual(provider, {'name': 'OpenAI', 'wire_api': 'responses',
                         'requires_openai_auth': True, 'supports_websockets': False,
                         'supports_standalone_web_search': True,
-                        'stream_idle_timeout_ms': 60000,
+                        'stream_idle_timeout_ms': 300000,
                         'http_headers': {'version': cli_version.removeprefix('codex-cli ')},
                         'env_http_headers': {'OpenAI-Organization': 'OPENAI_ORGANIZATION',
                                              'OpenAI-Project': 'OPENAI_PROJECT'}})

@@ -823,7 +823,7 @@ class CodexExecutor:
                 provider = ('model_providers.alchemy_openai_http={name="OpenAI", '
                     'wire_api="responses", requires_openai_auth=true, '
                     'supports_websockets=false, supports_standalone_web_search=true, '
-                    'stream_idle_timeout_ms=60000, '
+                    'stream_idle_timeout_ms=300000, '
                     'http_headers={version="' + version + '"}, '
                     'env_http_headers={OpenAI-Organization="OPENAI_ORGANIZATION", '
                     'OpenAI-Project="OPENAI_PROJECT"}}')

@@ -1,5 +1,29 @@
 # Codex pre-tool latency: correction model
 
+## Current policy: stability first (2026-11-08)
+
+At the user's explicit direction, the HTTP profile uses a **300,000 ms (300
+second) text SSE idle limit**. Keep HTTP Responses, the node's disabled automatic
+skill instructions and all timing diagnostics. This supersedes the historical
+60-second experiment below; do not restore that experiment during deployment.
+
+Correction model: a quiet stream does not prove the upstream request has failed.
+A healthy but delayed response could take more than 60 seconds, causing the
+shorter limit to resample unnecessarily and potentially exhaust retries or the
+outer deadline. The successful 99-second image tool demonstrated only that its
+own request was not cut short, not unchanged end-to-end reliability. HTTP already
+completed samples in 126 and 135 seconds with the original 300-second idle limit;
+there is no demonstrated normal-case benefit requiring the shorter limit.
+
+The owning layer is the Codex transport adapter. The complete correction is to
+restore its explicit idle value and existing wire regression to 300,000 ms.
+Do not change HTTP selection, context trimming, telemetry, retry budget/backoff,
+the 600-second outer deadline, full rendering inputs, quality, review or frontend
+behavior. Preserve historical evidence. Run the related regression suite and an
+independent audit, push the revision, restart the same node only while idle, and
+verify the installed CLI configuration without starting a generation. The user
+will perform the next V3 frontend generation acceptance.
+
 ## Authority and observed mismatch
 
 The node executes Alchemy's frozen prompt once, then returns the native original
@@ -64,7 +88,7 @@ If the final context sample passes, one repeat is justified to check the earlier
 observed transport variability. Deploy only the tested configuration after
 independent audit and an idle-node check; preserve all original evidence.
 
-## Correction after the repeat exposed a second wait
+## Historical 60-second experiment (superseded by current policy above)
 
 The first HTTP samples completed in 125.968 and 135.016 seconds. Disabling the
 automatic skill block reduced first-request input from 24,644 to 18,249 tokens,
