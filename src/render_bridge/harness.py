@@ -16,7 +16,8 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, Strict
 CONTRACT = 'harness.invoke.v1'
 PROFILE = 'harness-invoke'
 MAX_REQUEST_BYTES = 65536
-MAX_RESULT_BYTES = 262144
+MAX_RESULT_BYTES = 262144  # Aggregate decoded UTF-8 output text, not JSON framing.
+MAX_RESULT_WIRE_BYTES = 6 * MAX_RESULT_BYTES + 4096
 ID = Annotated[StrictStr, Field(pattern=r'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')]
 DIGEST = Annotated[StrictStr, Field(pattern=r'^[0-9a-f]{64}$')]
 
@@ -170,8 +171,10 @@ class HarnessResult(Strict):
             raise ValueError('Success requires genuine output')
         if self.outcome != 'failed' and self.code is not None:
             raise ValueError('Error code on nonfailure')
-        if len(canonical(self.model_dump(exclude_none=True)).encode()) > MAX_RESULT_BYTES:
-            raise ValueError('Result too large')
+        if sum(len(block.text.encode('utf-8')) for block in self.output_blocks) > MAX_RESULT_BYTES:
+            raise ValueError('Result text too large')
+        if len(canonical(self.model_dump(exclude_none=True)).encode('utf-8')) > MAX_RESULT_WIRE_BYTES:
+            raise ValueError('Result wire too large')
         return self
 
 
@@ -364,7 +367,7 @@ class HarnessMixin:
                 _fail('queue_capacity', 429)
             count = con.execute('SELECT count(*) FROM harness_tasks').fetchone()[0]
             used = con.execute('SELECT COALESCE(SUM(length(CAST(result AS BLOB))),0) FROM harness_tasks').fetchone()[0]
-            if count >= config.max_records or used + MAX_RESULT_BYTES > config.max_result_storage_bytes:
+            if count >= config.max_records or used + MAX_RESULT_WIRE_BYTES > config.max_result_storage_bytes:
                 _fail('harness_storage_capacity', 507)
             task_id, attempt_id, now = _id('task'), _id('attempt'), self.clock()
             con.execute('INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?)',
