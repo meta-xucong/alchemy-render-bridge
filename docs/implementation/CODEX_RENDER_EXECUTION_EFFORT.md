@@ -1,5 +1,10 @@
 # Codex render execution effort
 
+Current candidate: explicit `medium` reasoning, optional trusted-node
+`priority` tier, and a native return-shape/one-invocation contract. Historical
+diagnoses and their corrections below are retained as evidence; `low` is no
+longer the default and was not a measured acceleration.
+
 ## Correction model (2026-11-08)
 
 The rendering node receives an already planned, frozen prompt. Its job is to
@@ -87,3 +92,45 @@ then assert a single cause. The large inherited skills catalog is a separately
 identified candidate, not yet a verified latency cause. Regression must prove
 default inheritance, explicit priority wire value and unchanged rendering
 inputs/terminal recovery. Real timing remains required after those checks.
+
+## Full workflow audit after the priority comparison
+
+The priority rollout confirmed `service_tier=priority`. Its first tool call
+started 23.318 seconds after turn start (baseline 136.674), with 24,560 input
+tokens and zero cached tokens. However, the comparison is **not accepted**:
+the CLI called ImageGen three times and the existing collector correctly
+returned `codex_single_image_event_required`. No production job, image or
+receipt was created by this isolated comparison. The original production
+service tier was restored after the bound test turn completed.
+
+Authority trace:
+
+1. Alchemy owns the frozen creative prompt and requested output count.
+2. Bridge owns one task/attempt and one physical execution permit.
+3. The CLI invokes native ImageGen. Its result is `{image_url, output_hint}`;
+   code mode must display it with `generatedImage(result)`.
+4. Native completed image events own artifact identity and savedPath. Empty
+   code-mode display text does not invalidate a completed native generation.
+5. Bridge accepts exactly one distinct native image only after its bound turn
+   completes, then normal Alchemy persistence/review/delivery owns the result.
+
+The faulty CLI code iterated `result.content`, treating the native return as
+an MCP content array. That silently displayed nothing. It interpreted the
+empty display as no image and repeated generation twice. Thus the owning
+defect is the Provider/tool return contract, not image quality, review or the
+collector's single-image rule. An instruction to produce one image did not
+clearly define a one-invocation budget or the native return shape.
+
+Minimal complete correction: explicitly give the renderer the native result
+shape and `generatedImage(result)` forwarding contract; permit at most one
+ImageGen invocation, including failure/empty-display cases; never retry or
+change the prompt inside the CLI. Failures remain owned by the existing outer
+workflow. Keep terminal and single-image acceptance checks unchanged, and
+regress rejection of multiple distinct completed image events. The public
+turn protocol exposes no max-tool-call field; do not invent a hard guarantee
+from outputSchema or hide extra images by selecting the first.
+
+Use the model's normal `medium` reasoning effort for the balanced final
+configuration: low alone had no latency benefit. Priority targets response
+waiting without removing useful protocol reasoning. No further real render
+may run until the contract change and focused regressions pass.

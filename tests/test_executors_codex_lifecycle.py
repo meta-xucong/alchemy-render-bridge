@@ -53,6 +53,10 @@ for line in sys.stdin:
   assert 'current working directory' not in instructions
   assert 'do not use shell commands to locate, copy, move, or convert the image' in instructions
   assert 'savedpath' in instructions
+  assert 'at most once' in instructions
+  assert 'generatedimage(result)' in instructions
+  assert 'image_url' in instructions and 'output_hint' in instructions
+  assert 'do not read result.content' in instructions
   assert ('transparent_background=true' in p.get('developerInstructions','')) is INVOKE_TRANSPARENT
   assert ('referenced_image_paths set to' in p.get('developerInstructions','')) is HAS_REFERENCE
   assert REF_NAME in p.get('developerInstructions','') if HAS_REFERENCE else True
@@ -88,7 +92,7 @@ for line in sys.stdin:
  else: raise AssertionError('duplicate operation')
  stage+=1
 '''.replace('OUTPUT_DELTA_COUNT', str(output_delta_count)).replace('COMPLETED_ITEM_COUNT', str(completed_item_count)).replace('IMAGE_EVENT_TYPE', repr(image_event)).replace('IMAGE_ITEM_ID', repr(image_item_id)).replace('if IMAGE:', 'if ' + repr(image) + ':').replace('IMAGE_UNDER_CODEX_HOME', repr(generated_under_codex_home)).replace('OMIT_TURN_COMPLETED', repr(omit_turn_completed)).replace('base64.b64decode(PNG)', 'base64.b64decode(' + repr(base64.b64encode(original_bytes).decode()) + ')').replace('INVOKE_TRANSPARENT', repr(transparent and cli_version == 'codex-cli 0.163.0')).replace('HAS_REFERENCE', repr(reference)).replace('REF_NAME', repr('reference.png' if reference else '')).replace('EXPECTED_CODEX_HOME', repr(str(expected_codex_home))), encoding='utf-8')
-            script.write_text(script.read_text(encoding='utf-8').replace('EXPECTED_EFFORT', repr(reasoning_effort or 'low')), encoding='utf-8')
+            script.write_text(script.read_text(encoding='utf-8').replace('EXPECTED_EFFORT', repr(reasoning_effort or 'medium')), encoding='utf-8')
             script.write_text(script.read_text(encoding='utf-8').replace('EXPECTED_SERVICE_TIER', repr(service_tier)), encoding='utf-8')
             reference_path = root / 'reference.png'
             references = ()
@@ -192,7 +196,7 @@ for line in sys.stdin:
         self.run_fixture(True)
 
     def test_explicit_render_effort_preserves_reference_and_native_options(self):
-        self.run_fixture(True, reasoning_effort='medium', reference=True,
+        self.run_fixture(True, reasoning_effort='high', reference=True,
                          transparent=True, requested_format='png', cli_version='codex-cli 0.163.0')
 
     def test_invalid_render_effort_is_rejected_before_execution(self):
@@ -210,6 +214,28 @@ for line in sys.stdin:
         for value in ('fast', 'unknown', None, True, 1):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 AgentConfig.from_mapping({'codex': {'service_tier': value}})
+
+    def test_distinct_completed_images_fail_closed_without_selecting_first(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            request = ExecutionRequest('task', 'attempt', 'frozen prompt', {'codex_adapter': 'codex_cli_imagegen_v1'})
+            events = []
+            for index in range(3):
+                path = root / f'image-{index}.png'
+                path.write_bytes(fixture_png())
+                events.append({'method': 'item/completed', 'params': {
+                    'threadId': 'thread', 'turnId': 'turn',
+                    'item': {'type': 'Extension', 'kind': 'image_gen.generation',
+                             'id': path.stem, 'status': 'completed', 'savedPath': str(path)},
+                }})
+            events.append({'method': 'turn/completed', 'params': {
+                'threadId': 'thread', 'turn': {'id': 'turn', 'status': 'completed'},
+            }})
+            result = CodexExecutor(root / 'executor').collect_completed(
+                request, thread_id='thread', turn_id='turn', events=events)
+            self.assertEqual((result.status, result.code), ('needs_attention', 'codex_single_image_event_required'))
+            self.assertIsNone(result.artifact)
+            self.assertFalse((root / 'executor/task/attempt/artifact.original').exists())
 
     def test_default_codex_home_output_is_collected_without_environment_configuration(self):
         self.run_fixture(True, generated_under_codex_home=True)

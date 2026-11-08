@@ -336,7 +336,7 @@ class CodexConfig:
     tool_policy_verified: bool = False
     timeout: float = MAX_TURN_TIMEOUT_SECONDS
     # This node executes a frozen render prompt; do not inherit desktop effort.
-    reasoning_effort: str = 'low'
+    reasoning_effort: str = 'medium'
     service_tier: str = ''  # Omitted by default; only a trusted node opts in.
 
     def __post_init__(self):
@@ -752,7 +752,14 @@ class CodexExecutor:
             return ExecutionResult('needs_attention', 'codex_version_not_validated', details=probe)
         adapted = uses_codex_adapter(request.parameters, 'codex-image')
         native_options = codex_imagegen_arguments(request.parameters, probe['cli_version'])
-        instructions = ('Generate exactly one image using the image generation tool. Let the tool save '
+        instructions = ('Generate exactly one image. Call the image generation tool at most once. '
+            'When invoking tools.image_gen__imagegen in functions.exec, the native return value '
+            'is {image_url, output_hint}, not an MCP content array. Forward that result with '
+            'generatedImage(result). Do not read result.content or iterate content blocks. '
+            'An empty display is not evidence that generation failed. Once the invocation '
+            'finishes, end the turn; never invoke image generation again, including after '
+            'an empty display, error, or unexpected result. Report that outcome instead; '
+            'the outer workflow owns recovery. Let the tool save '
             'the original in its native thread output location; the executor consumes the tool '
             'item savedPath. Do not use shell commands to locate, copy, move, or convert the image. '
             'Finish the turn after one completed image generation. Do not substitute text, '
