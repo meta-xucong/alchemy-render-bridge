@@ -63,3 +63,43 @@ terminal result and original image. No test creates Alchemy production records.
 If the final context sample passes, one repeat is justified to check the earlier
 observed transport variability. Deploy only the tested configuration after
 independent audit and an idle-node check; preserve all original evidence.
+
+## Correction after the repeat exposed a second wait
+
+The first HTTP samples completed in 125.968 and 135.016 seconds. Disabling the
+automatic skill block reduced first-request input from 24,644 to 18,249 tokens,
+but did not independently accelerate the sample. The third sample must not be
+discarded: it completed in 434.047 seconds with exactly one native image, after
+an HTTP response returned headers quickly but delivered no SSE event for 300
+seconds. The existing CLI retried that text request once, then received model
+output in seconds. No second image was generated. This is a distinct post-header
+stream wait; the evidence cannot distinguish upstream scheduling from network
+delivery. Do not describe the entire interval as model reasoning.
+
+The smallest additional transport correction is a 60,000 ms SSE idle limit in
+the explicitly selected HTTP node profile. Auto transport keeps its defaults.
+This is an event-to-event idle limit on text Responses, not a first-token-only
+limit, an image-generation deadline, a reasoning budget or a new retry loop.
+The CLI's retry budget/backoff, full history, native tool contract and the
+outer 600-second deadline remain unchanged. A legitimate text response silent
+for over 60 seconds can consequently be resampled earlier.
+
+Source trace in CLI 0.163.0: provider.stream_idle_timeout is passed by
+`codex-api/src/endpoint/responses.rs` to `sse/responses.rs::process_sse`, which
+wraps each stream.next(). Native ImageGen instead follows
+`ext/image-generation/src/tool.rs -> backend.rs -> endpoint/images.rs ->
+EndpointSession.execute -> transport.execute`; its request timeout is not
+derived from the Responses SSE idle limit. `session/turn.rs` drains in-flight
+tools into history before propagating a stream error and resampling. The
+existing one-invocation instruction and strict native single-image acceptance
+remain necessary; transport changes do not mathematically constrain the model.
+
+An installed-CLI, empty-auth-home, loopback-only deterministic test stalled the
+first synthetic SSE stream with a 200 ms idle limit. The original retry made a
+second request after 0.438 seconds and completed normally, with no authorization
+header and no image calls. Its first fixture omitted required total_tokens;
+that local fixture was corrected before the recorded pass. No provider request
+or production record was involved. Add regression for the idle-timeout diagnostic
+label and the node's 60-second wire setting. One final real native acceptance
+is now justified by this observed second defect and bounded correction; retain
+all prior samples, and verify an image tool lasting over 60 seconds can complete.

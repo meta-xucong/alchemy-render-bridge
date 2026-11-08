@@ -73,6 +73,7 @@ class CodexTimingTests(unittest.TestCase):
                 (98, 0, 'codex_http_client::client', 'Request completed method=POST url=https://secret status=200 OK headers={secret}', 't'),
                 (99, 0, 'codex_core::stream_events_utils', 'Output item item_type="message" item_id="private"', 't'),
                 (100, 0, 'codex_core::stream_events_utils', 'Output item item_type="message"', 'another'),
+                (399, 0, 'codex_core::responses_retry', 'stream disconnected - retrying sampling request (1/5) sampling_error=stream disconnected before completion: idle timeout waiting for SSE', 't'),
             ]
             db.executemany('INSERT INTO logs VALUES(?,?,?,?,?)', rows)
             db.commit()
@@ -80,7 +81,7 @@ class CodexTimingTests(unittest.TestCase):
             result = read_transport_events(path, 't')
             self.assertEqual([e['event'] for e in result['events']], [
                 'websocket_connect', 'sampling_retry_timeout', 'http_fallback',
-                'http_response_headers', 'model_output_item'])
+                'http_response_headers', 'model_output_item', 'sampling_retry_sse_idle'])
             self.assertEqual(result['events'][2]['unix_ms'] - result['events'][0]['unix_ms'], 96000)
             self.assertNotIn('secret', json.dumps(result))
             self.assertNotIn('private', json.dumps(result))

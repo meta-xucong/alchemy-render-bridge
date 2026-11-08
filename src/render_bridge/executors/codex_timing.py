@@ -94,6 +94,7 @@ def read_transport_events(db_path: Path, thread_id: str) -> dict:
         ('codex_core::session::startup_prewarm', 'startup websocket prewarm timed out', 'websocket_prewarm_timeout'),
         ('codex_api::endpoint::responses_websocket', 'connecting to websocket:', 'websocket_connect'),
         ('codex_core::responses_retry', 'sampling_error=request timed out', 'sampling_retry_timeout'),
+        ('codex_core::responses_retry', 'idle timeout waiting for SSE', 'sampling_retry_sse_idle'),
         ('codex_core::client', 'falling back to HTTP', 'http_fallback'),
         ('codex_http_client::request', 'Compressed request body with zstd', 'http_request_prepared'),
         ('codex_http_client::client', 'Request completed method=POST', 'http_response_headers'),
