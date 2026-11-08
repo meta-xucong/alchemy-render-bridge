@@ -194,9 +194,15 @@ class HarnessConfig:
     start_timeout_seconds: int = 3600
     max_records: int = 10000
     max_result_storage_bytes: int = 16 * 1024 * 1024
+    execution_mode: str = "synthetic"
 
     def __post_init__(self):
         from pydantic import TypeAdapter
+        if self.execution_mode not in {"synthetic", "workbuddy_local_trial"}:
+            raise ValueError("Unknown harness execution mode")
+        trial = self.execution_mode == "workbuddy_local_trial"
+        if trial and len(self.allowed_owners) != 1:
+            raise ValueError("Local trial requires exactly one owner")
         for value in (self.source_id, self.workspace_id, self.ledger_instance, self.node_id, self.executor_instance):
             TypeAdapter(ID).validate_python(value)
         if type(self.accepting_new) is not bool:
@@ -213,9 +219,9 @@ class HarnessConfig:
         if type(self.bindings) is not tuple or len(self.bindings) > 32:
             raise ValueError('Immutable bounded bindings required')
         for binding in self.bindings:
-            if (type(binding) is not HarnessBinding or not binding.model_alias.startswith('synthetic-')
-                    or not binding.native_model.startswith('fake-')):
-                raise ValueError('Only explicit synthetic bindings supported')
+            if (type(binding) is not HarnessBinding or not binding.model_alias.startswith('workbuddy-' if trial else 'synthetic-')
+                    or (binding.native_model.startswith('fake-') if trial else not binding.native_model.startswith('fake-'))):
+                raise ValueError('Binding does not match execution mode')
         if len({digest(b.wire()) for b in self.bindings}) != len(self.bindings):
             raise ValueError('Duplicate bindings')
         for value, maximum in ((self.start_timeout_seconds, 86400), (self.max_records, 100000),
@@ -339,6 +345,8 @@ class HarnessMixin:
                     _fail('idempotency_conflict', 409)
                 self._expire_harness_before_start(con, scope, old)
                 return self._harness_view(con, old)
+            if config.execution_mode == 'workbuddy_local_trial' and (len(payload['request']['messages']) != 1 or payload['request']['messages'][0]['role'] != 'user'):
+                _fail('local_trial_single_user_message_required', 422)
             if not config.accepting_new or not self.accepting_new_tasks:
                 _fail('bridge_draining', 503)
             fingerprint = digest(payload['request']['binding'])
