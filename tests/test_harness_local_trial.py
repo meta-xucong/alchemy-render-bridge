@@ -1,5 +1,5 @@
 """Real Bridge ledger admission, never native inference."""
-from dataclasses import replace
+from dataclasses import replace, fields
 import copy
 import tempfile
 from pathlib import Path
@@ -38,8 +38,26 @@ class LocalTrialTests(unittest.TestCase):
             bad['request_digest']=digest(bad['request']['client_request'])
             with self.assertRaises(DomainError): store.create_harness_task(scope,bad)
             accepted=store.create_harness_task(scope,p)
-            store.harness=replace(self.config,accepting_new=False,bindings=())
+            store.harness=replace(self.config,execution_mode='harness_local_trial' if self.config.execution_mode == 'workbuddy_local_trial' else 'workbuddy_local_trial',accepting_new=False,bindings=())
             replay=store.create_harness_task(scope,p)
             self.assertEqual(accepted['remote_task_id'],replay['remote_task_id'])
+            fresh=copy.deepcopy(p); fresh['origin_key']='new-operation'
+            with self.assertRaises(DomainError): store.create_harness_task(scope,fresh)
+
+class MultiHarnessTrialTests(LocalTrialTests):
+    def setUp(self):
+        self.binding=HarnessBinding(binding_id='h2-test',revision=1,model_alias='codex-test',native_model='test-model')
+        self.config=config(bindings=(self.binding,),execution_mode='harness_local_trial')
+
+    def test_config_roundtrip(self):
+        wire={f.name:getattr(self.config,f.name) for f in fields(self.config)}
+        wire['allowed_owners']=[list(owner) for owner in self.config.allowed_owners]
+        wire['bindings']=[self.binding.wire()]
+        self.assertEqual(HarnessConfig.from_dict(wire),self.config)
+
+    def test_alias_modes(self):
+        with self.assertRaises(ValueError): replace(self.config,execution_mode='workbuddy_local_trial')
+        replace(self.config,bindings=(self.binding.model_copy(update={'model_alias':'workbuddy-test'}),))
+        with self.assertRaises(ValueError): replace(self.config,bindings=(self.binding.model_copy(update={'native_model':'fake-text'}),))
 
 if __name__=='__main__': unittest.main()

@@ -201,9 +201,10 @@ class HarnessConfig:
 
     def __post_init__(self):
         from pydantic import TypeAdapter
-        if self.execution_mode not in {"synthetic", "workbuddy_local_trial"}:
+        if self.execution_mode not in {"synthetic", "workbuddy_local_trial", "harness_local_trial"}:
             raise ValueError("Unknown harness execution mode")
-        trial = self.execution_mode == "workbuddy_local_trial"
+        trial = self.execution_mode in {"workbuddy_local_trial", "harness_local_trial"}
+        prefixes = ("workbuddy-", "codex-") if self.execution_mode == "harness_local_trial" else ("workbuddy-" if trial else "synthetic-")
         if trial and len(self.allowed_owners) != 1:
             raise ValueError("Local trial requires exactly one owner")
         for value in (self.source_id, self.workspace_id, self.ledger_instance, self.node_id, self.executor_instance):
@@ -222,7 +223,7 @@ class HarnessConfig:
         if type(self.bindings) is not tuple or len(self.bindings) > 32:
             raise ValueError('Immutable bounded bindings required')
         for binding in self.bindings:
-            if (type(binding) is not HarnessBinding or not binding.model_alias.startswith('workbuddy-' if trial else 'synthetic-')
+            if (type(binding) is not HarnessBinding or not binding.model_alias.startswith(prefixes)
                     or (binding.native_model.startswith('fake-') if trial else not binding.native_model.startswith('fake-'))):
                 raise ValueError('Binding does not match execution mode')
         if len({digest(b.wire()) for b in self.bindings}) != len(self.bindings):
@@ -353,7 +354,7 @@ class HarnessMixin(HarnessEventsMixin):
                     _fail('idempotency_conflict', 409)
                 self._expire_harness_before_start(con, scope, old)
                 return self._harness_view(con, old)
-            if config.execution_mode == 'workbuddy_local_trial' and (len(payload['request']['messages']) != 1 or payload['request']['messages'][0]['role'] != 'user'):
+            if config.execution_mode in {'workbuddy_local_trial', 'harness_local_trial'} and (len(payload['request']['messages']) != 1 or payload['request']['messages'][0]['role'] != 'user'):
                 _fail('local_trial_single_user_message_required', 422)
             if not config.accepting_new or not self.accepting_new_tasks:
                 _fail('bridge_draining', 503)
