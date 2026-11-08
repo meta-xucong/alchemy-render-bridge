@@ -335,6 +335,8 @@ class CodexConfig:
     image_capability_verified: bool = False
     tool_policy_verified: bool = False
     timeout: float = MAX_TURN_TIMEOUT_SECONDS
+    # This node executes a frozen render prompt; do not inherit desktop effort.
+    reasoning_effort: str = 'low'
 
     def __post_init__(self):
         for name in ('enabled', 'image_capability_verified', 'tool_policy_verified'):
@@ -351,6 +353,8 @@ class CodexConfig:
             raise ValueError('Explicit supported Codex approval_policy must be on-request')
         if not isinstance(self.model, str):
             raise ValueError('Codex model must be a string')
+        if self.reasoning_effort not in ('low', 'medium', 'high', 'xhigh', 'max'):
+            raise ValueError('Codex reasoning_effort must be low, medium, high, xhigh or max')
         if (type(self.timeout) not in (int, float) or not math.isfinite(self.timeout)
                 or not 0 < self.timeout <= MAX_TURN_TIMEOUT_SECONDS):
             raise ValueError('Codex timeout must be positive and at most 600 seconds')
@@ -809,6 +813,7 @@ class CodexExecutor:
                 stage = 'turn_start'
                 response = request_before_deadline(session, 'turn/start', {
                     'threadId': thread_id, 'input': inputs, 'cwd': cwd,
+                    'effort': config.reasoning_effort,
                     'approvalPolicy': config.approval_policy, 'approvalsReviewer': 'user',
                     'sandboxPolicy': {'type': 'workspaceWrite', 'writableRoots': [cwd],
                         'networkAccess': False, 'excludeSlashTmp': True,
