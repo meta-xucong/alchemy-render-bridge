@@ -13,6 +13,7 @@ from unittest.mock import patch
 from render_bridge.executors import (CodexExecutor, ExecutionRequest, FakeExecutor,
                                     MidjourneyManualExecutor, StdioSession, probe_codex)
 from render_bridge.executors.base import AttemptFiles
+from render_bridge.executors.codex_timing import SessionTiming
 from render_bridge.fake import fixture_png
 
 
@@ -134,6 +135,7 @@ class OfflineExecutorTests(unittest.TestCase):
             session.messages = queue.Queue(maxsize=8)
             session.bytes_read = 0
             session.structural_tokens = 0
+            session.timing = SessionTiming()
             session._read()
             self.assertEqual(len(session.receive(timeout=3)['event']), 300)
             with self.assertRaisesRegex(ValueError, 'session exceeds limit'):
@@ -155,6 +157,7 @@ class OfflineExecutorTests(unittest.TestCase):
             session.messages = queue.Queue(maxsize=8)
             session.bytes_read = 0
             session.structural_tokens = 0
+            session.timing = SessionTiming()
             session._read()
             self.assertEqual(len(session.receive(timeout=3)['values']), 60)
             with self.assertRaisesRegex(ValueError, 'JSON complexity exceeds limit'):

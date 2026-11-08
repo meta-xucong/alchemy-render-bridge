@@ -24,6 +24,7 @@ from collections.abc import Sequence
 
 from render_bridge.image_options import codex_imagegen_arguments, requested_output_mime, validate_image_request, uses_codex_adapter
 from .base import AttemptFiles, ExecutionRequest, ExecutionResult, MAX_ARTIFACT_BYTES, inspect_image
+from .codex_timing import SessionTiming
 
 SUPPORTED_CLI_VERSIONS = frozenset({'codex-cli 0.157.1', 'codex-cli 0.163.0'})
 MAX_TURN_TIMEOUT_SECONDS = 600
@@ -138,6 +139,7 @@ class StdioSession:
         self.bytes_read = 0
         self.structural_tokens = 0
         self.closed = threading.Event()
+        self.timing = SessionTiming()
         self.process = subprocess.Popen(list(argv), cwd=cwd, stdin=subprocess.PIPE,
                                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                         bufsize=0, shell=False, env=env)
@@ -169,6 +171,7 @@ class StdioSession:
                         else:
                             self.structural_tokens += tokens
                             message = json.loads(raw.decode('utf-8'))
+                            self.timing.observe(message)
                 while not self.closed.is_set():
                     try:
                         self.messages.put(message, timeout=.1)
@@ -243,6 +246,7 @@ class StdioSession:
     def request(self, method: str, params: dict) -> dict:
         self.sequence += 1
         request_id = self.sequence
+        self.timing.request_sent(method, request_id, params)
         self.send({'id': request_id, 'method': method, 'params': params})
         deadline = time.monotonic() + self.timeout
         while True:
@@ -298,6 +302,7 @@ class StdioSession:
                 'ignored_notifications': self.ignored_notifications,
                 'bytes_read': self.bytes_read,
                 'structural_tokens': self.structural_tokens,
+                'timing': self.timing.snapshot(),
                 'process_exit_code': self.process.poll()}
 
     def close(self):
@@ -338,9 +343,12 @@ class CodexConfig:
     # This node executes a frozen render prompt; do not inherit desktop effort.
     reasoning_effort: str = 'medium'
     service_tier: str = ''  # Omitted by default; only a trusted node opts in.
+    responses_transport: str = 'auto'  # HTTP is an explicit accepted-node opt-in.
+    include_skill_instructions: bool = True
 
     def __post_init__(self):
-        for name in ('enabled', 'image_capability_verified', 'tool_policy_verified'):
+        for name in ('enabled', 'image_capability_verified', 'tool_policy_verified',
+                     'include_skill_instructions'):
             if type(getattr(self, name)) is not bool:
                 raise ValueError('Codex acceptance flags must be JSON booleans')
         if not isinstance(self.executable, str) or not self.executable.strip() or '\x00' in self.executable:
@@ -358,6 +366,8 @@ class CodexConfig:
             raise ValueError('Codex reasoning_effort must be low, medium, high, xhigh or max')
         if self.service_tier not in ('', 'default', 'priority'):
             raise ValueError('Codex service_tier must be empty, default or priority')
+        if self.responses_transport not in ('auto', 'http'):
+            raise ValueError('Codex responses_transport must be auto or http')
         if (type(self.timeout) not in (int, float) or not math.isfinite(self.timeout)
                 or not 0 < self.timeout <= MAX_TURN_TIMEOUT_SECONDS):
             raise ValueError('Codex timeout must be positive and at most 600 seconds')
@@ -801,7 +811,26 @@ class CodexExecutor:
                 session.timeout = remaining
                 return session.request(method, params)
 
-            with StdioSession([config.executable, '-c', 'mcp_servers={}',
+            transport_args = []
+            if config.responses_transport == 'http':
+                # A built-in provider override is ignored by CLI 0.163.0. This
+                # process-local alias uses official login/backend routing with
+                # HTTP Responses. Native-image capability needs acceptance for
+                # this alias (runtime-only internal metadata is not inherited).
+                # No base URL
+                # or credentials are supplied by a task or copied into config.
+                version = config.accepted_cli_version.removeprefix('codex-cli ')
+                provider = ('model_providers.alchemy_openai_http={name="OpenAI", '
+                    'wire_api="responses", requires_openai_auth=true, '
+                    'supports_websockets=false, supports_standalone_web_search=true, '
+                    'http_headers={version="' + version + '"}, '
+                    'env_http_headers={OpenAI-Organization="OPENAI_ORGANIZATION", '
+                    'OpenAI-Project="OPENAI_PROJECT"}}')
+                transport_args = ['-c', provider, '-c', 'model_provider="alchemy_openai_http"']
+            context_args = ([] if config.include_skill_instructions else
+                            ['-c', 'skills.include_instructions=false'])
+            with StdioSession([config.executable, *transport_args, *context_args,
+                               '-c', 'mcp_servers={}',
                                '-c', 'plugins={}', '--enable', 'image_generation',
                                'app-server', '--stdio'],
                               files.path.resolve(), timeout=config.timeout,

@@ -9,6 +9,8 @@
     "tool_policy_verified": false,
     "timeout": 600,
     "reasoning_effort": "medium",
-    "service_tier": ""
+    "service_tier": "",
+    "responses_transport": "auto",
+    "include_skill_instructions": true
   }
 }

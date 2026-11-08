@@ -5,11 +5,13 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 
 from render_bridge.executors import CodexConfig, CodexExecutor, ExecutionRequest, StdioSession
 from render_bridge.executors.codex import SUPPORTED_CLI_VERSIONS
+from render_bridge.executors.codex_timing import SessionTiming
 from render_bridge.fake import fixture_png, fixture_jpeg
 
 
@@ -20,7 +22,8 @@ class CodexLifecycleTests(unittest.TestCase):
                     image_event='imageGeneration', image_item_id='image-fixture',
                     generated_under_codex_home=False, configured_codex_home=None,
                     omit_turn_completed=False, execution_timeout=3,
-                    completed_item_count=1, reasoning_effort=None, service_tier=''):
+                    completed_item_count=1, reasoning_effort=None, service_tier='',
+                    responses_transport='auto', include_skill_instructions=True):
         original_bytes = (fixture_jpeg if actual_format == 'jpeg' else fixture_png)()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -113,10 +116,26 @@ for line in sys.stdin:
                                  accepted_cli_version=cli_version,
                                  **({'reasoning_effort': reasoning_effort} if reasoning_effort else {}),
                                  **({'service_tier': service_tier} if service_tier else {}),
+                                 responses_transport=responses_transport,
+                                 include_skill_instructions=include_skill_instructions,
                                  image_capability_verified=True, tool_policy_verified=True, approval_policy='on-request', timeout=execution_timeout)
             executor = CodexExecutor(root / 'data', config)
             def launch(argv, cwd, timeout, env=None):
-                self.assertEqual(argv, ['codex', '-c', 'mcp_servers={}',
+                expected_prefix = ['codex']
+                if responses_transport == 'http':
+                    self.assertEqual(argv[1], '-c')
+                    provider = tomllib.loads(argv[2])['model_providers']['alchemy_openai_http']
+                    self.assertEqual(provider, {'name': 'OpenAI', 'wire_api': 'responses',
+                        'requires_openai_auth': True, 'supports_websockets': False,
+                        'supports_standalone_web_search': True,
+                        'http_headers': {'version': cli_version.removeprefix('codex-cli ')},
+                        'env_http_headers': {'OpenAI-Organization': 'OPENAI_ORGANIZATION',
+                                             'OpenAI-Project': 'OPENAI_PROJECT'}})
+                    self.assertEqual(argv[3:5], ['-c', 'model_provider="alchemy_openai_http"'])
+                    expected_prefix.extend(argv[1:5])
+                if not include_skill_instructions:
+                    expected_prefix.extend(['-c', 'skills.include_instructions=false'])
+                self.assertEqual(argv, [*expected_prefix, '-c', 'mcp_servers={}',
                                         '-c', 'plugins={}', '--enable', 'image_generation',
                                         'app-server', '--stdio'])
                 self.assertEqual(env['CODEX_HOME'], str(expected_codex_home))
@@ -160,6 +179,10 @@ for line in sys.stdin:
                                        if not omit_turn_completed else None)
                 if completion_evidence is not None:
                     self.assertEqual(completion_evidence['cli_version'], cli_version)
+                    timing = completion_evidence['event_summary']['timing']['milestones_ms']
+                    self.assertLessEqual(timing['initialize_request_sent'], timing['initialize_response_received'])
+                    self.assertLessEqual(timing['turn_request_sent'], timing['turn_response_received'])
+                    self.assertLessEqual(timing['turn_response_received'], timing['turn_completed'])
                 if image and completion_evidence is not None:
                     expected_shape = ('Extension:image_gen.generation'
                                       if image_event == 'Extension' else image_event)
@@ -188,6 +211,11 @@ for line in sys.stdin:
     def test_timeout_persists_allowlisted_completed_item_shapes_without_payload(self):
         self.run_fixture(False, omit_turn_completed=True, execution_timeout=0.5,
                          completed_item_count=2)
+
+    def test_http_and_context_trim_preserve_full_native_reference_contract(self):
+        self.run_fixture(True, cli_version='codex-cli 0.163.0', reference=True,
+                         transparent=True, responses_transport='http',
+                         include_skill_instructions=False, recover=True)
 
     def test_full_terminal_failed_turn_and_replay_without_new_cli(self):
         self.run_fixture(False, terminal_failure=True)
@@ -315,6 +343,7 @@ for line in sys.stdin:
         session.ignored_notifications = 0
         session.bytes_read = 0
         session.structural_tokens = 0
+        session.timing = SessionTiming()
         session.process = type('Process', (), {'poll': lambda _self: 0})()
         session.capture_notification({'method': 'item/completed', 'params': {'item': {
             'type': 'unexpected-private-type', 'kind': 'private-kind',
