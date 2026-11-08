@@ -20,7 +20,7 @@ class CodexLifecycleTests(unittest.TestCase):
                     image_event='imageGeneration', image_item_id='image-fixture',
                     generated_under_codex_home=False, configured_codex_home=None,
                     omit_turn_completed=False, execution_timeout=3,
-                    completed_item_count=1, reasoning_effort=None):
+                    completed_item_count=1, reasoning_effort=None, service_tier=''):
         original_bytes = (fixture_jpeg if actual_format == 'jpeg' else fixture_png)()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -61,6 +61,8 @@ for line in sys.stdin:
  elif stage==3:
   assert method=='turn/start' and p['threadId']=='thread-fixture'
   assert p['effort']==EXPECTED_EFFORT
+  assert p.get('serviceTier','')==EXPECTED_SERVICE_TIER
+  assert ('serviceTier' in p) is bool(EXPECTED_SERVICE_TIER)
   assert p['input'][0]['text']=='原始完整 prompt'
   assert not {'quality','output_format','input_fidelity'} & p.keys()
   assert p['sandboxPolicy']['networkAccess'] is False
@@ -87,6 +89,7 @@ for line in sys.stdin:
  stage+=1
 '''.replace('OUTPUT_DELTA_COUNT', str(output_delta_count)).replace('COMPLETED_ITEM_COUNT', str(completed_item_count)).replace('IMAGE_EVENT_TYPE', repr(image_event)).replace('IMAGE_ITEM_ID', repr(image_item_id)).replace('if IMAGE:', 'if ' + repr(image) + ':').replace('IMAGE_UNDER_CODEX_HOME', repr(generated_under_codex_home)).replace('OMIT_TURN_COMPLETED', repr(omit_turn_completed)).replace('base64.b64decode(PNG)', 'base64.b64decode(' + repr(base64.b64encode(original_bytes).decode()) + ')').replace('INVOKE_TRANSPARENT', repr(transparent and cli_version == 'codex-cli 0.163.0')).replace('HAS_REFERENCE', repr(reference)).replace('REF_NAME', repr('reference.png' if reference else '')).replace('EXPECTED_CODEX_HOME', repr(str(expected_codex_home))), encoding='utf-8')
             script.write_text(script.read_text(encoding='utf-8').replace('EXPECTED_EFFORT', repr(reasoning_effort or 'low')), encoding='utf-8')
+            script.write_text(script.read_text(encoding='utf-8').replace('EXPECTED_SERVICE_TIER', repr(service_tier)), encoding='utf-8')
             reference_path = root / 'reference.png'
             references = ()
             if reference:
@@ -105,6 +108,7 @@ for line in sys.stdin:
             config = CodexConfig(enabled=True, model='local-accepted-model',
                                  accepted_cli_version=cli_version,
                                  **({'reasoning_effort': reasoning_effort} if reasoning_effort else {}),
+                                 **({'service_tier': service_tier} if service_tier else {}),
                                  image_capability_verified=True, tool_policy_verified=True, approval_policy='on-request', timeout=execution_timeout)
             executor = CodexExecutor(root / 'data', config)
             def launch(argv, cwd, timeout, env=None):
@@ -196,6 +200,16 @@ for line in sys.stdin:
         for value in ('', 'auto', 'unknown', None, True, 1):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 AgentConfig.from_mapping({'codex': {'reasoning_effort': value}})
+
+    def test_priority_tier_preserves_render_inputs_and_recovery(self):
+        self.run_fixture(True, service_tier='priority', reference=True,
+                         transparent=True, requested_format='png', cli_version='codex-cli 0.163.0')
+
+    def test_invalid_service_tier_is_rejected_before_execution(self):
+        from render_bridge.agent.config import AgentConfig
+        for value in ('fast', 'unknown', None, True, 1):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                AgentConfig.from_mapping({'codex': {'service_tier': value}})
 
     def test_default_codex_home_output_is_collected_without_environment_configuration(self):
         self.run_fixture(True, generated_under_codex_home=True)

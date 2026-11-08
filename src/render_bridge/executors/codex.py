@@ -337,6 +337,7 @@ class CodexConfig:
     timeout: float = MAX_TURN_TIMEOUT_SECONDS
     # This node executes a frozen render prompt; do not inherit desktop effort.
     reasoning_effort: str = 'low'
+    service_tier: str = ''  # Omitted by default; only a trusted node opts in.
 
     def __post_init__(self):
         for name in ('enabled', 'image_capability_verified', 'tool_policy_verified'):
@@ -355,6 +356,8 @@ class CodexConfig:
             raise ValueError('Codex model must be a string')
         if self.reasoning_effort not in ('low', 'medium', 'high', 'xhigh', 'max'):
             raise ValueError('Codex reasoning_effort must be low, medium, high, xhigh or max')
+        if self.service_tier not in ('', 'default', 'priority'):
+            raise ValueError('Codex service_tier must be empty, default or priority')
         if (type(self.timeout) not in (int, float) or not math.isfinite(self.timeout)
                 or not 0 < self.timeout <= MAX_TURN_TIMEOUT_SECONDS):
             raise ValueError('Codex timeout must be positive and at most 600 seconds')
@@ -814,6 +817,7 @@ class CodexExecutor:
                 response = request_before_deadline(session, 'turn/start', {
                     'threadId': thread_id, 'input': inputs, 'cwd': cwd,
                     'effort': config.reasoning_effort,
+                    **({'serviceTier': config.service_tier} if config.service_tier else {}),
                     'approvalPolicy': config.approval_policy, 'approvalsReviewer': 'user',
                     'sandboxPolicy': {'type': 'workspaceWrite', 'writableRoots': [cwd],
                         'networkAccess': False, 'excludeSlashTmp': True,

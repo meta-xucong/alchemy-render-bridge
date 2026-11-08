@@ -43,3 +43,47 @@ The lifecycle, offline executor, contract upgrade, aborted reconciliation and
 health-error suites ran 70 tests successfully, with one existing opt-in skip.
 Independent read-only review found no scope or correctness defect in this
 change. These checks do not establish a measured runtime improvement.
+
+## Correction after the first controlled render
+
+The first real comparison completed successfully in 243.922 seconds, at
+1024x1536 with the same model and frozen prompt. The rollout confirmed `low`
+and zero reasoning-output tokens before the image tool. However, its pre-tool
+interval was still 135.491 seconds, versus 136.674 in the baseline. The
+baseline itself had only 139 reasoning-output tokens in that first response.
+Therefore the initial attribution to excessive reasoning is **superseded**:
+effort inheritance is real, but lowering it alone has not accelerated this
+sample. Pre-tool wall time must not be described as measured thinking time.
+
+Both rollouts waited about 101 seconds from ready context to the first
+assistant message. Baseline input was 24,752 tokens (12,928 cached); the
+comparison had 29,942 (8,320 cached), including repository instructions because
+its scratch cwd was under the Alchemy checkout. Both inherited a large skills
+catalog. The next investigation must distinguish upstream response waiting
+from irrelevant input context; the one-render comparison does not establish
+their individual causal contributions. Do not shorten the approved image
+prompt, remove terminal evidence, or advertise a speedup from this result.
+
+The node was restored on revision 433dc66 after terminal image completion.
+The isolated acceptance did not create a production Alchemy job/output or
+alter earlier receipts. Production frontend/review behavior was not rerun in
+this node-only comparison. Visual inspection found the requested portrait,
+lighting, costume, fan and indoor setting preserved; this is not a claim of
+universal quality equivalence or a substitute for V3's normal review.
+
+## Revised minimal correction
+
+The accepted CLI's live model catalog advertises the same gpt-6-luna model's
+`priority` service tier. Its protocol supports an explicit `turn/start`
+`serviceTier`; `fast` is the UI/config alias, while `priority` is the advertised
+wire identifier. Add an optional trusted-node `service_tier` setting, omitted
+by default, and opt this node into `priority`. This changes response scheduling
+without changing the creative model or image-generation parameters. Fast mode
+can consume the account's usage allowance faster.
+
+Keep the model, complete prompt and production-style cwd/context for the next
+bounded comparison. Do not combine catalog removal with the tier change and
+then assert a single cause. The large inherited skills catalog is a separately
+identified candidate, not yet a verified latency cause. Regression must prove
+default inheritance, explicit priority wire value and unchanged rendering
+inputs/terminal recovery. Real timing remains required after those checks.
