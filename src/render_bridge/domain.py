@@ -1135,6 +1135,7 @@ class BridgeStore(HarnessMixin, OperationsMixin, AvailabilityMixin):
             con.execute("UPDATE tasks SET state='running' WHERE id=?", (task_id,))
             if is_harness(task):
                 con.execute("UPDATE harness_tasks SET liveness='may_be_running' WHERE task_id=?", (task_id,))
+                self._append_harness_status(con, task_id, code='START_GRANTED')
             self._audit(con, scope, "start_granted", task_id=task_id, attempt_id=attempt["id"])
             return {"start_grant_id": grant, "attempt_id": attempt["id"], "may_execute": True}
 

@@ -15,6 +15,7 @@ from .domain import BridgeStore, SourceScope
 from .profiles import MAX_PROFILE_OUTPUT_BYTES
 from .schemas import StrictRequest, Key, TerminalFailureRequest, CancelCompletedRequest
 from .harness import HarnessHeartbeat, Observation, ResultSubmission, MAX_RESULT_WIRE_BYTES
+from .harness_events import EventSubmission, MAX_EVENT_WIRE_BYTES
 
 
 @dataclass(frozen=True)
@@ -126,6 +127,12 @@ def install_node_routes(app, store: BridgeStore, node_tokens: Mapping[str, NodeS
     async def harness_observation(task_id: str, request: Request, identity: NodeScope = Depends(node)):
         data = await _json_request(request, Observation, 4096)
         return await call_store(store.report_harness_observation, identity.source_scope, task_id,
+                                identity.node_id, identity.executor_instance, data)
+
+    @app.post(prefix + '/tasks/{task_id}/harness-event')
+    async def harness_event(task_id: str, request: Request, identity: NodeScope = Depends(node)):
+        data = await _json_request(request, EventSubmission, MAX_EVENT_WIRE_BYTES)
+        return await call_store(store.report_harness_event, identity.source_scope, task_id,
                                 identity.node_id, identity.executor_instance, data)
 
     @app.post(prefix + '/tasks/{task_id}/harness-result')

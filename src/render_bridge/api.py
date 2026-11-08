@@ -301,6 +301,17 @@ def create_app(
     ):
         return await call_store(store.get_task_by_origin, scope, origin_key)
 
+    @app.get(f"{_API_PREFIX}/tasks/{{task_id}}/harness-events")
+    async def harness_events(task_id: str, request: Request, scope: SourceScope = Depends(source_scope)):
+        import re
+        pairs = list(request.query_params.multi_items())
+        if (any(k not in ('after','limit') for k,v in pairs) or len({k for k,v in pairs}) != len(pairs)
+                or any(re.fullmatch(r'0|[1-9][0-9]{0,18}',v) is None for k,v in pairs)):
+            raise _APIError('invalid_event_cursor', 422)
+        return await call_store(lambda: store.harness_events(scope, task_id,
+                                after=int(request.query_params.get('after','0')),
+                                limit=int(request.query_params.get('limit','8'))))
+
     @app.get(f"{_API_PREFIX}/tasks/{{task_id}}")
     async def get_task(task_id: str, scope: SourceScope = Depends(source_scope)):
         return await call_store(store.get_task, scope, task_id)

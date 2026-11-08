@@ -261,7 +261,11 @@ def is_harness(task):
     return json.loads(task['payload']).get('schema_version') == CONTRACT
 
 
-class HarnessMixin:
+from .harness_events import HarnessEventsMixin, DDL as EVENT_DDL
+DDL += EVENT_DDL
+
+
+class HarnessMixin(HarnessEventsMixin):
     def _harness_scope(self, scope):
         from .domain import _fail
         source, workspace = self._scope(scope)
@@ -323,6 +327,7 @@ class HarnessMixin:
             con.execute("UPDATE tasks SET state='expired' WHERE id=?", (row['id'],))
             con.execute("UPDATE harness_tasks SET outcome='expired',result=?,result_digest=?,completed_at=? WHERE task_id=?",
                         (canonical(value), digest(value), self.clock(), row['id']))
+            self._append_harness_status(con, row['id'], terminal=True)
 
     def create_harness_task(self, scope, payload):
         from .domain import DomainError, _id
@@ -369,6 +374,7 @@ class HarnessMixin:
             used = con.execute('SELECT COALESCE(SUM(length(CAST(result AS BLOB))),0) FROM harness_tasks').fetchone()[0]
             if count >= config.max_records or used + MAX_RESULT_WIRE_BYTES > config.max_result_storage_bytes:
                 _fail('harness_storage_capacity', 507)
+            self._check_harness_event_reservation(con)
             task_id, attempt_id, now = _id('task'), _id('attempt'), self.clock()
             con.execute('INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                         (task_id, source, workspace, payload['origin_key'], payload['request_digest'],
@@ -376,6 +382,7 @@ class HarnessMixin:
             con.execute('INSERT INTO attempts(id,task_id) VALUES(?,?)', (attempt_id, task_id))
             con.execute('INSERT INTO harness_tasks(task_id,outcome,liveness) VALUES(?,?,?)',
                         (task_id, 'pending', 'not_started'))
+            self._init_harness_events(con, task_id)
             self._audit(con, scope, 'task_created', task_id=task_id, attempt_id=attempt_id)
             return self._harness_view(con, self._scoped(con, 'tasks', task_id, scope))
 
@@ -440,6 +447,7 @@ class HarnessMixin:
                 _fail('harness_terminal_conflict', 409)
             con.execute('UPDATE harness_tasks SET liveness=? WHERE task_id=?', (value.liveness, task_id))
             con.execute("UPDATE tasks SET state='execution_unknown' WHERE id=?", (task_id,))
+            self._append_harness_status(con, task_id, code=value.code)
             return self._harness_view(con, self._scoped(con, 'tasks', task_id, scope))
 
     def report_harness_result(self, scope, task_id, node, executor, payload):
@@ -472,6 +480,7 @@ class HarnessMixin:
                         (value.result.outcome, value.result.liveness, encoded, result_digest, self.clock(), task_id))
             state = 'harness_terminal' if value.result.liveness == 'stopped_confirmed' else 'execution_unknown'
             con.execute('UPDATE tasks SET state=? WHERE id=?', (state, task_id))
+            self._append_harness_status(con, task_id, terminal=True)
             self._audit(con, scope, 'harness_result_committed', task_id=task_id, attempt_id=task['attempt_id'])
             return self._harness_view(con, self._scoped(con, 'tasks', task_id, scope))
 
@@ -489,6 +498,7 @@ class HarnessMixin:
                 ORDER BY h.completed_at LIMIT ?''', (source, workspace, self.clock()-retention_seconds, batch_size)).fetchall()
             for row in rows:
                 con.execute('UPDATE harness_tasks SET result=NULL,result_expired=1 WHERE task_id=?', (row['task_id'],))
+                self._expire_harness_events(con, row['task_id'])
             return {'results_expired': len(rows)}
 
     def _cancel_harness(self, con, scope, task):
@@ -506,6 +516,7 @@ class HarnessMixin:
             con.execute("UPDATE tasks SET cancel_requested=1,state='harness_terminal' WHERE id=?", (task['id'],))
             con.execute("UPDATE harness_tasks SET outcome='cancelled',liveness='not_started',result=?,result_digest=?,completed_at=? WHERE task_id=?",
                         (canonical(result), digest(result), self.clock(), task['id']))
+        self._append_harness_status(con, task['id'], code='CANCEL_REQUESTED' if attempt['start_grant_id'] else None, terminal=not bool(attempt['start_grant_id']))
         self._audit(con, scope, 'cancel_requested' if attempt['start_grant_id'] else 'canceled',
                     task_id=task['id'], attempt_id=task['attempt_id'])
         return self._harness_view(con, self._scoped(con, 'tasks', task['id'], scope))
