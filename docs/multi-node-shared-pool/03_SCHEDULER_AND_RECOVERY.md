@@ -51,5 +51,3 @@ Uploads and ACK are same-attempt and idempotent. If output already exists, recov
 Keep the configured bounded queue limit per workspace in shared mode. Scheduler order is FIFO among currently runnable tasks within each workspace; a task with no available compatible profile/slot may wait while a later task with an available slot proceeds. Busy nodes are eligible only when a free slot exists; a pool whose slots are full may still accept queued work up to that workspace's limit. When no healthy compatible node exists, preserve the pre-admission `node_unavailable` result so existing Alchemy fallback rules remain unchanged. A workspace that has left or never joined cannot silently fall back to the legacy node API. A queued job is never silently migrated to another provider.
 
 The API store-call gate must be finite and configurable for shared mode. A full gate returns store_busy before unbounded thread growth. SQLite transaction lock waits remain bounded; tests cover simultaneous heartbeat, poll, claim and start requests.
-
-\n

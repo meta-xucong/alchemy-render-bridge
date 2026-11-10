@@ -42,5 +42,3 @@ Use temporary SQLite databases, FakeRenderer and independent node identities. No
 ## Release gate
 
 Required evidence: exact source base/head commit, migration result, relevant existing regression suite, new unit/API/concurrency/UI checks, audit result, skipped real-provider tests, and deployment target/version evidence. A FakeRenderer pass proves scheduling and API behavior only, not real Codex login or production image quality. Keep production admission closed during acceptance: first restore the database backup/artifacts/config into a loopback-only copy with admission disabled and verify integrity, schema version, health, a known task/receipt and artifact read; then run three-node FakeRenderer against a separate empty synthetic ledger/config with admission enabled. Production opens admission only after both candidate checks pass and the live config has been explicitly changed and re-read.
-
-\n
