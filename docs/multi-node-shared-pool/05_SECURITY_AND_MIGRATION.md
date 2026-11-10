@@ -25,5 +25,3 @@ One Bridge service process is authoritative for the SQLite ledger. Use local per
 Keep the previously deployed image and config available. Before rollback, close admission for shared-pool work and list assigned/running/unknown tasks. Never migrate those tasks into a new ledger or create replacement jobs. The old image does not understand dynamic pool credentials or v2 assignments. During rollback, keep shared Node Agents stopped and keep the old `/bridge/node/v1/` ingress closed while shared tasks remain in the ledger; otherwise an old single-node service might offer a matching-scope queued task without assignment checks. Leave unresolved shared tasks frozen until the new runtime is restored. Existing v1 tasks and receipts remain in the original ledger.
 
 If migration or health checks fail before admission opens, stop the new service, restore the last known config/image and retain the database/artifacts for diagnosis. Do not drop tables or remove credentials as part of rollback. Do not claim rollback success until existing task queries, receipt ACKs and node heartbeats work.
-
-\n

@@ -29,5 +29,3 @@ If any precondition cannot be verified, stop before restarting the service; leav
 After restart, compare observable service state to the deployed commit/config (not a local build claim). Validate existing v1 behavior first, then new pool behavior with FakeRenderer only. Do not run paid or real provider jobs as deployment probes.
 
 Rollback uses the preserved old image/config and same database/artifact directory. Stop new shared-pool admission and all shared Agents first. Keep the old `/bridge/node/v1/` ingress closed while shared tasks remain in the database; the old image cannot enforce persisted v2 assignments. Existing v1 queries and acknowledged receipts remain in the original ledger. Shared tasks with a start grant/unknown state are never copied or recreated; they remain unresolved until the new Bridge release is restored. Record the release SHA, tests, skips, image tag, migration state, observed health and rollback decision. Do not claim backup/rollback readiness unless a restore copy passes integrity, migration, known-record, and artifact-read checks before the live cutover.
-
-\n
