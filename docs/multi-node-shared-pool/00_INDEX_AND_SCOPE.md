@@ -89,5 +89,8 @@ Local acceptance evidence for this branch:
 - Independent code and release-scope reviews found no remaining blockers after
   corrections for task provenance, pool identity, runnable queue heads,
   tenant-safe summaries, bounded history inputs, and isolated cutover checks.
-- No GitHub commit/merge or live VPS replacement is claimed until publication
-  checks pass and the exact target runtime is read-only verified.
+- GitHub PR #17 was merged as `371d20094d239ca20cf49cb57c24de1d71f76453`
+  after Windows and Ubuntu contract suites and both-platform Hatchet lifecycle
+  checks passed. The live VPS replacement is not claimed: its current service,
+  ledger, artifacts and pending tasks still require read-only verification
+  before the documented cutover gate can pass.
