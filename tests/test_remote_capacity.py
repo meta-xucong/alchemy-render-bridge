@@ -92,23 +92,36 @@ class RemoteCapacityTests(unittest.TestCase):
             for _ in range(10):
                 self.assertFalse(self.store.capabilities(self.scope)['storage']['includes_orphan_files'])
 
-    def test_https_proxy_template_exposes_only_source_and_node_apis(self):
+    def test_https_proxy_template_exposes_only_explicit_bridge_routes(self):
         import re
         path = Path(__file__).resolve().parents[1] / 'config/source-https.nginx.example.conf'
         text = path.read_text(encoding='utf-8')
-        locations = re.findall(r'location\s+([^\s{]+)\s*\{', text)
-        self.assertEqual(locations, ['/bridge/v1/', '/bridge/node/v1/', '/'])
+        locations = [value.strip() for value in re.findall(r'location\s+([^\{]+)\{', text)]
+        self.assertEqual(locations, ['/bridge/v1/', '/bridge/node/v1/',
+            '/bridge/control/v2/', '/bridge/source/v2/', '/bridge/node/v2/',
+            '= /bridge/console', '/'])
         self.assertIn('location / { return 404; }', text)
-        self.assertEqual(text.count('proxy_pass '), 2)
+        self.assertEqual(text.count('proxy_pass '), 6)
         self.assertIn('proxy_pass http://127.0.0.1:8787;', text)
-        self.assertEqual(text.count('proxy_next_upstream off;'), 2)
+        self.assertEqual(text.count('proxy_next_upstream off;'), 5)
         source = re.search(r'location /bridge/v1/ \{(.*?)\n    \}', text, re.S).group(1)
         node = re.search(r'location /bridge/node/v1/ \{(.*?)\n    \}', text, re.S).group(1)
+        control_v2 = re.search(r'location /bridge/control/v2/ \{(.*?)\n    \}', text, re.S).group(1)
+        source_v2 = re.search(r'location /bridge/source/v2/ \{(.*?)\n    \}', text, re.S).group(1)
+        node_v2 = re.search(r'location /bridge/node/v2/ \{(.*?)\n    \}', text, re.S).group(1)
         self.assertIn('client_max_body_size 32m;', source)
         self.assertIn('client_max_body_size 16m;', node)
+        self.assertIn('client_max_body_size 2m;', control_v2)
+        self.assertIn('client_max_body_size 2m;', source_v2)
+        self.assertIn('client_max_body_size 32m;', node_v2)
+        routed_locations = [location for location in locations if location != '/']
         for blocked in ('/bridge/dispatch/v1/pending', '/admin', '/docs',
-                        '/bridge/v1evil/tasks', '/bridge/node/v1evil/tasks'):
-            self.assertFalse(any(blocked.startswith(prefix) for prefix in locations[:2]))
+                        '/bridge/v1evil/tasks', '/bridge/node/v1evil/tasks',
+                        '/bridge/console/extra'):
+            self.assertFalse(any(
+                blocked == location[2:] if location.startswith('= ')
+                else blocked.startswith(location)
+                for location in routed_locations))
 
     def test_existing_local_example_defaults_unchanged(self):
         config = RuntimeConfig.load(Path(__file__).resolve().parents[1] / 'config/bridge.example.json')

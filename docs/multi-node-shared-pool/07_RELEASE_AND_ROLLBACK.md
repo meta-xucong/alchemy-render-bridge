@@ -1,0 +1,33 @@
+# GitHub Release and Existing Runtime Replacement
+
+## Release sequence
+
+1. Develop and validate in the isolated feature checkout based on GitHub origin/main; never edit the inaccessible old checkout or commit credentials/private media.
+2. Complete architecture/document review, relevant test suite, independent code audit and final scope review. Resolve all findings before release.
+3. Commit the tested branch and push it without force. Open a pull request or use the repository's protected integration process. Merge only the reviewed commit; do not overwrite GitHub history.
+4. Build a new immutable container tag from the merged commit. Preserve the previous image tag and previous runtime config as the single rollback release.
+5. Read-only inspect the live Bridge service, image tag, config, data path, Nginx route and pending tasks. The currently published runbook describes `rb33-20261102`; that text is not proof of the live VPS version.
+6. Before changing the service, close admission and let existing v1 work reach terminal/receipt state. Do not cut over with unresolved legacy tasks that depend on the v1 Node API. The admission-provenance migration does not retroactively admit old queued work into a pool. Stop the service writer, create one SQLite online backup with `Connection.backup()`, and require `PRAGMA integrity_check` to return exactly `ok`. Copy the complete artifact tree and runtime config with that backup. Preserve the previous image tag, service unit, Nginx site config, and the secret `EnvironmentFile` reference/path and permissions (never print or commit its contents) as one rollback record. Record the file list, sizes, release SHA and timestamp.
+7. Shared mode uses `config/bridge.shared-pool.example.json` as a structural template, `BRIDGE_CONTROL_TOKEN`, `dispatch_mode=node_pull`, `shared_pool_enabled=true`, and a finite `store_concurrency` (the example uses 32). The example enables only `fake-image`; production config must explicitly list its intended real profiles and keep `accepting_new_tasks=false` until the release gate. It keeps the existing data path and additive schema; it does not install the old static `/bridge/node/v1/` credential route. Update the existing TLS proxy to expose `/bridge/console`, `/bridge/control/v2/`, `/bridge/source/v2/`, `/bridge/node/v2/` and the authenticated Source v1 routes.
+8. Restore the backup, artifacts, and deployment config into an isolated candidate directory first. Start a candidate copy bound only to `127.0.0.1`, with the restored production-data copy still configured as `accepting_new_tasks=false`; verify migration/schema version, health, one known existing v1 task/receipt read, and artifact availability. Then run three-node FakeRenderer concurrency in a second disposable candidate directory with an empty synthetic ledger and synthetic workspaces/nodes. Only this synthetic config sets `accepting_new_tasks=true`; it must remain loopback-only and use no production data, Source tokens, user prompts, or real provider credentials. Retain test output, then remove the disposable synthetic ledger after confirming its path is inside the candidate directory.
+9. Re-pair every real node and issue a scoped Source token for each opted-in workspace. Before handoff, require a fresh validated health report for every enabled real profile. The single production admission-opening action is to set `accepting_new_tasks=true` in the reviewed live runtime config and restart/redeploy that config. Verify the observed live config and node heartbeat/profile readiness; use `GET /bridge/source/v2/pools` to verify membership and `GET /bridge/v1/capabilities` to verify admission/profile readiness and tenant-local scope. Read history without posting a new task. Do not POST a real task as a deployment probe; actual rendering is left to the user's first intended request (or a separately consented fake-only canary). Then update each Alchemy/source client to use its workspace's new Source token. Keep the prior image/config and the one verified database backup until live smoke checks pass.
+
+## Preconditions for replacing the old version
+
+- Confirm the exact host/service is the Render Bridge service the user intends to replace.
+- Confirm the deployed source release and whether unresolved tasks exist.
+- Confirm the persistent database/artifact paths and enough free disk for the database backup, artifact copy, and isolated restore/candidate directories.
+- Confirm existing Nginx allowlist/proxy supports the new console and v2 paths without exposing dispatcher, CLI or unrestricted admin routes.
+- Confirm the deployment uses the single Bridge writer model required by SQLite.
+- Confirm each existing task/receipt consumer can use `/bridge/v1/` with a newly issued Source token. Existing static Node tokens are intentionally not accepted in shared mode; every Agent must be re-paired.
+- Confirm no pooled source credential is being used as a legacy single-node workspace credential.
+
+If any precondition cannot be verified, stop before restarting the service; leave the old release active and report the specific evidence missing.
+
+## Live acceptance and rollback
+
+After restart, compare observable service state to the deployed commit/config (not a local build claim). Validate existing v1 behavior first, then new pool behavior with FakeRenderer only. Do not run paid or real provider jobs as deployment probes.
+
+Rollback uses the preserved old image/config and same database/artifact directory. Stop new shared-pool admission and all shared Agents first. Keep the old `/bridge/node/v1/` ingress closed while shared tasks remain in the database; the old image cannot enforce persisted v2 assignments. Existing v1 queries and acknowledged receipts remain in the original ledger. Shared tasks with a start grant/unknown state are never copied or recreated; they remain unresolved until the new Bridge release is restored. Record the release SHA, tests, skips, image tag, migration state, observed health and rollback decision. Do not claim backup/rollback readiness unless a restore copy passes integrity, migration, known-record, and artifact-read checks before the live cutover.
+
+\n

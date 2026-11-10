@@ -1,0 +1,20 @@
+{
+  "data_dir": "/var/lib/alchemy/render-bridge",
+  "source_id": "shared-pool-control",
+  "workspace_id": "shared-pool-control",
+  "node_id": "bridge-service",
+  "executor_instance": "bridge-service",
+  "enabled_profiles": ["fake-image"],
+  "accepting_new_tasks": false,
+  "max_queued_tasks": 1000,
+  "host": "127.0.0.1",
+  "port": 8787,
+  "dispatch_mode": "node_pull",
+  "shared_pool_enabled": true,
+  "control_token_env": "BRIDGE_CONTROL_TOKEN",
+  "store_concurrency": 32,
+  "retention_enabled": true,
+  "retention_seconds": 86400,
+  "maintenance_interval_seconds": 60,
+  "maintenance_batch_size": 100
+}

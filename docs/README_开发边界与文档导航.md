@@ -78,3 +78,7 @@ v1.0中“原模块pending恢复”具体落到新增模块自己的integration_
 ## 2026-10-29 新增实现：多 Bridge endpoint 的 Hatchet 隔离
 
 不同 Bridge URL 对应不同任务账本时，Hatchet dispatcher 与 worker 必须使用不同 task name。故障模型、现有 run 兼容边界及回归见[Hatchet endpoint isolation](implementation/HATCHET_ENDPOINT_ISOLATION.md)。
+
+## Multi-node shared-pool development package
+
+The scoped audit and implementation materials for opt-in multi-workspace scheduling, independent node pairing, concurrent per-node slots, the browser console, and safe replacement of the existing service are indexed at [00_INDEX_AND_SCOPE.md](multi-node-shared-pool/00_INDEX_AND_SCOPE.md). This is a separate Bridge feature package; it does not authorize changes to Alchemy's business code.

@@ -31,7 +31,7 @@ def _owned_file(root, path):
     return path
 
 
-def _registered_files(journal, record):
+def _registered_files(journal, record, *, include_manual_exports=False):
     root = journal.root
     tid, aid = record['task_id'], record['attempt_id']
     if not _KEY.fullmatch(tid) or not _KEY.fullmatch(aid):
@@ -40,6 +40,10 @@ def _registered_files(journal, record):
     executor = root / 'executors' / tid / aid
     files = []
     generated_files = []
+    if include_manual_exports and record.get('profile_id') == 'midjourney-manual':
+        for filename in ('task.json', 'prompt.txt'):
+            path = _owned_file(root, executor / filename)
+            files.append(path)
     if record.get('artifact'):
         artifact = _owned_file(root, record['artifact'])
         if artifact != attempt / 'result.original':
@@ -80,7 +84,7 @@ def _registered_files(journal, record):
     return sorted({str(path.relative_to(root)) for path in files}), executor, manifest.exists()
 
 
-def maintain_agent(agent, *, retention_seconds=86400, batch_size=20, clock=time.time):
+def _maintain_agent(agent, *, retention_seconds, batch_size, clock, shared_pool):
     for value, high in ((retention_seconds, 365 * 86400), (batch_size, 100)):
         if type(value) is not int or not 1 <= value <= high:
             raise ValueError('Invalid maintenance bound')
@@ -89,7 +93,10 @@ def maintain_agent(agent, *, retention_seconds=86400, batch_size=20, clock=time.
     result = {'outcome': 'maintenance_complete', 'checked': 0, 'reclaimed': 0, 'skipped': 0}
     with InstanceLock(journal.root / 'agent.lock'):
         with journal.connection() as con:
-            rows = con.execute("""SELECT record FROM attempts WHERE state='complete'
+            states = ("'complete','prepared','manual_prepared','awaiting_user','terminal_failed','canceled','expired'"
+                      if shared_pool else "'complete'")
+            rows = con.execute(f"""SELECT record FROM attempts
+                WHERE state IN ({states})
                 AND COALESCE(json_extract(record, '$.media_reclaimed'), 0)=0
                 ORDER BY COALESCE(json_extract(record, '$.retention_checked'), 0), task_id LIMIT ?""",
                                (batch_size,)).fetchall()
@@ -99,18 +106,37 @@ def maintain_agent(agent, *, retention_seconds=86400, batch_size=20, clock=time.
             record['retention_checked'] = now
             try:
                 task = agent.client.task(record['task_id'])
-                if (task.get('remote_task_id') != record['task_id'] or task.get('attempt_id') != record['attempt_id']
-                        or task.get('receipt_id') != record.get('receipt_id') or not record.get('receipt_id')
-                        or task.get('delivery_ack') not in ('accepted', 'rejected')):
+                if shared_pool:
+                    if (task.get('remote_task_id') != record['task_id']
+                            or task.get('attempt_id') != record['attempt_id']):
+                        raise ValueError('Matching remote attempt required')
+                    acknowledged_delivery = (record.get('state') == 'complete'
+                        and task.get('receipt_id') == record.get('receipt_id') and record.get('receipt_id')
+                        and task.get('delivery_ack') in ('accepted', 'rejected'))
+                    terminal_no_delivery = (record.get('state') in {'prepared','manual_prepared','awaiting_user',
+                        'terminal_failed','canceled','expired'}
+                        and task.get('state') in {'failed','canceled','expired'})
+                    released_before_start = (task.get('assignment_state') == 'released'
+                        and record.get('state') in {'prepared','manual_prepared'}
+                        and not record.get('start_grant_id'))
+                    if not (acknowledged_delivery or terminal_no_delivery or released_before_start):
+                        raise ValueError('Acknowledgement or terminal/released attempt required')
+                elif (task.get('remote_task_id') != record['task_id']
+                      or task.get('attempt_id') != record['attempt_id']
+                      or task.get('receipt_id') != record.get('receipt_id')
+                      or not record.get('receipt_id')
+                      or task.get('delivery_ack') not in ('accepted', 'rejected')):
                     raise ValueError('Matching source acknowledgement required')
                 record.setdefault('retention_eligible_since', now)
                 if now - record['retention_eligible_since'] < retention_seconds:
                     journal.save(record)
                     continue
-                files, executor, has_manifest = _registered_files(journal, record)
+                files, executor, has_manifest = _registered_files(
+                    journal, record, include_manual_exports=shared_pool)
                 # Intent and completed tombstone precede every unlink. Interrupted
                 # passes retry the same registered files, never regenerate.
-                record['cleanup_files'] = files
+                if shared_pool:
+                    record['cleanup_files'] = files
                 journal.save(record)
                 if has_manifest:
                     marker = _owned_file(journal.root, executor / 'retired.json')
@@ -119,6 +145,11 @@ def maintain_agent(agent, *, retention_seconds=86400, batch_size=20, clock=time.
                 for relative in files:
                     _owned_file(journal.root, relative).unlink(missing_ok=True)
                 record['media_reclaimed'] = True
+                if shared_pool:
+                    for key in ('request', 'manual_details', 'claim_id', 'claim_expires_at',
+                                'start_grant_id', 'artifact', 'artifact_provenance',
+                                'terminal_failure', 'cleanup_files'):
+                        record.pop(key, None)
                 journal.save(record)
                 result['reclaimed'] += 1
             except Exception:
@@ -126,3 +157,15 @@ def maintain_agent(agent, *, retention_seconds=86400, batch_size=20, clock=time.
                 journal.save(record)
                 result['skipped'] += 1
     return result
+
+
+def maintain_agent(agent, *, retention_seconds=86400, batch_size=20, clock=time.time):
+    """Preserve the legacy single-node acknowledged-delivery cleanup contract."""
+    return _maintain_agent(agent, retention_seconds=retention_seconds,
+                           batch_size=batch_size, clock=clock, shared_pool=False)
+
+
+def maintain_shared_pool_agent(agent, *, retention_seconds=86400, batch_size=20, clock=time.time):
+    """Apply the broader pooled Agent cleanup contract through an explicit entrypoint."""
+    return _maintain_agent(agent, retention_seconds=retention_seconds,
+                           batch_size=batch_size, clock=clock, shared_pool=True)

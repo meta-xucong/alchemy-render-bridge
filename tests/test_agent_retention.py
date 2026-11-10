@@ -5,7 +5,7 @@ from pathlib import Path
 
 import test_agent_runtime
 from render_bridge.agent import NodeAgent
-from render_bridge.agent.maintenance import maintain_agent
+from render_bridge.agent.maintenance import maintain_agent, maintain_shared_pool_agent
 from render_bridge.executors.base import ExecutionRequest
 
 
@@ -122,6 +122,44 @@ class ManualRetentionTests(unittest.TestCase):
     tearDown = test_agent_profiles.AgentProfilesTests.tearDown
     create = test_agent_profiles.AgentProfilesTests.create
 
+    def test_legacy_maintenance_does_not_scan_or_scrub_manual_waits(self):
+        tid = self.create('midjourney-manual', origin='legacy-manual-wait')
+        self.assertEqual(self.agent.execute_task(tid)['outcome'], 'awaiting_user')
+        record = self.agent.journal.get(tid)
+        self.now += 100000
+        before = dict(record)
+        self.assertEqual(maintain_agent(self.agent, retention_seconds=10,
+                                        clock=lambda: self.now)['checked'], 0)
+        self.assertEqual(self.agent.journal.get(tid), before)
+        for field in ('task_file', 'prompt_file'):
+            self.assertTrue(Path(record['manual_details'][field]).is_file())
+
+    def test_pool_maintenance_scrubs_acknowledged_manual_export(self):
+        tid = self.create('midjourney-manual', origin='pooled-manual')
+        exported = self.agent.execute_task(tid)
+        original = self.root / 'pooled-user-import.png'
+        original.write_bytes(fixture_png(32, 24))
+        self.agent.manual_import(tid, original,
+            confirmed_request_sha256=exported['request_sha256'],
+            confirmed_single_original=True)
+        record = self.agent.journal.get(tid)
+        self.store.ack_receipt(self.scope, record['receipt_id'], {
+            'client_receipt_id': 'pooled-manual-ack', 'decision': 'accepted', 'reason_code': 'fixture'})
+        task_file = Path(record['manual_details']['task_file'])
+        prompt_file = Path(record['manual_details']['prompt_file'])
+        self.assertEqual(maintain_shared_pool_agent(self.agent, retention_seconds=10,
+            clock=lambda: self.now)['reclaimed'], 0)
+        self.now += 10
+        self.assertEqual(maintain_shared_pool_agent(self.agent, retention_seconds=10,
+            clock=lambda: self.now)['reclaimed'], 1)
+        self.assertTrue(original.is_file())
+        self.assertFalse(task_file.exists())
+        self.assertFalse(prompt_file.exists())
+        cleaned = self.agent.journal.get(tid)
+        self.assertTrue(cleaned['media_reclaimed'])
+        self.assertNotIn('request', cleaned)
+        self.assertNotIn('manual_details', cleaned)
+
     def test_manual_user_original_is_never_deleted(self):
         tid = self.create('midjourney-manual')
         exported = self.agent.execute_task(tid)
@@ -137,4 +175,7 @@ class ManualRetentionTests(unittest.TestCase):
         self.assertEqual(maintain_agent(self.agent, retention_seconds=10, clock=lambda: self.now)['reclaimed'], 1)
         self.assertEqual(original.read_bytes(), fixture_png(32, 24))
         self.assertFalse((self.agent.journal.root / record['artifact']).exists())
+        executor_dir = self.agent.journal.root / 'executors' / tid / record['attempt_id']
+        self.assertTrue((executor_dir / 'task.json').exists())
+        self.assertTrue((executor_dir / 'prompt.txt').exists())
         self.assertEqual(self.agent.execute_task(tid)['outcome'], 'already_committed')
