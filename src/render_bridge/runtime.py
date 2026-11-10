@@ -18,10 +18,13 @@ from .node_api import NodeScope
 from .profiles import enabled_profile_ids
 
 
-def create_runtime_app(*, store, source_tokens, node_tokens, dispatch_tokens):
+def create_runtime_app(*, store, source_tokens, node_tokens, dispatch_tokens,
+                       shared_pool_enabled=False, control_token=None, store_concurrency=1):
     """Explicit injected fixture/development authority; never generates credentials."""
     return create_app(store=store, source_tokens=source_tokens,
-                      node_tokens=node_tokens, dispatch_tokens=dispatch_tokens)
+                      node_tokens=node_tokens, dispatch_tokens=dispatch_tokens,
+                      shared_pool_enabled=shared_pool_enabled,
+                      control_token=control_token, store_concurrency=store_concurrency)
 
 
 @dataclass(frozen=True)
@@ -47,6 +50,9 @@ class RuntimeConfig:
     maintenance_batch_size: int = 100
     max_storage_bytes: int | None = None
     dispatch_mode: str = 'hatchet'
+    shared_pool_enabled: bool = False
+    control_token_env: str = 'BRIDGE_CONTROL_TOKEN'
+    store_concurrency: int = 1
 
     @classmethod
     def load(cls, path):
@@ -73,6 +79,12 @@ class RuntimeConfig:
             raise ValueError("accepting_new_tasks must be boolean")
         if self.dispatch_mode not in ('hatchet', 'node_pull'):
             raise ValueError('dispatch_mode must be hatchet or node_pull')
+        if type(self.shared_pool_enabled) is not bool:
+            raise ValueError('shared_pool_enabled must be boolean')
+        if type(self.store_concurrency) is not int or not 1 <= self.store_concurrency <= 128:
+            raise ValueError('store_concurrency must be an integer from 1 through 128')
+        if self.shared_pool_enabled and (self.dispatch_mode != 'node_pull' or self.store_concurrency < 2):
+            raise ValueError('Shared-pool mode requires node_pull and store_concurrency >= 2')
         if type(self.max_queued_tasks) is not int or not 1 <= self.max_queued_tasks <= 10_000:
             raise ValueError("max_queued_tasks must be an integer from 1 through 10000")
         for value in (self.source_id, self.workspace_id, self.node_id, self.executor_instance):
@@ -86,12 +98,18 @@ class RuntimeConfig:
             raise ValueError('TLS requires both certificate and key')
         if self.host not in ('127.0.0.1', '::1', 'localhost') and not self.tls_certfile:
             raise ValueError('Non-loopback binding requires explicit TLS certificate and key')
-        for value in (self.source_token_env, self.node_token_env, self.dispatch_token_env):
+        for value in (self.source_token_env, self.node_token_env, self.dispatch_token_env,
+                      self.control_token_env):
             if not isinstance(value, str) or not value or not value.replace('_', '').isalnum():
                 raise ValueError('Invalid credential environment variable name')
 
     def credentials(self, environ=None):
         env = os.environ if environ is None else environ
+        if self.shared_pool_enabled:
+            control = env.get(self.control_token_env)
+            if not isinstance(control, str) or not control:
+                raise ValueError('An explicit Bridge control credential is required')
+            return [control]
         names = ((self.source_token_env, self.node_token_env) if self.dispatch_mode == 'node_pull'
                  else (self.source_token_env, self.node_token_env, self.dispatch_token_env))
         values = [env.get(name) for name in names]
@@ -102,25 +120,38 @@ class RuntimeConfig:
     def build_app(self, environ=None):
         self.validate()
         credentials = self.credentials(environ)
-        source, node = credentials[:2]
-        dispatcher = credentials[2] if self.dispatch_mode == 'hatchet' else None
+        source, node = (None, None) if self.shared_pool_enabled else credentials[:2]
+        dispatcher = credentials[2] if not self.shared_pool_enabled and self.dispatch_mode == 'hatchet' else None
+        control = credentials[0] if self.shared_pool_enabled else None
         store = BridgeStore(self.data_dir / 'bridge.sqlite', self.data_dir / 'artifacts',
                             enabled_profiles=self.enabled_profiles, accepting_new_tasks=self.accepting_new_tasks,
                             max_queued_tasks=self.max_queued_tasks, max_storage_bytes=self.max_storage_bytes,
-                            dispatch_mode=self.dispatch_mode)
+                            dispatch_mode=self.dispatch_mode,
+                            shared_pool_enabled=self.shared_pool_enabled)
         scope = SourceScope(self.source_id, self.workspace_id)
-        app = create_runtime_app(store=store, source_tokens={source: scope},
-            node_tokens={node: NodeScope(self.source_id, self.workspace_id, self.node_id, self.executor_instance)},
-            dispatch_tokens={dispatcher: scope} if dispatcher else None)
+        if self.shared_pool_enabled:
+            app = create_runtime_app(store=store, source_tokens={}, node_tokens=None,
+                dispatch_tokens=None, shared_pool_enabled=True, control_token=control,
+                store_concurrency=self.store_concurrency)
+        else:
+            app = create_runtime_app(store=store, source_tokens={source: scope},
+                node_tokens={node: NodeScope(self.source_id, self.workspace_id, self.node_id, self.executor_instance)},
+                dispatch_tokens={dispatcher: scope} if dispatcher else None,
+                store_concurrency=self.store_concurrency)
         if self.retention_enabled:
             previous_lifespan = app.router.lifespan_context
 
             async def maintain():
                 while True:
                     try:
-                        await anyio.to_thread.run_sync(lambda: store.maintain_retention(
-                            scope, retention_seconds=self.retention_seconds,
-                            batch_size=self.maintenance_batch_size))
+                        if self.shared_pool_enabled:
+                            await anyio.to_thread.run_sync(lambda: store.maintain_shared_retention(
+                                retention_seconds=self.retention_seconds,
+                                batch_size=self.maintenance_batch_size))
+                        else:
+                            await anyio.to_thread.run_sync(lambda: store.maintain_retention(
+                                scope, retention_seconds=self.retention_seconds,
+                                batch_size=self.maintenance_batch_size))
                     except Exception:
                         # No payload, credential, path, or exception text in logs.
                         logging.getLogger(__name__).warning('Bridge retention pass failed; will retry')

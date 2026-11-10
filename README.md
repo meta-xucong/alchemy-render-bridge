@@ -69,3 +69,7 @@ Bridge不区分Alchemy V1/V2/V3/Lab/Video OS；各版本应在Alchemy侧适配�
 - [Midjourney与Discord API适配方案](docs/render-bridge/adapters/06_Midjourney_Discord适配方案.md)
 
 - [自动回退代码落地与兼容契约](docs/shared-contract/08_自动回退代码落地与兼容契约.md)：冻结健康信号、pre-start撤回、路由身份和V3传统provider接缝；相关代码与模拟联调已实施，具体证据/未测范围见[实现验收](docs/implementation/AUTO_FALLBACK_ACCEPTANCE.md)，设计或模拟通过均不等于实机/生产验收。
+
+## Multi-node shared pool
+
+The audited shared-pool implementation plan, API/data contracts, scheduler/recovery rules, console/Agent flow, security/migration, tests, and release/rollback procedure are indexed in [docs/multi-node-shared-pool](docs/multi-node-shared-pool/00_INDEX_AND_SCOPE.md). These documents narrow the earlier RB35 PostgreSQL recommendation to multi-Bridge replication/high availability; the first multi-worker service remains one SQLite-authoritative Bridge instance.

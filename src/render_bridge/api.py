@@ -128,10 +128,13 @@ def create_app(
     max_upload_bytes: int = MAX_INPUT_BYTES,
     node_tokens=None,
     dispatch_tokens=None,
+    shared_pool_enabled: bool = False,
+    control_token: str | None = None,
+    store_concurrency: int = 1,
 ) -> FastAPI:
     """Create an isolated fixture API with no implicit authority or executor."""
-    if not isinstance(source_tokens, Mapping) or not source_tokens:
-        raise ValueError("An explicit source token map is required.")
+    if not isinstance(source_tokens, Mapping) or (not source_tokens and not shared_pool_enabled):
+        raise ValueError("An explicit source token map is required unless shared-pool mode is enabled.")
     for token, scope in source_tokens.items():
         if (
             not isinstance(token, str)
@@ -146,15 +149,28 @@ def create_app(
     ):
         if type(limit) is not int or limit < 1 or limit > maximum:
             raise ValueError("Invalid request size limit.")
+    if type(shared_pool_enabled) is not bool:
+        raise ValueError("shared_pool_enabled must be boolean")
+    if type(store_concurrency) is not int or not 1 <= store_concurrency <= 128:
+        raise ValueError("store_concurrency must be an integer from 1 through 128")
+    if shared_pool_enabled:
+        if source_tokens or node_tokens is not None or dispatch_tokens is not None:
+            raise ValueError("Shared-pool mode does not install legacy static credentials or dispatch routes")
+        if not isinstance(control_token, str) or not _TOKEN.fullmatch(control_token) or len(control_token) > 4096:
+            raise ValueError("An explicit control token is required in shared-pool mode")
+        if store_concurrency < 2:
+            raise ValueError("Shared-pool mode requires bounded store_concurrency >= 2")
+        if control_token in source_tokens or control_token in (node_tokens or {}) or control_token in (dispatch_tokens or {}):
+            raise ValueError("Control credential must be distinct")
     # Snapshot configuration: a caller cannot accidentally mutate auth mid-read.
     tokens = MappingProxyType(dict(source_tokens))
     # A single admitted store operation runs off the event loop. The nonblocking
     # gate rejects extra work before the thread pool, rather than accumulating an
     # unbounded queue. This is bounded fixture admission, not production capacity.
-    store_gate = threading.BoundedSemaphore(1)
-    store_thread_limiter = anyio.CapacityLimiter(1)
+    store_gate = threading.BoundedSemaphore(store_concurrency)
+    store_thread_limiter = anyio.CapacityLimiter(store_concurrency)
 
-    async def call_store(method, *args):
+    async def call_store(method, *args, **kwargs):
         if not store_gate.acquire(blocking=False):
             raise _APIError("store_busy", 503)
         state_lock = threading.Lock()
@@ -166,7 +182,7 @@ def create_app(
                     return None
                 state["started"] = True
             try:
-                return method(*args)
+                return method(*args, **kwargs)
             finally:
                 # Even an externally canceled HTTP task cannot free admission
                 # while the synchronous transaction is still running.
@@ -212,6 +228,8 @@ def create_app(
         if not _TOKEN.fullmatch(token) or len(token) > 4096:
             raise _APIError("unauthorized", 401)
         scope = tokens.get(token)
+        if scope is None and shared_pool_enabled:
+            scope = await call_store(store.shared_source_scope, token)
         if scope is None:
             raise _APIError("unauthorized", 401)
         return scope
@@ -340,4 +358,11 @@ def create_app(
             install_node_routes(app, store, node_tokens, call_store)
         if dispatch_tokens is not None:
             install_dispatch_routes(app, store, dispatch_tokens, call_store)
+    if shared_pool_enabled:
+        if not getattr(store, "shared_pool_enabled", False):
+            raise ValueError("Store must enable shared-pool mode before app creation")
+        from .shared_pool_api import install_shared_pool_routes
+        install_shared_pool_routes(app, store, control_token, call_store,
+                                   max_json_bytes=max_json_bytes,
+                                   max_upload_bytes=max_upload_bytes)
     return app

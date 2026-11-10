@@ -31,6 +31,7 @@ from .profiles import get_profile, enabled_profile_ids, MAX_PROFILE_OUTPUT_BYTES
 from .image_options import validate_image_request, requested_output_mime
 from .operational_store import OperationsMixin
 from .availability import AvailabilityMixin, HEALTH_DDL
+from .shared_pool import SharedPoolMixin
 
 MAX_INPUT_BYTES = 16 * 1_048_576
 MAX_OUTPUT_BYTES = 1_048_576
@@ -120,7 +121,7 @@ def _utc(timestamp):
     return datetime.fromtimestamp(timestamp, timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-class BridgeStore(OperationsMixin, AvailabilityMixin):
+class BridgeStore(SharedPoolMixin, OperationsMixin, AvailabilityMixin):
     """SQLite-backed isolated fixture store; separate instances may share a DB.
 
     POSIX writes synchronize the file and its containing directory. Windows
@@ -131,7 +132,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
 
     def __init__(self, db_path, artifact_root, *, clock=None, enabled_profiles=("fake-image",),
                  accepting_new_tasks=True, max_queued_tasks=10, max_storage_bytes=None,
-                 dispatch_mode="hatchet"):
+                 dispatch_mode="hatchet", shared_pool_enabled=False, pool_rng=None):
         self.enabled_profiles = enabled_profile_ids(enabled_profiles)
         self.db_path = str(db_path)
         if self.db_path == ":memory:":
@@ -144,6 +145,12 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
         if dispatch_mode not in {"hatchet", "node_pull"}:
             raise ValueError("dispatch_mode must be hatchet or node_pull")
         self.dispatch_mode = dispatch_mode
+        if type(shared_pool_enabled) is not bool:
+            raise ValueError("shared_pool_enabled must be boolean")
+        if shared_pool_enabled and dispatch_mode != "node_pull":
+            raise ValueError("Shared-pool mode requires node_pull dispatch")
+        self.shared_pool_enabled = shared_pool_enabled
+        self._pool_rng = pool_rng or __import__("random").SystemRandom()
         self.max_queued_tasks = max_queued_tasks
         if max_storage_bytes is not None and (type(max_storage_bytes) is not int or not 1 <= max_storage_bytes <= 1024 ** 4):
             raise ValueError("max_storage_bytes must be an integer from 1 through 1 TiB")
@@ -237,6 +244,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                     UNIQUE(source, workspace, client_receipt_id));
             """)
             con.executescript(HEALTH_DDL)
+            self._init_shared_pool(con)
             if 'revalidation_generation' not in {r[1] for r in con.execute('PRAGMA table_info(profile_health)')}:
                 con.execute('ALTER TABLE profile_health ADD COLUMN revalidation_generation INTEGER NOT NULL DEFAULT 0')
             con.execute("""INSERT OR IGNORE INTO dispatch_outbox(dispatch_key,task_id)
@@ -393,8 +401,10 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
         self._scope(scope)
         node = self.node_status(scope)
         with self._read_transaction() as con:
-            active_count = self._active_task_count(con)
-            storage = self._storage_status(con)
+            source, workspace = self._scope(scope)
+            active_count = (self._active_task_count_scope(con, source, workspace)
+                            if self.shared_pool_enabled else self._active_task_count(con))
+            storage = self._storage_status(con, scope=scope if self.shared_pool_enabled else None)
         accepting = self.accepting_new_tasks
         if self.dispatch_mode == "node_pull":
             accepting = (accepting and node["state"] in {"available", "busy"}
@@ -437,6 +447,14 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
         active = con.execute("""SELECT t.* FROM tasks t JOIN attempts a ON a.task_id=t.id
             WHERE t.state NOT IN ('canceled','failed','expired','artifacts_ready')
             AND (t.deadline>? OR a.start_grant_id IS NOT NULL)""", (now,)).fetchall()
+        return sum(self._profile(row).execution_mode != "manual" or row["deadline"] > now for row in active)
+
+    def _active_task_count_scope(self, con, source, workspace):
+        now = self.clock()
+        active = con.execute("""SELECT t.* FROM tasks t JOIN attempts a ON a.task_id=t.id
+            WHERE t.source=? AND t.workspace=? AND t.state NOT IN ('canceled','failed','expired','artifacts_ready')
+            AND (t.deadline>? OR a.start_grant_id IS NOT NULL)""",
+                             (source, workspace, now)).fetchall()
         return sum(self._profile(row).execution_mode != "manual" or row["deadline"] > now for row in active)
 
     @staticmethod
@@ -492,12 +510,20 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             return self._configured_max_storage_bytes
         return MAX_STORAGE_BYTES if self.enabled_profiles == ("fake-image",) else 16 * MAX_PROFILE_OUTPUT_BYTES
 
-    def _storage_status(self, con, *, include_disk=False):
+    def _storage_status(self, con, *, include_disk=False, scope=None):
         # Strict write checks include orphan files; frequent diagnostics use DB totals.
         # This bounds object bytes, not SQLite metadata or the entire filesystem.
-        used = con.execute("""SELECT
-            COALESCE((SELECT SUM(size) FROM inputs WHERE file_name IS NOT NULL), 0) +
-            COALESCE((SELECT SUM(size) FROM uploads WHERE file_name IS NOT NULL), 0)""").fetchone()[0]
+        if scope is None:
+            used = con.execute("""SELECT
+                COALESCE((SELECT SUM(size) FROM inputs WHERE file_name IS NOT NULL), 0) +
+                COALESCE((SELECT SUM(size) FROM uploads WHERE file_name IS NOT NULL), 0)""").fetchone()[0]
+        else:
+            source, workspace = self._scope(scope)
+            used = con.execute("""SELECT
+                COALESCE((SELECT SUM(size) FROM inputs WHERE source=? AND workspace=? AND file_name IS NOT NULL), 0) +
+                COALESCE((SELECT SUM(u.size) FROM uploads u JOIN tasks t ON t.id=u.task_id
+                          WHERE t.source=? AND t.workspace=? AND u.file_name IS NOT NULL), 0)""",
+                (source, workspace, source, workspace)).fetchone()[0]
         if not include_disk:
             # Frequent capability/health polling must not walk the artifact tree.
             # The authoritative write path below still includes crash leftovers.
@@ -775,10 +801,32 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             if old:
                 if old["digest"] != digest:
                     _fail("idempotency_conflict", 409)
+                if self.shared_pool_enabled:
+                    admitted = con.execute("SELECT 1 FROM shared_task_pools WHERE task_id=? LIMIT 1",
+                                           (old["id"],)).fetchone()
+                    if admitted is None:
+                        active_member = con.execute("""SELECT 1 FROM shared_workspaces m
+                            JOIN shared_pools p ON p.pool_id=m.pool_id
+                            WHERE m.source=? AND m.workspace=? AND m.state='active' AND p.active=1 LIMIT 1""",
+                            (source, workspace)).fetchone()
+                        if active_member is None:
+                            _fail("pool_membership_required", 403)
+                        _fail("task_not_shared_pool_admitted", 409)
                 return self._task_view(con, old)
             if not self.accepting_new_tasks:
                 _fail("bridge_draining", 503)
-            if self.dispatch_mode == "node_pull":
+            if self.shared_pool_enabled:
+                if not self.workspace_has_shared_pool(scope, con):
+                    _fail("pool_membership_required", 403)
+                active_member = con.execute("SELECT 1 FROM shared_workspaces m JOIN shared_pools p ON p.pool_id=m.pool_id "
+                                            "WHERE m.source=? AND m.workspace=? AND m.state='active' AND p.active=1 LIMIT 1",
+                                            (source, workspace)).fetchone()
+                if active_member is None:
+                    _fail("pool_membership_required", 403)
+                if not self._shared_pool_has_healthy_node(
+                        con, scope, payload["execution_profile_id"], self.clock()):
+                    _fail("node_unavailable", 503)
+            elif self.dispatch_mode == "node_pull":
                 node = con.execute("""SELECT h.* FROM node_heartbeats h
                     JOIN node_registry r ON r.source=h.source AND r.workspace=h.workspace
                       AND r.node=h.node AND r.executor=h.executor AND r.active=1
@@ -791,7 +839,10 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                     _fail("node_unavailable", 503)
             if deadline <= self.clock() or deadline > self.clock() + 7 * 86400:
                 _fail("invalid_deadline", 422)
-            if self._active_task_count(con) >= self.max_queued_tasks:
+            active_count = (self._active_task_count_scope(con, source, workspace)
+                            if self.shared_pool_enabled
+                            else self._active_task_count(con))
+            if active_count >= self.max_queued_tasks:
                 _fail("queue_capacity", 429)
             for ref in payload["references"]:
                 row = self._scoped(con, "inputs", ref["input_ref"], scope)
@@ -805,6 +856,14 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                         (task_id, source, workspace, payload["origin_key"], digest,
                          _canonical(payload), "queued", attempt_id, 0, self.clock(), deadline))
             con.execute("INSERT INTO attempts(id,task_id) VALUES(?,?)", (attempt_id, task_id))
+            if self.shared_pool_enabled:
+                admitted_pools = con.execute("""SELECT m.pool_id FROM shared_workspaces m
+                    JOIN shared_pools p ON p.pool_id=m.pool_id
+                    WHERE m.source=? AND m.workspace=? AND m.state='active' AND p.active=1""",
+                    (source, workspace)).fetchall()
+                for admitted_pool in admitted_pools:
+                    con.execute("INSERT INTO shared_task_pools(task_id,pool_id,admitted) VALUES(?,?,?)",
+                                (task_id, admitted_pool["pool_id"], self.clock()))
             if self.dispatch_mode == "hatchet":
                 con.execute("INSERT INTO dispatch_outbox(dispatch_key,task_id) VALUES(?,?)",
                             (_id("dispatch"), task_id))
@@ -817,6 +876,10 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
         """Read-only offer; claim_task remains the atomic task ownership boundary."""
         source, workspace = self._scope(scope)
         with self._read_transaction() as con:
+            # A workspace that has ever opted into a pool cannot silently fall
+            # back to a legacy node offer after leaving or losing membership.
+            if self.shared_pool_enabled:
+                return {"task_id": None}
             self._check_node_active(con, scope, node_id, executor_instance, required=True)
             heartbeat = con.execute("SELECT * FROM node_heartbeats WHERE source=? AND workspace=? AND node=? AND executor=?",
                                     (source, workspace, node_id, executor_instance)).fetchone()
@@ -932,6 +995,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
             con.execute('INSERT INTO withdrawals VALUES(?,?,?,?,?)',
                         (source, workspace, payload['withdrawal_key'], task_id, _canonical(proof)))
             con.execute("UPDATE tasks SET state='canceled',cancel_requested=1 WHERE id=?", (task_id,))
+            self._release_shared_task(con, task_id, 'canceled')
             self._audit(con, scope, 'withdrawn_before_start', task_id=task_id, attempt_id=task['attempt_id'])
             return proof
 
@@ -954,9 +1018,12 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                                       (task_id,)).fetchone()[0]
                 if not started and task["deadline"] <= self.clock():
                     con.execute("UPDATE tasks SET state='expired' WHERE id=?", (task_id,))
+                    self._release_shared_task(con, task_id, "expired")
                 else:
                     state = "cancel_requested" if started and self._profile(task).execution_mode == "automatic" else "canceled"
                     con.execute("UPDATE tasks SET state=?,cancel_requested=1 WHERE id=?", (state, task_id))
+                    if state == "canceled":
+                        self._release_shared_task(con, task_id, "canceled")
                     if not task["cancel_requested"]:
                         self._audit(con, scope, state, task_id=task_id, attempt_id=task["attempt_id"])
             return self._task_view(con, self._scoped(con, "tasks", task_id, scope))
@@ -1025,6 +1092,7 @@ class BridgeStore(OperationsMixin, AvailabilityMixin):
                 _fail("task_expired", 409)
             occupied = con.execute("""SELECT t.* FROM attempts a JOIN tasks t ON t.id=a.task_id
                 WHERE a.start_grant_id IS NOT NULL AND t.id!=?
+                AND NOT EXISTS (SELECT 1 FROM shared_assignments sa WHERE sa.task_id=t.id)
                 AND t.state NOT IN ('artifacts_ready','canceled','failed','expired')""",
                                    (task_id,)).fetchall()
             if any(self._profile(row).execution_mode == "automatic" for row in occupied):
