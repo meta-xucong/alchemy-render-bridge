@@ -150,3 +150,43 @@ FakeRenderer and a temporary SQLite ledger; it does not call a real image
 provider or use private user media. A final audit must verify no change to the
 legacy v1 contract, no cross-workspace prompt/history projection, exact
 assignment identity at every node mutation, and the release/rollback fence.
+
+## Live capability projection follow-up (2026-11-11)
+
+The first VPS acceptance pass showed that `/bridge/control/v2/nodes` and
+`/bridge/source/v2/pools` reported the opted-in shared node online, while the
+authenticated `/bridge/v1/capabilities` response still showed an old direct
+node as offline and `admission.accepting_new_tasks=false`. Alchemy's existing
+Bridge route policy checks that admission field before selecting Bridge, so the
+projection mismatch blocked the intended client path even though the shared
+scheduler had a healthy Codex slot.
+
+The correction model is:
+
+1. In shared-pool mode, the persisted shared-node heartbeat and shared profile
+   health are authoritative for the Source workspace's node/admission view.
+   The old direct-node projection remains authoritative outside shared-pool
+   membership.
+2. `BridgeStore.node_status` was defined on the concrete class and shadowed
+   `SharedPoolMixin.node_status`; `capabilities()` therefore read the legacy
+   `node_registry` for its admission decision while the shared routing-health
+   projection already read the pool tables.
+3. Delegate to the existing shared-pool projection only when shared-pool mode
+   is enabled and the workspace has a pool membership. Preserve the existing
+   legacy projection otherwise. Do not change task scheduling, task admission,
+   image execution, quality review, or Alchemy business code.
+
+Regression coverage verifies that a fresh Codex profile report produces an
+`available` shared node and `admission=true`, and that the authenticated v1
+capabilities HTTP route returns the same readiness for an opted-in workspace
+without creating a task. The focused store and HTTP tests pass after the fix.
+
+One exploratory run of the existing FakeRenderer task-flow test returned
+`execution_unknown` after capability assertions were temporarily inserted into
+that generation test. Those assertions were removed and the generation test
+was not repeated; its outcome is recorded as an unresolved validation anomaly,
+not a pass. No real provider or production task was invoked. The previously
+recorded 348-passed/1-skipped suite and 24/24 synthetic concurrency run apply
+to the parent commit, not this follow-up. Keep production admission closed
+until the correction is integrated and the read-only VPS capability check
+reports the shared node/admission consistently.
