@@ -395,6 +395,49 @@ class SharedPoolStoreTests(unittest.TestCase):
             self.store.assigned_input_content(identity, assignment["assignment_id"],
                                               task_id, "missing-input", "stale-claim")
 
+    def test_shared_pool_capabilities_use_shared_node_health_and_admission(self):
+        store = BridgeStore(self.root / "capabilities.db",
+                            self.root / "capabilities-objects",
+                            clock=lambda: self.now,
+                            dispatch_mode="node_pull",
+                            enabled_profiles=("codex-image",),
+                            max_queued_tasks=100,
+                            shared_pool_enabled=True)
+        try:
+            pool_id = store.create_shared_pool("capabilities fixture")["pool_id"]
+            scope = SourceScope("capabilities-source", "capabilities-workspace")
+            store.create_shared_source_credential(scope.source_id, scope.workspace_id)
+            workspace_invite = store.create_shared_invite(pool_id, "workspace")
+            store.accept_shared_invite(scope, workspace_invite["invite_code"])
+            node_invite = store.create_shared_invite(
+                pool_id, "node", profiles=["codex-image"])
+            paired = store.enroll_shared_node(
+                node_invite["invite_code"], "capabilities-node",
+                "capabilities-executor", ["codex-image"],
+                accept_shared_data=True)
+            identity = store.shared_node_from_token(paired["node_token"])
+            store.report_shared_heartbeat(identity, "available", ["codex-image"],
+                profile_health=[{
+                    "profile_id": "codex-image",
+                    "profile_revision": "1",
+                    "report_revision": 1,
+                    "health": "available",
+                    "reason_code": "ready",
+                    "evidence_kind": "operator_attested_preflight",
+                }])
+
+            capabilities = store.capabilities(scope)
+            codex_health = next(
+                profile for profile in capabilities["routing_availability_v1"]["profiles"]
+                if profile["profile_id"] == "codex-image")
+            self.assertEqual(capabilities["node_status"]["authorization"], "shared_pool")
+            self.assertEqual(capabilities["node_status"]["state"], "available")
+            self.assertTrue(capabilities["admission"]["accepting_new_tasks"])
+            self.assertEqual(capabilities["admission"]["mode"], "enabled")
+            self.assertEqual(codex_health["health"], "available")
+        finally:
+            store.close()
+
     def test_capabilities_only_report_calling_workspace_usage(self):
         first, _ = self.add_workspace(1)
         second, _ = self.add_workspace(2)
@@ -494,6 +537,43 @@ class SharedPoolAPITests(unittest.IsolatedAsyncioTestCase):
     async def req(self, method, path, token="operator-test", **kwargs):
         headers = {"Authorization": "Bearer " + token, **kwargs.pop("headers", {})}
         return await self.client.request(method, path, headers=headers, **kwargs)
+
+    async def test_v1_capabilities_use_shared_pool_node_readiness(self):
+        pool = (await self.req("POST", "/bridge/control/v2/pools",
+                               json={"name": "capabilities fixture"})).json()
+        scope = SourceScope("capabilities-source", "capabilities-workspace")
+        source_token = (await self.req("POST", "/bridge/control/v2/source-credentials",
+            json={"source_id": scope.source_id, "workspace_id": scope.workspace_id})).json()["source_token"]
+        workspace_invite = (await self.req("POST",
+            f"/bridge/control/v2/pools/{pool['pool_id']}/invites",
+            json={"kind": "workspace"})).json()["invite_code"]
+        joined = await self.req("POST", "/bridge/source/v2/pool-invites/accept",
+            token=source_token,
+            json={"invite_code": workspace_invite, "accept_shared_data": True})
+        self.assertEqual(joined.status_code, 200, joined.text)
+
+        node_invite = (await self.req("POST",
+            f"/bridge/control/v2/pools/{pool['pool_id']}/invites",
+            json={"kind": "node", "profiles": ["fake-image"]})).json()["invite_code"]
+        enrolled = await self.client.post("/bridge/node/v2/enroll", json={
+            "invite_code": node_invite, "node_id": "capabilities-node",
+            "executor_instance": "capabilities-executor", "profiles": ["fake-image"],
+            "accept_shared_data": True})
+        self.assertEqual(enrolled.status_code, 200, enrolled.text)
+        heartbeat = await self.req("POST", "/bridge/node/v2/heartbeat",
+            token=enrolled.json()["node_token"],
+            json={"state": "available", "profiles": ["fake-image"]})
+        self.assertEqual(heartbeat.status_code, 200, heartbeat.text)
+
+        capabilities = await self.req("GET", "/bridge/v1/capabilities", token=source_token)
+        self.assertEqual(capabilities.status_code, 200, capabilities.text)
+        body = capabilities.json()
+        self.assertEqual(body["node_status"]["authorization"], "shared_pool")
+        self.assertEqual(body["node_status"]["state"], "available")
+        self.assertTrue(body["admission"]["accepting_new_tasks"])
+        self.assertEqual(body["admission"]["mode"], "enabled")
+        self.assertEqual(body["queue"]["active_tasks"], 0)
+        self.assertEqual(self.store.summary_shared_pool()["queued_tasks"], 0)
 
     async def test_console_auth_consent_pair_task_run_artifact_and_history_privacy(self):
         page = await self.client.get("/bridge/console")

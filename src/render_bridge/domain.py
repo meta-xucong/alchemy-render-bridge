@@ -355,6 +355,9 @@ class BridgeStore(SharedPoolMixin, OperationsMixin, AvailabilityMixin):
         return {"accepted": True, "heartbeat_timeout_seconds": 90}
 
     def node_status(self, scope):
+        if (getattr(self, "shared_pool_enabled", False)
+                and self.workspace_has_shared_pool(scope)):
+            return SharedPoolMixin.node_status(self, scope)
         source, workspace = self._scope(scope)
         with self._connection() as con:
             row = con.execute("""SELECT h.* FROM node_heartbeats h
