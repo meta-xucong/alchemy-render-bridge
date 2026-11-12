@@ -37,7 +37,10 @@ Use temporary SQLite databases, FakeRenderer and independent node identities. No
 - Workspace token sees only its own history and can explicitly accept/revoke pool membership.
 - Console displays queue, assignment and unknown truth from API; no empty state box or false success percentage.
 - Text content is escaped; no third-party script; token not persisted in local storage or URL.
-- Copyable Agent startup command is correct for supported OS; the UI does not pretend it can launch remote processes.
+- The Windows first-run command prepares the isolated environment before invoking shared-pool enrollment; the later batch launcher starts the shared-pool `pool_node run` entry point and leaves the legacy V1/Hatchet launcher untouched.
+- Operator summary and node list auto-refresh every five seconds only while the operator page is visible, never overlap, and do not auto-load task history. Manual refresh remains available; workspace view is not polled.
+- The browser lifecycle harness exercises hidden/visible transitions, a delayed in-flight refresh plus manual click, session reconnection with a new bearer, and the workspace view's separate history load.
+- The UI does not pretend it can launch a process on a remote machine.
 
 ## Release gate
 
