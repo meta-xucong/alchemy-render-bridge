@@ -581,9 +581,15 @@ class SharedPoolAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Content-Security-Policy", page.headers)
         self.assertNotIn("operator-test", page.text)
         self.assertNotIn("localStorage", page.text)
-        self.assertIn("start_shared_pool_node.ps1", page.text)
-        self.assertIn("-Url", page.text)
-        self.assertIn("start_shared_pool_node.bat", page.text)
+        self.assertNotIn('type="password"', page.text)
+        self.assertIn("/bridge/status/v1", page.text)
+        self.assertIn("/bridge/operator", page.text)
+        operator_page = await self.client.get("/bridge/operator")
+        self.assertEqual(operator_page.status_code, 200)
+        self.assertIn("start_shared_pool_node.ps1", operator_page.text)
+        self.assertIn("-Url", operator_page.text)
+        self.assertIn("start_shared_pool_node.bat", operator_page.text)
+        self.assertEqual((await self.client.get("/bridge/control/v2/nodes")).status_code, 401)
         self.assertEqual((await self.req("GET", "/bridge/control/v2/summary", token="wrong")).status_code, 401)
 
         pool = (await self.req("POST", "/bridge/control/v2/pools", json={"name": "api fixture"})).json()
@@ -657,6 +663,61 @@ class SharedPoolAPITests(unittest.IsolatedAsyncioTestCase):
             token=source_token, json={})).status_code, 200)
         memberships = await self.req("GET", "/bridge/source/v2/pools", token=source_token)
         self.assertEqual(memberships.json()["pools"][0]["membership"], "revoked")
+
+    async def test_public_fleet_status_accepts_store_generator_and_redacts_identifiers(self):
+        now = datetime.now(timezone.utc).isoformat()
+        rows = [
+            {"pool_id": "pool-secret", "pool_name": "private-pool", "node_id": "host-alpha",
+             "executor_instance": "executor-secret", "state": "active", "liveness": "online",
+             "last_seen_at": now, "profiles": ["fake-image", "internal-secret-profile"]},
+            {"pool_id": "pool-secret", "pool_name": "private-pool", "node_id": "host-beta",
+             "executor_instance": "executor-secret", "state": "active", "liveness": "busy",
+             "last_seen_at": now, "profiles": ["codex-image"],
+             "current_assignment": {"assignment_id": "assignment-secret", "task_id": "task-secret",
+                                    "workspace_id": "workspace-secret", "task_state": "running"}},
+            {"pool_id": "pool-secret", "pool_name": "private-pool", "node_id": "host-gamma",
+             "executor_instance": "executor-secret", "state": "active", "liveness": "needs_attention",
+             "last_seen_at": now, "profiles": ["midjourney-manual"]},
+            {"pool_id": "pool-secret", "pool_name": "private-pool", "node_id": "host-delta",
+             "executor_instance": "executor-secret", "state": "active", "liveness": "offline",
+             "last_seen_at": None, "profiles": ["fake-image"]},
+            {"pool_id": "pool-secret", "pool_name": "private-pool", "node_id": "host-epsilon",
+             "executor_instance": "executor-secret", "state": "draining", "liveness": "online",
+             "last_seen_at": now, "profiles": ["fake-image"]},
+            {"pool_id": "pool-secret", "pool_name": "private-pool", "node_id": "host-zeta",
+             "executor_instance": "executor-secret", "state": "active", "liveness": "unrecognized",
+             "last_seen_at": now, "profiles": ["fake-image"]},
+            {"pool_id": "pool-secret", "pool_name": "private-pool", "node_id": "revoked-host",
+             "executor_instance": "executor-secret", "state": "revoked", "liveness": "online",
+             "last_seen_at": now, "profiles": ["fake-image"]},
+        ]
+        self.store.list_shared_nodes = lambda: (item for item in rows)
+
+        response = await self.client.get("/bridge/status/v1")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+        body = response.json()
+        self.assertEqual(body["summary"], {
+            "nodes_total": 6, "nodes_online": 4, "nodes_available": 1, "nodes_busy": 1,
+            "nodes_attention": 1, "nodes_draining": 1, "nodes_offline": 1, "nodes_unknown": 1,
+        })
+        self.assertEqual([item["label"] for item in body["nodes"]],
+                         [f"Node {index:02d}" for index in range(1, 7)])
+        self.assertEqual([item["availability"] for item in body["nodes"]], [
+            "available", "busy", "attention", "offline", "draining", "unknown",
+        ])
+        self.assertEqual(body["nodes"][0]["profiles"], ["fake-image"])
+        for node in body["nodes"]:
+            self.assertEqual(set(node), {
+                "label", "state", "availability", "heartbeat_age_seconds", "profiles",
+            })
+        serialized = json.dumps(body, ensure_ascii=False)
+        for private_value in (
+            "pool-secret", "private-pool", "host-alpha", "executor-secret", "task-secret",
+            "workspace-secret", "assignment-secret", "internal-secret-profile", "revoked-host",
+        ):
+            self.assertNotIn(private_value, serialized)
+        self.assertEqual((await self.client.get("/bridge/control/v2/nodes")).status_code, 401)
 
     async def test_operator_history_rejects_oversized_cursor_and_filters(self):
         cursor = base64.urlsafe_b64encode(b"1800000000|" + b"a" * 600).decode("ascii").rstrip("=")

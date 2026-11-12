@@ -11,13 +11,15 @@ Credential classes are not interchangeable:
 - **Node token**: unique to one pool/node/executor; stored server-side as a hash. Task/media access always needs its persisted assignment.
 - **Invitation code**: random, short-lived and one-use. It is submitted in a JSON body, never a URL or process argument.
 
-The control console holds the entered operator token only in page memory. Enrollment returns a node token once; the Agent stores it in its owner-selected state directory. Do not include bearer values or invitation codes in URLs, logs, prompts, task data or audit events.
+The public fleet dashboard does not accept credentials. The separate operator console holds the entered operator token only in page memory. Enrollment returns a node token once; the Agent stores it in its owner-selected state directory. Do not include bearer values or invitation codes in URLs, logs, prompts, task data or audit events.
 
 ## Implemented routes
 
 | Route | Role | Behavior |
 |---|---|---|
-| `GET /bridge/console` | none | Serve the same-origin static console; no data or secrets embedded |
+| `GET /bridge/console` | none | Serve the read-only fleet dashboard; no data or secrets embedded |
+| `GET /bridge/status/v1` | none | Return redacted aggregate and per-node availability; excludes revoked nodes and identifiers |
+| `GET /bridge/operator` | none | Serve the operator and workspace console; its control APIs still require bearer authentication |
 | `POST /bridge/control/v2/pools` | operator | Create a private pool |
 | `GET /bridge/control/v2/pools` | operator | List pool IDs, state and policy |
 | `POST /bridge/control/v2/pools/{pool_id}/invites` | operator | Create a one-use workspace or node invitation |
