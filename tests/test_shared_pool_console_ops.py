@@ -4,12 +4,25 @@ import subprocess
 import unittest
 
 from render_bridge.shared_pool_console import CONSOLE_HTML
+from render_bridge.shared_pool_dashboard import STATUS_DASHBOARD_HTML
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class SharedPoolConsoleOpsTests(unittest.TestCase):
+    def test_public_dashboard_is_read_only_and_requires_no_operator_input(self):
+        self.assertIn("/bridge/status/v1", STATUS_DASHBOARD_HTML)
+        self.assertIn("/bridge/operator", STATUS_DASHBOARD_HTML)
+        self.assertIn("timerDelay=5000", STATUS_DASHBOARD_HTML)
+        self.assertIn("cache:'no-store'", STATUS_DASHBOARD_HTML)
+        self.assertNotIn("Authorization", STATUS_DASHBOARD_HTML)
+        self.assertNotIn("type=\"password\"", STATUS_DASHBOARD_HTML)
+        self.assertNotIn("localStorage", STATUS_DASHBOARD_HTML)
+        self.assertIn("全部节点", STATUS_DASHBOARD_HTML)
+        self.assertIn("nodes_draining", STATUS_DASHBOARD_HTML)
+        self.assertIn("nodes_unknown", STATUS_DASHBOARD_HTML)
+
     def test_operator_fleet_refresh_is_single_flight_and_excludes_history(self):
         self.assertIn("const FLEET_REFRESH_MS=5000", CONSOLE_HTML)
         self.assertIn("setTimeout(", CONSOLE_HTML)
@@ -65,6 +78,19 @@ class SharedPoolConsoleOpsTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("lifecycle checks passed", result.stdout)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is needed for the browser lifecycle harness")
+    def test_public_dashboard_runtime_lifecycle(self):
+        result = subprocess.run(
+            [shutil.which("node"), str(ROOT / "tests" / "public_status_dashboard_runtime.mjs")],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("public dashboard lifecycle checks passed", result.stdout)
 
 
 if __name__ == "__main__":

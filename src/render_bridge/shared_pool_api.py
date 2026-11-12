@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import hmac
+from datetime import datetime, timezone
 from typing import Annotated, Literal
 
 from fastapi import Depends, Query, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import Field, StrictBool, StrictStr
 
 from .api import _APIError, _TOKEN, _bounded_body, _json_request
@@ -16,6 +17,7 @@ from .profiles import MAX_PROFILE_OUTPUT_BYTES
 from .schemas import CancelCompletedRequest, Key, StrictRequest, TerminalFailureRequest
 from .shared_pool import SharedNodeIdentity
 from .shared_pool_console import CONSOLE_HTML
+from .shared_pool_dashboard import STATUS_DASHBOARD_HTML
 
 _KEY = Annotated[StrictStr, Field(min_length=1, max_length=128,
                                   pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")]
@@ -95,8 +97,78 @@ def install_shared_pool_routes(app, store, control_token, call_store, *, max_jso
             raise _APIError("unauthorized", 401)
         return identity
 
+    @app.get("/bridge/status/v1")
+    async def public_fleet_status():
+        """Return a deliberately small, unauthenticated fleet-status projection."""
+        source_nodes = await call_store(store.list_shared_nodes)
+        public_nodes = []
+        allowed_profiles = {"fake-image", "codex-image", "midjourney-manual"}
+        for item in source_nodes if source_nodes is not None else ():
+            if not isinstance(item, dict) or item.get("state") not in {"active", "draining"}:
+                continue
+            state = item["state"]
+            liveness = item.get("liveness")
+            has_assignment = isinstance(item.get("current_assignment"), dict)
+            if liveness == "offline":
+                availability = "offline"
+            elif liveness == "needs_attention":
+                availability = "attention"
+            elif liveness == "busy" or has_assignment:
+                availability = "busy"
+            elif state == "draining":
+                availability = "draining"
+            elif state == "active" and liveness == "online":
+                availability = "available"
+            else:
+                availability = "unknown"
+
+            seen_at = item.get("last_seen_at")
+            heartbeat_age = None
+            if isinstance(seen_at, str):
+                try:
+                    observed = datetime.fromisoformat(seen_at.replace("Z", "+00:00"))
+                    if observed.tzinfo is None:
+                        observed = observed.replace(tzinfo=timezone.utc)
+                    heartbeat_age = max(0, int((datetime.now(timezone.utc) - observed).total_seconds()))
+                except ValueError:
+                    pass
+            raw_profiles = item.get("profiles")
+            profiles = sorted({profile for profile in raw_profiles
+                               if isinstance(profile, str) and profile in allowed_profiles}) \
+                if isinstance(raw_profiles, list) else []
+            public_nodes.append({
+                "label": f"Node {len(public_nodes) + 1:02d}",
+                "state": state,
+                "availability": availability,
+                "heartbeat_age_seconds": heartbeat_age,
+                "profiles": profiles,
+            })
+
+        statuses = [item["availability"] for item in public_nodes]
+        summary = {
+            "nodes_total": len(public_nodes),
+            "nodes_online": sum(status not in {"offline", "unknown"} for status in statuses),
+            "nodes_available": statuses.count("available"),
+            "nodes_busy": statuses.count("busy"),
+            "nodes_attention": statuses.count("attention"),
+            "nodes_draining": statuses.count("draining"),
+            "nodes_offline": statuses.count("offline"),
+            "nodes_unknown": statuses.count("unknown"),
+        }
+        return JSONResponse({"summary": summary, "nodes": public_nodes}, headers={
+            "Cache-Control": "no-store",
+        })
+
     @app.get("/bridge/console")
     async def console():
+        return Response(STATUS_DASHBOARD_HTML, media_type="text/html; charset=utf-8", headers={
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+            "Referrer-Policy": "no-referrer",
+            "Cache-Control": "no-store",
+        })
+
+    @app.get("/bridge/operator")
+    async def operator_console():
         return Response(CONSOLE_HTML, media_type="text/html; charset=utf-8", headers={
             "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
             "Referrer-Policy": "no-referrer",

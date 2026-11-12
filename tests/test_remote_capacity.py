@@ -99,11 +99,11 @@ class RemoteCapacityTests(unittest.TestCase):
         locations = [value.strip() for value in re.findall(r'location\s+([^\{]+)\{', text)]
         self.assertEqual(locations, ['/bridge/v1/', '/bridge/node/v1/',
             '/bridge/control/v2/', '/bridge/source/v2/', '/bridge/node/v2/',
-            '= /bridge/console', '/'])
+            '= /bridge/console', '= /bridge/operator', '= /bridge/status/v1', '/'])
         self.assertIn('location / { return 404; }', text)
-        self.assertEqual(text.count('proxy_pass '), 6)
+        self.assertEqual(text.count('proxy_pass '), 8)
         self.assertIn('proxy_pass http://127.0.0.1:8787;', text)
-        self.assertEqual(text.count('proxy_next_upstream off;'), 5)
+        self.assertEqual(text.count('proxy_next_upstream off;'), 7)
         source = re.search(r'location /bridge/v1/ \{(.*?)\n    \}', text, re.S).group(1)
         node = re.search(r'location /bridge/node/v1/ \{(.*?)\n    \}', text, re.S).group(1)
         control_v2 = re.search(r'location /bridge/control/v2/ \{(.*?)\n    \}', text, re.S).group(1)
@@ -117,7 +117,8 @@ class RemoteCapacityTests(unittest.TestCase):
         routed_locations = [location for location in locations if location != '/']
         for blocked in ('/bridge/dispatch/v1/pending', '/admin', '/docs',
                         '/bridge/v1evil/tasks', '/bridge/node/v1evil/tasks',
-                        '/bridge/console/extra'):
+                        '/bridge/console/extra', '/bridge/operator/extra',
+                        '/bridge/status/v1/extra'):
             self.assertFalse(any(
                 blocked == location[2:] if location.startswith('= ')
                 else blocked.startswith(location)

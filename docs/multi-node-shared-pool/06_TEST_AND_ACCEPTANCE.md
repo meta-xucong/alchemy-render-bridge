@@ -33,6 +33,9 @@ Use temporary SQLite databases, FakeRenderer and independent node identities. No
 
 ## Console acceptance
 
+- `/bridge/console` opens without token entry and immediately renders a read-only fleet overview from `/bridge/status/v1`; active/draining and offline nodes are included, revoked history is excluded, and the page refreshes every five seconds while visible.
+- The public status response is an explicit allowlist with no pool, machine, executor, task, workspace, assignment, prompt, media, error-reason or credential fields; the endpoint and page use `no-store`.
+- `/bridge/operator` remains separate from the public board; its fleet data, history, and management actions still require a valid bearer through `/bridge/control/v2/*` APIs, which return 401 without one.
 - Fresh operator can create a pool, create a node invite, pair a FakeRenderer node and see heartbeat/slots.
 - Workspace token sees only its own history and can explicitly accept/revoke pool membership.
 - Console displays queue, assignment and unknown truth from API; no empty state box or false success percentage.
