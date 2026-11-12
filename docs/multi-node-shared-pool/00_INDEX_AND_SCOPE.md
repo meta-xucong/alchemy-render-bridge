@@ -1,7 +1,7 @@
 # Shared Pool: Scope, Audit, and Phase Index
 
 Date: 2026-11-11
-Status: isolated implementation and local acceptance complete; GitHub integration and live-runtime replacement remain release phases.
+Status: shared-pool release is on GitHub main and deployed to the VPS; the current Windows launcher and Fleet auto-refresh improvements are local review work and have not been released.
 
 ## Objective
 
@@ -73,24 +73,18 @@ traffic; it does not mean image execution runs in the API process.
 
 ## Release evidence boundary
 
-This branch starts from Render Bridge GitHub `origin/main` at
-`6a7188816588c71878628438af03a313e77c7602`. Local implementation acceptance,
-GitHub publication, and replacing a running VPS image are separate outcomes.
-The deployment target and live release must be read-only verified before any
-replacement is claimed. Preserve the previous image and SQLite/artifact data.
+The current released baseline is Render Bridge `origin/main` at
+`5c8ac7f291e8b118a74bda95e0a2a4ae1d584eab`. The last read-only VPS check,
+reported in the task context on 2026-11-11 (no standalone receipt is stored in
+this repository), said the Bridge service was running the image tag
+`alchemy-render-bridge:shared-pool-capability-5c8ac7f`, active and enabled.
+At that check, one shared pool and one joined workspace were reported, with one
+online node, one free slot, no queued tasks, and no active assignments. This
+is a point-in-time service snapshot; it does not claim multiple Bridge replicas,
+high availability, or real-image acceptance.
 
-Local acceptance evidence for this branch:
-
-- Full Windows test suite: 348 passed, 1 skipped; the skipped case is the
-  explicitly gated real-provider path. Shared-pool acceptance uses temporary
-  SQLite ledgers and FakeRenderer only.
-- `compileall` and `git diff --check` pass. The only diff-check messages are
-  Git's line-ending notices for existing Windows worktree files.
-- Independent code and release-scope reviews found no remaining blockers after
-  corrections for task provenance, pool identity, runnable queue heads,
-  tenant-safe summaries, bounded history inputs, and isolated cutover checks.
-- GitHub PR #17 was merged as `371d20094d239ca20cf49cb57c24de1d71f76453`
-  after Windows and Ubuntu contract suites and both-platform Hatchet lifecycle
-  checks passed. The live VPS replacement is not claimed: its current service,
-  ledger, artifacts and pending tasks still require read-only verification
-  before the documented cutover gate can pass.
+The current feature worktree adds a dedicated Windows shared-pool Agent
+launcher, Fleet-only browser auto-refresh, and this release-status correction.
+Those changes are not included in `origin/main` or the VPS image until separately
+reviewed and released. Keep GitHub publication and replacing the VPS image as
+distinct release steps; preserve the previous image and SQLite/artifact data.

@@ -581,7 +581,9 @@ class SharedPoolAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Content-Security-Policy", page.headers)
         self.assertNotIn("operator-test", page.text)
         self.assertNotIn("localStorage", page.text)
-        self.assertIn("--state-dir ./renderbridge-node", page.text)
+        self.assertIn("start_shared_pool_node.ps1", page.text)
+        self.assertIn("-Url", page.text)
+        self.assertIn("start_shared_pool_node.bat", page.text)
         self.assertEqual((await self.req("GET", "/bridge/control/v2/summary", token="wrong")).status_code, 401)
 
         pool = (await self.req("POST", "/bridge/control/v2/pools", json={"name": "api fixture"})).json()
