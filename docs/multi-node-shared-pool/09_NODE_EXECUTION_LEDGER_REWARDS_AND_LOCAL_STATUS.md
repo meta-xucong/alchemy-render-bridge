@@ -62,6 +62,7 @@ No legacy task, attempt, receipt, assignment, or public-status schema is rewritt
 - Do not return another node, workspace IDs, prompts, input/output bytes, or credentials.
 - The local Node Agent hosts a loopback-only read-only page at `http://127.0.0.1:<port>/`. The page calls a same-origin local endpoint; the Agent adds its node bearer server-side. The token never reaches browser JavaScript or the page URL.
 - The local page refreshes every five seconds and shows current task state, elapsed time, latest outcomes, and tracked counters since schema-v5 activation. It is independent of the VPS public fleet page.
+- Windows first-run uses a per-node, one-use enrollment package downloaded from the operator console. Place it beside the shared-pool batch launcher; double-click preflights the environment, consumes the package, verifies the saved node identity, and starts the Agent. Every machine needs its own short-lived package; the public launcher contains no reusable pool credential.
 
 ### Alchemy administrator metrics
 
@@ -96,6 +97,6 @@ The operator may attach `provider_ref` when creating a one-use node invitation, 
 5. Exercise concurrent node assignment, multi-node totals, repeated start/commit/ACK, pre-start expiry/reassignment, success, terminal failure, unknown/recovery, cancellation, task/media retention, and delivery ACK acceptance/rejection against a disposable SQLite ledger.
 6. Verify the unauthenticated fleet response remains within its existing allowlist contract; verify no prompt/media/task/workspace data or reward counts leak into it.
 7. Run existing shared-pool and Alchemy admin checks; review API compatibility, no-token behavior, and the default legacy path.
-8. Configure the two dedicated server-side environment variables and deploy Bridge before Alchemy. Read-only live acceptance requires the admin table to show node identity, a recent heartbeat, and totals consistent with Bridge history. Local UI acceptance requires the Node Agent to print a `http://127.0.0.1:<port>/` status URL and display only its own identity and status. The default port is `8766`; `--status-port 0` lets the OS choose an available port.
+8. Configure the two dedicated server-side environment variables and deploy Bridge before Alchemy. Read-only live acceptance requires the admin table to show node identity, a recent heartbeat, and totals consistent with Bridge history. Local UI acceptance requires the Node Agent to print a `http://127.0.0.1:<port>/` status URL and display only its own identity and status. The default port is `8766`; `--status-port 0` lets the OS choose an available port. Windows startup acceptance covers package validation, profile/environment preflight, one-use enrollment, token verification, and foreground start without invitation or consent prompts.
 
 This document defines the implementation and acceptance target, not live deployment or payout acceptance. Production rollout and secret provisioning remain separate release actions.

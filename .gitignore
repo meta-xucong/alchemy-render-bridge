@@ -8,6 +8,7 @@
 *.p12
 credentials/
 secrets/
+scripts/node-enrollment.json
 # Python / tooling
 __pycache__/
 *.py[cod]
