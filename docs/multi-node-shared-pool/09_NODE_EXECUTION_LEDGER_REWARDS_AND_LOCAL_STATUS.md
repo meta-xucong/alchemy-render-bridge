@@ -27,19 +27,20 @@ Add a compact, one-row-per-started-attempt accounting ledger in the Bridge SQLit
 
 ## Counting contract
 
-All values are attempt counts, not image-file counts. An attempt is included in `total_started` exactly once after a start grant (or the corresponding manual-ready boundary). Queue offers, pre-start reassignments, expired-before-start tasks, unsupported profiles, and canceled-before-start tasks are excluded.
+Execution outcome values are attempt counts. `rewardable_images` is the sole image-count metric and sums `artifact_count` for successful attempts whose profile is not `fake-image`. An attempt is included in `total_started` exactly once after a start grant (or the corresponding manual-ready boundary). Queue offers, pre-start reassignments, expired-before-start tasks, unsupported profiles, and canceled-before-start tasks are excluded.
 
 | Metric | Authority | Counting rule |
 |---|---|---|
 | `total_started` | compact node execution ledger | Unique started attempts attributed to this exact node identity since schema-v5 activation |
-| `success` | Bridge receipt commit | One per started attempt whose output receipt is committed as `artifacts_ready` |
+| `succeeded` | Bridge receipt commit | One per started attempt whose output receipt is committed as `artifacts_ready` |
+| `rewardable_images` | Bridge execution ledger | Sum of committed artifact counts for successful non-`fake-image` profiles; `fake-image` fixtures never earn points |
 | `failed` | confirmed terminal-failure record | One per started attempt only after the assigned node's terminal failure is durably confirmed |
 | `in_progress` | current task/assignment state | Started attempts currently running, uploading, or awaiting a manual result |
 | `unknown` | current task/assignment state | Started attempts whose execution outcome is explicitly unknown |
 | `canceled` | cancellation completion record | Started attempts authoritatively canceled after the start boundary |
 | `delivery_ack` | Alchemy receipt ACK | Accepted, rejected, or pending; it is displayed separately and does not rewrite render success |
 
-`total_started` is not presented as `success + failed`; open, unknown, and canceled outcomes remain visible. An output rejected by Alchemy after a valid Bridge receipt remains a render success with a rejected delivery ACK. Reward policy and payout are not encoded in this feature.
+`total_started` is not presented as `success + failed`; open, unknown, and canceled outcomes remain visible. An output rejected by Alchemy after a valid Bridge receipt remains a render success with a rejected delivery ACK. Alchemy owns account-to-node binding and applies its configured reward rate of 0.02 points per `rewardable_images`; the count is derived only from this Bridge ledger metric. Bridge does not own Alchemy accounts, balances, deductions, or payouts.
 
 ## Data model and migration
 
