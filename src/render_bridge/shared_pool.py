@@ -722,7 +722,9 @@ class SharedPoolMixin:
             SUM(state='cancelled') AS canceled,
             SUM(delivery_ack='accepted') AS ack_accepted,
             SUM(delivery_ack='rejected') AS ack_rejected,
-            SUM(state='succeeded' AND delivery_ack IS NULL) AS ack_pending
+            SUM(state='succeeded' AND delivery_ack IS NULL) AS ack_pending,
+            COALESCE(SUM(CASE WHEN state='succeeded' AND profile <> 'fake-image'
+                THEN artifact_count ELSE 0 END),0) AS rewardable_images
             FROM node_execution_ledger WHERE pool_id=? AND node_id=? AND executor=?""",
                             (pool_id, node_id, executor)).fetchone()
         return {key: int(row[key] or 0) for key in row.keys()}

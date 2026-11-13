@@ -82,7 +82,7 @@ class SharedPoolStoreTests(unittest.TestCase):
         self.pool_rng = FirstChoice()
         self.store = BridgeStore(self.root / "ledger.db", self.root / "objects",
                                  clock=lambda: self.now, dispatch_mode="node_pull",
-                                 enabled_profiles=("fake-image", "midjourney-manual"),
+                                 enabled_profiles=("fake-image", "midjourney-manual", "codex-image"),
                                  max_queued_tasks=100, shared_pool_enabled=True,
                                  pool_rng=self.pool_rng)
         self.pool = self.store.create_shared_pool("fixture pool")["pool_id"]
@@ -192,6 +192,51 @@ class SharedPoolStoreTests(unittest.TestCase):
         self.assertEqual(final_status["metrics"]["succeeded"], 1)
         self.assertEqual(final_status["metrics"]["ack_accepted"], 1)
         self.assertEqual(final_status["metrics"]["ack_pending"], 0)
+
+    def test_rewardable_image_count_counts_real_artifacts_and_excludes_fake(self):
+        fake_identity, _ = self.add_node(1, profiles=("fake-image",))
+        fake_scope, _ = self.add_workspace(1)
+        fake_task_id = self.create_task(fake_scope, "reward-fake")
+        fake_assignment = self.store.next_shared_assignment(fake_identity)["assignment"]
+        fake_claim = self.store.claim_shared_assignment(fake_identity, fake_assignment["assignment_id"])
+        fake_grant = self.store.start_shared_execution(
+            fake_identity, fake_assignment["assignment_id"], fake_claim["claim_id"])
+        content = fixture_png(32, 32)
+        fake_upload = self.store.create_assigned_upload(
+            fake_identity, fake_assignment["assignment_id"], fake_task_id, fake_claim["claim_id"],
+            {"attempt_id": fake_grant["attempt_id"], "slot_id": "primary",
+             "size": len(content), "mime_type": "image/png"})
+        self.store.put_assigned_upload_content(
+            fake_identity, fake_assignment["assignment_id"], fake_upload["upload_id"],
+            fake_claim["claim_id"], content)
+        self.store.commit_assigned_upload(
+            fake_identity, fake_assignment["assignment_id"], fake_upload["upload_id"],
+            fake_claim["claim_id"])
+        fake_metrics = self.store.shared_node_self_status(fake_identity)["metrics"]
+        self.assertEqual(fake_metrics["succeeded"], 1)
+        self.assertEqual(fake_metrics["rewardable_images"], 0)
+
+        real_identity, _ = self.add_node(2, profiles=("codex-image",))
+        real_scope, _ = self.add_workspace(2)
+        real_task_id = self.store.create_task(
+            real_scope, task_payload("reward-real", self.now, profile_id="codex-image"))["remote_task_id"]
+        real_assignment = self.store.next_shared_assignment(real_identity)["assignment"]
+        real_claim = self.store.claim_shared_assignment(real_identity, real_assignment["assignment_id"])
+        real_grant = self.store.start_shared_execution(
+            real_identity, real_assignment["assignment_id"], real_claim["claim_id"])
+        real_upload = self.store.create_assigned_upload(
+            real_identity, real_assignment["assignment_id"], real_task_id, real_claim["claim_id"],
+            {"attempt_id": real_grant["attempt_id"], "slot_id": "primary",
+             "size": len(content), "mime_type": "image/png"})
+        self.store.put_assigned_upload_content(
+            real_identity, real_assignment["assignment_id"], real_upload["upload_id"],
+            real_claim["claim_id"], content)
+        self.store.commit_assigned_upload(
+            real_identity, real_assignment["assignment_id"], real_upload["upload_id"],
+            real_claim["claim_id"])
+        real_metrics = self.store.shared_node_self_status(real_identity)["metrics"]
+        self.assertEqual(real_metrics["succeeded"], 1)
+        self.assertEqual(real_metrics["rewardable_images"], 1)
 
     def create_task(self, scope, origin):
         return self.store.create_task(scope, task_payload(origin, self.now))["remote_task_id"]
@@ -645,6 +690,7 @@ class SharedPoolAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metrics.status_code, 200, metrics.text)
         self.assertEqual(metrics.headers.get("vary"), "Authorization")
         self.assertEqual(metrics.json()["nodes"][0]["provider_ref"], "provider-22")
+        self.assertEqual(metrics.json()["nodes"][0]["metrics"]["rewardable_images"], 0)
         self.assertNotIn(node_token, metrics.text)
         self.assertNotIn(self.reward_read_token, metrics.text)
 
