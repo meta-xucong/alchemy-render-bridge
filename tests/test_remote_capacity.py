@@ -99,24 +99,30 @@ class RemoteCapacityTests(unittest.TestCase):
         locations = [value.strip() for value in re.findall(r'location\s+([^\{]+)\{', text)]
         self.assertEqual(locations, ['/bridge/v1/', '/bridge/node/v1/',
             '/bridge/control/v2/', '/bridge/source/v2/', '/bridge/node/v2/',
+            '= /bridge/rewards/v1/nodes',
             '= /bridge/console', '= /bridge/operator', '= /bridge/status/v1', '/'])
         self.assertIn('location / { return 404; }', text)
-        self.assertEqual(text.count('proxy_pass '), 8)
+        self.assertEqual(text.count('proxy_pass '), 9)
         self.assertIn('proxy_pass http://127.0.0.1:8787;', text)
-        self.assertEqual(text.count('proxy_next_upstream off;'), 7)
+        self.assertEqual(text.count('proxy_next_upstream off;'), 8)
         source = re.search(r'location /bridge/v1/ \{(.*?)\n    \}', text, re.S).group(1)
         node = re.search(r'location /bridge/node/v1/ \{(.*?)\n    \}', text, re.S).group(1)
         control_v2 = re.search(r'location /bridge/control/v2/ \{(.*?)\n    \}', text, re.S).group(1)
         source_v2 = re.search(r'location /bridge/source/v2/ \{(.*?)\n    \}', text, re.S).group(1)
         node_v2 = re.search(r'location /bridge/node/v2/ \{(.*?)\n    \}', text, re.S).group(1)
+        rewards = re.search(r'location = /bridge/rewards/v1/nodes \{(.*?)\n    \}', text, re.S).group(1)
         self.assertIn('client_max_body_size 32m;', source)
         self.assertIn('client_max_body_size 16m;', node)
         self.assertIn('client_max_body_size 2m;', control_v2)
         self.assertIn('client_max_body_size 2m;', source_v2)
         self.assertIn('client_max_body_size 32m;', node_v2)
+        self.assertIn('limit_except GET { deny all; }', rewards)
+        self.assertIn('proxy_set_header Authorization $http_authorization;', rewards)
+        self.assertIn('client_max_body_size 2m;', rewards)
         routed_locations = [location for location in locations if location != '/']
         for blocked in ('/bridge/dispatch/v1/pending', '/admin', '/docs',
                         '/bridge/v1evil/tasks', '/bridge/node/v1evil/tasks',
+                        '/bridge/rewards/v1/nodes/extra', '/bridge/rewards/v1/other',
                         '/bridge/console/extra', '/bridge/operator/extra',
                         '/bridge/status/v1/extra'):
             self.assertFalse(any(
