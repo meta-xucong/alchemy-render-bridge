@@ -99,9 +99,10 @@ class SharedPoolStoreTests(unittest.TestCase):
         return scope, credential["source_token"]
 
     def add_node(self, index, profiles=("fake-image",), *, pool_id=None,
-                 node_id=None, executor_instance=None):
+                 node_id=None, executor_instance=None, provider_ref=None):
         profiles = list(profiles)
-        invite = self.store.create_shared_invite(pool_id or self.pool, "node", profiles=profiles)
+        invite = self.store.create_shared_invite(pool_id or self.pool, "node", profiles=profiles,
+                                                 provider_ref=provider_ref)
         paired = self.store.enroll_shared_node(invite["invite_code"], node_id or f"node-{index}",
                                               executor_instance or f"executor-{index}", profiles,
                                               accept_shared_data=True)
@@ -114,6 +115,83 @@ class SharedPoolStoreTests(unittest.TestCase):
                                            profile_health=reports or None)
         self.identities.append(identity)
         return identity, paired["node_token"]
+
+    def test_node_execution_ledger_counts_only_started_attempts_and_updates_idempotently(self):
+        identity, _ = self.add_node(1, provider_ref="provider-17")
+        scope, _ = self.add_workspace(1)
+        task_id = self.create_task(scope, "ledger-accounting")
+
+        assignment = self.store.next_shared_assignment(identity)["assignment"]
+        claim = self.store.claim_shared_assignment(identity, assignment["assignment_id"])
+        before_start = self.store.shared_node_self_status(identity)
+        self.assertEqual(before_start["metrics"]["total_started"], 0)
+        self.assertFalse(before_start["current_execution"]["counted"])
+        self.assertIsNone(before_start["current_execution"]["started_at"])
+
+        grant = self.store.start_shared_execution(identity, assignment["assignment_id"], claim["claim_id"])
+        replay = self.store.start_shared_execution(identity, assignment["assignment_id"], claim["claim_id"])
+        self.assertTrue(grant["may_execute"])
+        self.assertFalse(replay["may_execute"])
+        status = self.store.shared_node_self_status(identity)
+        self.assertEqual(status["node"]["provider_ref"], "provider-17")
+        self.assertEqual(status["metrics"]["total_started"], 1)
+        self.assertEqual(status["metrics"]["in_progress"], 1)
+        self.assertEqual(status["current_execution"]["state"], "running")
+
+        self.store.mark_shared_execution_unknown(identity, assignment["assignment_id"], claim["claim_id"])
+        status = self.store.shared_node_self_status(identity)
+        self.assertEqual(status["metrics"]["total_started"], 1)
+        self.assertEqual(status["metrics"]["unknown"], 1)
+        self.assertEqual(status["metrics"]["failed"], 0)
+        self.assertEqual(status["recent_executions"][0]["state"], "execution_unknown")
+        self.assertEqual(self.store.shared_node_reward_metrics()["nodes"][0]["metrics"],
+                         status["metrics"])
+
+    def test_manual_ready_counts_once_and_stays_awaiting_user(self):
+        identity, _ = self.add_node(1, ("midjourney-manual",))
+        scope, _ = self.add_workspace(1)
+        task_id = self.store.create_task(scope, task_payload(
+            "manual-ledger", self.now, profile_id="midjourney-manual"))["remote_task_id"]
+        assignment = self.store.next_shared_assignment(identity)["assignment"]
+        self.assertEqual(assignment["task_id"], task_id)
+        claim = self.store.claim_shared_assignment(identity, assignment["assignment_id"])
+        self.store.manual_ready_shared(identity, assignment["assignment_id"], claim["claim_id"])
+        self.store.manual_ready_shared(identity, assignment["assignment_id"], claim["claim_id"])
+        status = self.store.shared_node_self_status(identity)
+        self.assertEqual(status["metrics"]["total_started"], 1)
+        self.assertEqual(status["metrics"]["awaiting_user"], 1)
+        self.assertEqual(status["metrics"]["failed"], 0)
+
+    def test_committed_receipt_counts_success_once_and_ack_is_separate(self):
+        identity, _ = self.add_node(1)
+        scope, _ = self.add_workspace(1)
+        task_id = self.create_task(scope, "ledger-success")
+        assignment = self.store.next_shared_assignment(identity)["assignment"]
+        claim = self.store.claim_shared_assignment(identity, assignment["assignment_id"])
+        grant = self.store.start_shared_execution(identity, assignment["assignment_id"], claim["claim_id"])
+        content = fixture_png(32, 32)
+        upload = self.store.create_assigned_upload(identity, assignment["assignment_id"], task_id,
+            claim["claim_id"], {"attempt_id": grant["attempt_id"], "slot_id": "primary",
+                                 "size": len(content), "mime_type": "image/png"})
+        self.store.put_assigned_upload_content(identity, assignment["assignment_id"],
+            upload["upload_id"], claim["claim_id"], content)
+        receipt = self.store.commit_assigned_upload(identity, assignment["assignment_id"],
+            upload["upload_id"], claim["claim_id"])
+        status = self.store.shared_node_self_status(identity)
+        self.assertEqual(status["metrics"]["total_started"], 1)
+        self.assertEqual(status["metrics"]["succeeded"], 1)
+        self.assertEqual(status["metrics"]["failed"], 0)
+        self.assertEqual(status["metrics"]["ack_pending"], 1)
+
+        ack = {"client_receipt_id": "alchemy-receipt-fixture", "decision": "accepted",
+               "reason_code": "fixture_accepted"}
+        self.store.ack_receipt(scope, receipt["receipt_id"], ack)
+        self.store.ack_receipt(scope, receipt["receipt_id"], ack)
+        final_status = self.store.shared_node_self_status(identity)
+        self.assertEqual(final_status["metrics"]["total_started"], 1)
+        self.assertEqual(final_status["metrics"]["succeeded"], 1)
+        self.assertEqual(final_status["metrics"]["ack_accepted"], 1)
+        self.assertEqual(final_status["metrics"]["ack_pending"], 0)
 
     def create_task(self, scope, origin):
         return self.store.create_task(scope, task_payload(origin, self.now))["remote_task_id"]
@@ -525,8 +603,10 @@ class SharedPoolAPITests(unittest.IsolatedAsyncioTestCase):
                                  clock=lambda: self.now, dispatch_mode="node_pull",
                                  enabled_profiles=("fake-image", "midjourney-manual"),
                                  max_queued_tasks=100, shared_pool_enabled=True)
+        self.reward_read_token = "reward-read-test-token"
         self.app = create_app(store=self.store, source_tokens={}, shared_pool_enabled=True,
-                              control_token="operator-test", store_concurrency=16)
+                              control_token="operator-test", reward_read_token=self.reward_read_token,
+                              store_concurrency=16)
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),
                                         base_url="http://127.0.0.1")
 
@@ -537,6 +617,42 @@ class SharedPoolAPITests(unittest.IsolatedAsyncioTestCase):
     async def req(self, method, path, token="operator-test", **kwargs):
         headers = {"Authorization": "Bearer " + token, **kwargs.pop("headers", {})}
         return await self.client.request(method, path, headers=headers, **kwargs)
+
+    async def test_reward_and_node_status_credentials_are_separate_and_public_projection_is_redacted(self):
+        pool = (await self.req("POST", "/bridge/control/v2/pools",
+                               json={"name": "reward fixture"})).json()
+        invite = await self.req("POST", f"/bridge/control/v2/pools/{pool['pool_id']}/invites",
+            json={"kind": "node", "profiles": ["fake-image"], "provider_ref": "provider-22"})
+        self.assertEqual(invite.status_code, 200, invite.text)
+        enrolled = await self.client.post("/bridge/node/v2/enroll", json={
+            "invite_code": invite.json()["invite_code"], "node_id": "reward-node",
+            "executor_instance": "reward-executor", "profiles": ["fake-image"],
+            "accept_shared_data": True})
+        self.assertEqual(enrolled.status_code, 200, enrolled.text)
+        node_token = enrolled.json()["node_token"]
+
+        self.assertEqual((await self.client.get("/bridge/node/v2/status")).status_code, 401)
+        node_status = await self.req("GET", "/bridge/node/v2/status", token=node_token)
+        self.assertEqual(node_status.status_code, 200, node_status.text)
+        self.assertEqual(node_status.json()["node"]["node_id"], "reward-node")
+        self.assertEqual(node_status.json()["node"]["provider_ref"], "provider-22")
+        self.assertEqual(node_status.headers.get("cache-control"), "no-store")
+
+        reward_path = "/bridge/rewards/v1/nodes"
+        self.assertEqual((await self.client.get(reward_path)).status_code, 401)
+        self.assertEqual((await self.req("GET", reward_path)).status_code, 401)
+        metrics = await self.req("GET", reward_path, token=self.reward_read_token)
+        self.assertEqual(metrics.status_code, 200, metrics.text)
+        self.assertEqual(metrics.headers.get("vary"), "Authorization")
+        self.assertEqual(metrics.json()["nodes"][0]["provider_ref"], "provider-22")
+        self.assertNotIn(node_token, metrics.text)
+        self.assertNotIn(self.reward_read_token, metrics.text)
+
+        public = await self.client.get("/bridge/status/v1")
+        self.assertEqual(public.status_code, 200)
+        self.assertNotIn("provider_ref", public.text)
+        self.assertNotIn("total_started", public.text)
+        self.assertNotIn("reward-executor", public.text)
 
     async def test_v1_capabilities_use_shared_pool_node_readiness(self):
         pool = (await self.req("POST", "/bridge/control/v2/pools",

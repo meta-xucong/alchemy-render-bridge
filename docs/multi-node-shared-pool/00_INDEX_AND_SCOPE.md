@@ -70,6 +70,7 @@ traffic; it does not mean image execution runs in the API process.
 | [06 Test and acceptance](06_TEST_AND_ACCEPTANCE.md) | Regression matrix and release evidence |
 | [07 Release and rollback](07_RELEASE_AND_ROLLBACK.md) | GitHub and existing-service replacement procedure |
 | [08 Implementation audit](08_IMPLEMENTATION_AUDIT_AND_CORRECTION_MODEL.md) | Root-cause model, authority boundaries, and regression evidence |
+| [09 Execution ledger and local status](09_NODE_EXECUTION_LEDGER_REWARDS_AND_LOCAL_STATUS.md) | Per-node execution accounting, Alchemy admin projection, and local node self-status |
 
 ## Release evidence boundary
 

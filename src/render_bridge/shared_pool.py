@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import re
 import secrets
 import base64
 
@@ -42,6 +43,8 @@ class SharedPoolMixin:
                 code_hash TEXT PRIMARY KEY, pool_id TEXT NOT NULL, kind TEXT NOT NULL,
                 profiles TEXT NOT NULL, created REAL NOT NULL, expires REAL NOT NULL,
                 consumed REAL, consumed_by TEXT);
+            CREATE TABLE IF NOT EXISTS shared_invite_metadata (
+                code_hash TEXT PRIMARY KEY, provider_ref TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS shared_source_credentials (
                 token_hash TEXT PRIMARY KEY, source TEXT NOT NULL, workspace TEXT NOT NULL,
                 created REAL NOT NULL, revoked REAL);
@@ -49,6 +52,10 @@ class SharedPoolMixin:
                 pool_id TEXT NOT NULL, node_id TEXT NOT NULL, executor TEXT NOT NULL,
                 state TEXT NOT NULL, slots INTEGER NOT NULL, allowed_profiles TEXT NOT NULL,
                 created REAL NOT NULL, revoked REAL,
+                PRIMARY KEY(pool_id,node_id,executor));
+            CREATE TABLE IF NOT EXISTS shared_node_metadata (
+                pool_id TEXT NOT NULL, node_id TEXT NOT NULL, executor TEXT NOT NULL,
+                provider_ref TEXT NOT NULL,
                 PRIMARY KEY(pool_id,node_id,executor));
             CREATE TABLE IF NOT EXISTS shared_node_credentials (
                 token_hash TEXT PRIMARY KEY, pool_id TEXT NOT NULL, node_id TEXT NOT NULL,
@@ -73,6 +80,12 @@ class SharedPoolMixin:
                 id INTEGER PRIMARY KEY AUTOINCREMENT, pool_id TEXT NOT NULL,
                 occurred REAL NOT NULL, kind TEXT NOT NULL, source TEXT, workspace TEXT,
                 node_id TEXT, task_id TEXT, assignment_id TEXT, reason TEXT);
+            CREATE TABLE IF NOT EXISTS node_execution_ledger (
+                attempt_key TEXT PRIMARY KEY, pool_id TEXT NOT NULL, node_id TEXT NOT NULL,
+                executor TEXT NOT NULL, profile TEXT NOT NULL, state TEXT NOT NULL,
+                started_at REAL NOT NULL, updated_at REAL NOT NULL, completed_at REAL,
+                artifact_count INTEGER NOT NULL DEFAULT 0, failure_code TEXT,
+                delivery_ack TEXT, delivery_ack_at REAL);
             CREATE INDEX IF NOT EXISTS shared_workspaces_by_scope
                 ON shared_workspaces(source,workspace,state,pool_id);
             CREATE INDEX IF NOT EXISTS shared_nodes_by_pool
@@ -117,12 +130,49 @@ class SharedPoolMixin:
             if version < 4:
                 con.execute("INSERT OR IGNORE INTO shared_schema_version(version,applied) VALUES(4,?)",
                             (self.clock(),))
+            version = con.execute("SELECT MAX(version) FROM shared_schema_version").fetchone()[0]
+            if version < 5:
+                con.execute("CREATE INDEX IF NOT EXISTS node_execution_by_node_time "
+                            "ON node_execution_ledger(pool_id,node_id,executor,started_at DESC)")
+                con.execute("INSERT OR IGNORE INTO shared_schema_version(version,applied) VALUES(5,?)",
+                            (self.clock(),))
 
     @staticmethod
     def _shared_hash(token):
         if not isinstance(token, str) or not token or len(token) > 4096:
             return None
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def _record_node_execution_start(self, con, attempt_id, identity, profile, state):
+        """Persist one countable start; a digest keeps the raw attempt/task ID out of metrics."""
+        key = self._shared_hash(attempt_id)
+        now = self.clock()
+        con.execute("INSERT OR IGNORE INTO node_execution_ledger "
+                    "(attempt_key,pool_id,node_id,executor,profile,state,started_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (key, identity.pool_id, identity.node_id, identity.executor_instance,
+                     profile, state, now, now))
+
+    def _update_node_execution(self, con, attempt_id, *, state=None, completed=False,
+                               artifact_count=None, failure_code=None):
+        key = self._shared_hash(attempt_id)
+        values = ["updated_at=?"]
+        params = [self.clock()]
+        if state is not None:
+            values.append("state=?")
+            params.append(state)
+        if completed:
+            values.append("completed_at=COALESCE(completed_at,?)")
+            params.append(self.clock())
+        if artifact_count is not None:
+            values.append("artifact_count=?")
+            params.append(artifact_count)
+        if failure_code is not None:
+            values.append("failure_code=?")
+            params.append(failure_code)
+        params.append(key)
+        con.execute("UPDATE node_execution_ledger SET " + ",".join(values) +
+                    " WHERE attempt_key=?", params)
 
     @staticmethod
     def _pool_scope(pool_id):
@@ -201,10 +251,14 @@ class SharedPoolMixin:
                                  source=source, workspace=workspace)
         return {"revoked_count": len(rows)}
 
-    def create_shared_invite(self, pool_id, kind, *, ttl_seconds=3600, profiles=None):
+    def create_shared_invite(self, pool_id, kind, *, ttl_seconds=3600, profiles=None,
+                             provider_ref=None):
         from .domain import _fail, _text
         if kind not in {"workspace", "node"}:
             _fail("invalid_invite_kind")
+        if provider_ref is not None and (kind != "node" or not isinstance(provider_ref, str)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}", provider_ref)):
+            _fail("invalid_provider_ref")
         if type(ttl_seconds) is not int or not 60 <= ttl_seconds <= 86400:
             _fail("invalid_invite_ttl")
         profiles = list(profiles or ("fake-image",)) if kind == "node" else []
@@ -214,12 +268,18 @@ class SharedPoolMixin:
             _fail("invalid_node_profiles")
         code = "brg_inv_" + secrets.token_urlsafe(24)
         with self._transaction() as con:
+            con.execute("DELETE FROM shared_invite_metadata WHERE code_hash IN "
+                        "(SELECT code_hash FROM shared_invites WHERE consumed IS NOT NULL OR expires<=?)",
+                        (self.clock(),))
             pool = con.execute("SELECT active FROM shared_pools WHERE pool_id=?", (pool_id,)).fetchone()
             if pool is None or not pool["active"]:
                 _fail("not_found", 404)
             con.execute("INSERT INTO shared_invites VALUES(?,?,?,?,?,?,NULL,NULL)",
                         (self._shared_hash(code), pool_id, kind, json.dumps(profiles),
                          self.clock(), self.clock() + ttl_seconds))
+            if provider_ref is not None:
+                con.execute("INSERT INTO shared_invite_metadata VALUES(?,?)",
+                            (self._shared_hash(code), provider_ref))
         return {"invite_code": code, "kind": kind, "expires_at": self.clock() + ttl_seconds,
                 "shown_once": True}
 
@@ -338,6 +398,12 @@ class SharedPoolMixin:
             con.execute("INSERT INTO shared_nodes VALUES(?,?,?,?,?,?,?,NULL)",
                         (invite["pool_id"], node_id, executor_instance, "active", 1,
                          json.dumps(profiles), now))
+            metadata = con.execute("SELECT provider_ref FROM shared_invite_metadata WHERE code_hash=?",
+                                   (code_digest,)).fetchone()
+            if metadata is not None:
+                con.execute("INSERT INTO shared_node_metadata VALUES(?,?,?,?)",
+                            (invite["pool_id"], node_id, executor_instance, metadata["provider_ref"]))
+                con.execute("DELETE FROM shared_invite_metadata WHERE code_hash=?", (code_digest,))
             con.execute("INSERT INTO shared_node_credentials VALUES(?,?,?,?,?,NULL)",
                         (digest, invite["pool_id"], node_id, executor_instance, now))
             pool_scope = self._pool_scope(invite["pool_id"])
@@ -622,16 +688,20 @@ class SharedPoolMixin:
         with self._read_transaction() as con:
             rows = con.execute("""SELECT n.pool_id,p.name AS pool_name,n.node_id,n.executor,n.state,
                 n.allowed_profiles,s.seen,s.state AS heartbeat_state,s.profiles,
+                nm.provider_ref,
                 a.assignment_id,a.task_id,a.state AS assignment_state,a.slot,
                 t.workspace,t.state AS task_state,t.payload AS task_payload
                 FROM shared_nodes n JOIN shared_pools p ON p.pool_id=n.pool_id
+                LEFT JOIN shared_node_metadata nm ON nm.pool_id=n.pool_id AND nm.node_id=n.node_id
+                  AND nm.executor=n.executor
                 LEFT JOIN shared_node_status s ON s.pool_id=n.pool_id AND s.node_id=n.node_id AND s.executor=n.executor
                 LEFT JOIN shared_assignments a ON a.pool_id=n.pool_id AND a.node_id=n.node_id AND a.executor=n.executor
                   AND a.state IN (""" + SLOT_HOLDING_SQL + ") "
                 "LEFT JOIN tasks t ON t.id=a.task_id ORDER BY p.created,n.created,n.node_id").fetchall()
         return [{"pool_id": r["pool_id"], "pool_name": r["pool_name"],
                  "node_id": r["node_id"], "executor_instance": r["executor"],
-                 "state": r["state"], "liveness": ("offline" if r["seen"] is None or not 0 <= now-r["seen"] < 90
+                 "state": r["state"], "provider_ref": r["provider_ref"],
+                 "liveness": ("offline" if r["seen"] is None or not 0 <= now-r["seen"] < 90
                             else "needs_attention" if r["heartbeat_state"] == "attention"
                             else "busy" if r["heartbeat_state"] == "busy" else "online"),
                  "last_seen_at": _utc(r["seen"]) if r["seen"] is not None else None,
@@ -641,6 +711,120 @@ class SharedPoolMixin:
                       "workspace_id": r["workspace"], "task_state": r["task_state"],
                       "assignment_state": r["assignment_state"], "slot": r["slot"]}
                      if r["assignment_id"] else None)} for r in rows]
+
+    @staticmethod
+    def _node_execution_counts(con, pool_id, node_id, executor):
+        row = con.execute("""SELECT COUNT(*) AS total_started,
+            SUM(state='succeeded') AS succeeded, SUM(state='failed') AS failed,
+            SUM(state IN ('running','uploading')) AS in_progress,
+            SUM(state='awaiting_user') AS awaiting_user,
+            SUM(state='execution_unknown') AS unknown,
+            SUM(state='cancelled') AS canceled,
+            SUM(delivery_ack='accepted') AS ack_accepted,
+            SUM(delivery_ack='rejected') AS ack_rejected,
+            SUM(state='succeeded' AND delivery_ack IS NULL) AS ack_pending
+            FROM node_execution_ledger WHERE pool_id=? AND node_id=? AND executor=?""",
+                            (pool_id, node_id, executor)).fetchone()
+        return {key: int(row[key] or 0) for key in row.keys()}
+
+    @staticmethod
+    def _shared_tracking_since(con):
+        from .domain import _utc
+        row = con.execute("SELECT applied FROM shared_schema_version WHERE version=5").fetchone()
+        return _utc(row["applied"]) if row is not None else None
+
+    def _node_current_execution(self, con, pool_id, node_id, executor):
+        from .domain import _utc
+        row = con.execute("""SELECT a.attempt_id,a.profile,a.state AS assignment_state,
+            a.assigned,a.started,t.state AS task_state FROM shared_assignments a
+            LEFT JOIN tasks t ON t.id=a.task_id WHERE a.pool_id=? AND a.node_id=? AND a.executor=?
+            AND a.state IN (""" + ACTIVE_ASSIGNMENT_SQL + ") ORDER BY a.assigned DESC LIMIT 1",
+                          (pool_id, node_id, executor)).fetchone()
+        if row is None:
+            return None
+        ledger = con.execute("SELECT state,started_at FROM node_execution_ledger WHERE attempt_key=?",
+                             (self._shared_hash(row["attempt_id"]),)).fetchone()
+        state = ledger["state"] if ledger is not None else row["task_state"] or row["assignment_state"]
+        started_at = ledger["started_at"] if ledger is not None else row["started"]
+        return {"state": state, "profile": row["profile"],
+                "assigned_at": _utc(row["assigned"]),
+                "started_at": _utc(started_at) if started_at is not None else None,
+                "counted": ledger is not None}
+
+    def shared_node_self_status(self, identity):
+        from .domain import _fail, _utc
+        now = self.clock()
+        with self._read_transaction() as con:
+            node = con.execute("""SELECT n.state,n.allowed_profiles,s.seen,s.state AS heartbeat_state,
+                s.profiles,nm.provider_ref FROM shared_nodes n
+                LEFT JOIN shared_node_status s ON s.pool_id=n.pool_id AND s.node_id=n.node_id AND s.executor=n.executor
+                LEFT JOIN shared_node_metadata nm ON nm.pool_id=n.pool_id AND nm.node_id=n.node_id
+                  AND nm.executor=n.executor
+                WHERE n.pool_id=? AND n.node_id=? AND n.executor=?""",
+                               (identity.pool_id, identity.node_id, identity.executor_instance)).fetchone()
+            if node is None:
+                _fail("node_not_registered", 404)
+            metrics = self._node_execution_counts(con, identity.pool_id, identity.node_id,
+                                                  identity.executor_instance)
+            tracking_since = self._shared_tracking_since(con)
+            current = self._node_current_execution(con, identity.pool_id, identity.node_id,
+                                                   identity.executor_instance)
+            rows = con.execute("""SELECT profile,state,started_at,updated_at,completed_at,
+                artifact_count,failure_code,delivery_ack,delivery_ack_at
+                FROM node_execution_ledger WHERE pool_id=? AND node_id=? AND executor=?
+                ORDER BY started_at DESC LIMIT 10""",
+                               (identity.pool_id, identity.node_id, identity.executor_instance)).fetchall()
+        heartbeat_age = max(0, int(now - node["seen"])) if node["seen"] is not None else None
+        heartbeat_state = ("offline" if heartbeat_age is None or heartbeat_age >= 90
+                           else node["heartbeat_state"])
+        return {"node": {"pool_id": identity.pool_id, "node_id": identity.node_id,
+                          "executor_instance": identity.executor_instance,
+                          "provider_ref": node["provider_ref"], "state": node["state"],
+                          "availability": heartbeat_state,
+                          "heartbeat_age_seconds": heartbeat_age,
+                          "last_seen_at": _utc(node["seen"]) if node["seen"] is not None else None,
+                          "profiles": json.loads(node["profiles"] or node["allowed_profiles"])},
+                "tracking_since": tracking_since, "current_execution": current, "metrics": metrics,
+                "recent_executions": [{"profile": r["profile"], "state": r["state"],
+                    "started_at": _utc(r["started_at"]), "updated_at": _utc(r["updated_at"]),
+                    "completed_at": _utc(r["completed_at"]) if r["completed_at"] is not None else None,
+                    "artifact_count": r["artifact_count"], "failure_code": r["failure_code"],
+                    "delivery_ack": r["delivery_ack"],
+                    "delivery_ack_at": _utc(r["delivery_ack_at"]) if r["delivery_ack_at"] is not None else None}
+                    for r in rows]}
+
+    def shared_node_reward_metrics(self, limit=500):
+        from .domain import _utc
+        now = self.clock()
+        with self._read_transaction() as con:
+            tracking_since = self._shared_tracking_since(con)
+            nodes = con.execute("""SELECT n.pool_id,p.name AS pool_name,n.node_id,n.executor,n.state,
+                n.allowed_profiles,s.seen,s.state AS heartbeat_state,s.profiles,nm.provider_ref
+                FROM shared_nodes n JOIN shared_pools p ON p.pool_id=n.pool_id
+                LEFT JOIN shared_node_status s ON s.pool_id=n.pool_id AND s.node_id=n.node_id AND s.executor=n.executor
+                LEFT JOIN shared_node_metadata nm ON nm.pool_id=n.pool_id AND nm.node_id=n.node_id
+                  AND nm.executor=n.executor
+                ORDER BY p.created,n.created,n.node_id LIMIT ?""", (limit + 1,)).fetchall()
+            truncated = len(nodes) > limit
+            nodes = nodes[:limit]
+            items = []
+            for node in nodes:
+                counts = self._node_execution_counts(con, node["pool_id"], node["node_id"], node["executor"])
+                current = self._node_current_execution(con, node["pool_id"], node["node_id"], node["executor"])
+                seen = node["seen"]
+                age = max(0, int(now - seen)) if seen is not None else None
+                liveness = ("offline" if age is None or age >= 90 else
+                            "needs_attention" if node["heartbeat_state"] == "attention" else
+                            "busy" if node["heartbeat_state"] == "busy" else "online")
+                items.append({"pool_id": node["pool_id"], "pool_name": node["pool_name"],
+                    "node_id": node["node_id"], "executor_instance": node["executor"],
+                    "provider_ref": node["provider_ref"], "node_state": node["state"],
+                    "liveness": liveness, "heartbeat_age_seconds": age,
+                    "last_seen_at": _utc(seen) if seen is not None else None,
+                    "profiles": json.loads(node["profiles"] or node["allowed_profiles"]),
+                    "current_execution": current, "metrics": counts})
+        return {"tracking": "since_schema_v5_activation", "tracking_since": tracking_since,
+                "truncated": truncated, "nodes": items}
 
     def set_shared_node_state(self, pool_id, node_id, executor, state):
         from .domain import _fail
@@ -660,6 +844,23 @@ class SharedPoolMixin:
             self._pool_event(con, pool_id, kind, node_id=node_id)
             self._release_expired_shared_assignments(con, self.clock())
         return {"node_id": node_id, "state": state}
+
+    def set_shared_node_provider_ref(self, pool_id, node_id, executor, provider_ref):
+        from .domain import _fail
+        if provider_ref is not None and (not isinstance(provider_ref, str)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}", provider_ref)):
+            _fail("invalid_provider_ref")
+        with self._transaction() as con:
+            if con.execute("SELECT 1 FROM shared_nodes WHERE pool_id=? AND node_id=? AND executor=?",
+                           (pool_id, node_id, executor)).fetchone() is None:
+                _fail("node_not_registered", 404)
+            if provider_ref is None:
+                con.execute("DELETE FROM shared_node_metadata WHERE pool_id=? AND node_id=? AND executor=?",
+                            (pool_id, node_id, executor))
+            else:
+                con.execute("INSERT OR REPLACE INTO shared_node_metadata VALUES(?,?,?,?)",
+                            (pool_id, node_id, executor, provider_ref))
+        return {"node_id": node_id, "provider_ref": provider_ref}
 
     @staticmethod
     def _history_cursor(cursor):
@@ -760,6 +961,10 @@ class SharedPoolMixin:
         from .domain import _integer, SourceScope
         _integer(retention_seconds, 1, 365 * 86400)
         _integer(batch_size, 1, 100)
+        with self._transaction() as con:
+            con.execute("DELETE FROM shared_invite_metadata WHERE code_hash IN "
+                        "(SELECT code_hash FROM shared_invites WHERE consumed IS NOT NULL OR expires<=?)",
+                        (self.clock(),))
         with self._read_transaction() as con:
             scopes = con.execute("SELECT DISTINCT t.source,t.workspace FROM tasks t JOIN shared_workspaces m "
                                  "ON m.source=t.source AND m.workspace=t.workspace "
@@ -1067,6 +1272,8 @@ class SharedPoolMixin:
             con.execute("UPDATE tasks SET state='running' WHERE id=?", (task["id"],))
             con.execute("UPDATE shared_assignments SET state='running',started=?,lease_expires=? WHERE assignment_id=?",
                         (now, claim["expires"], assignment_id))
+            self._record_node_execution_start(con, attempt["id"], identity,
+                                              self._profile(task).id, "running")
             self._audit(con, scope, "start_granted", task_id=task["id"], attempt_id=attempt["id"])
             return {"start_grant_id": grant, "attempt_id": attempt["id"], "may_execute": True}
 
@@ -1097,6 +1304,8 @@ class SharedPoolMixin:
                 con.execute("UPDATE tasks SET state='awaiting_user' WHERE id=?", (task["id"],))
                 con.execute("UPDATE shared_assignments SET state='awaiting_user',started=?,lease_expires=? WHERE assignment_id=?",
                             (now, claim["expires"], assignment_id))
+                self._record_node_execution_start(con, attempt["id"], identity,
+                                                  self._profile(task).id, "awaiting_user")
                 self._audit(con, scope, "manual_ready", task_id=task["id"], attempt_id=attempt["id"])
             con.execute("DELETE FROM task_attention WHERE task_id=?", (task["id"],))
             return {"attempt_id": attempt["id"], "state": "awaiting_user", "may_execute": False}
@@ -1131,6 +1340,7 @@ class SharedPoolMixin:
                     con.execute("UPDATE tasks SET state='execution_unknown' WHERE id=?", (task["id"],))
                 con.execute("UPDATE shared_assignments SET state='execution_unknown' WHERE assignment_id=?",
                             (assignment["assignment_id"],))
+                self._update_node_execution(con, attempt["id"], state="execution_unknown")
                 self._pool_event(con, identity.pool_id, "execution_unknown", source=scope.source_id,
                                  workspace=scope.workspace_id, node_id=identity.node_id,
                                  task_id=task["id"], assignment_id=assignment["assignment_id"])
@@ -1165,9 +1375,11 @@ class SharedPoolMixin:
                 if not started:
                     con.execute("UPDATE shared_assignments SET state='awaiting_user',released=?,release_reason='attention' WHERE assignment_id=?",
                                 (self.clock(), assignment["assignment_id"]))
+                    self._update_node_execution(con, attempt["id"], state="awaiting_user")
                 else:
                     con.execute("UPDATE shared_assignments SET state='execution_unknown' WHERE assignment_id=?",
                                 (assignment["assignment_id"],))
+                    self._update_node_execution(con, attempt["id"], state="execution_unknown")
             return self._task_view(con, self._scoped(con, "tasks", task["id"], scope))
 
     def create_assigned_upload(self, identity, assignment_id, task_id, claim_id, payload):
@@ -1196,6 +1408,7 @@ class SharedPoolMixin:
                         (upload_id, task["id"], task["attempt_id"], "primary", digest,
                          _canonical(payload), "pending", payload["size"], None, None))
             con.execute("UPDATE tasks SET state='uploading' WHERE id=?", (task["id"],))
+            self._update_node_execution(con, task["attempt_id"], state="uploading")
             return self._upload_view(con.execute("SELECT * FROM uploads WHERE id=?", (upload_id,)).fetchone())
 
     def put_assigned_upload_content(self, identity, assignment_id, upload_id, claim_id, content):
@@ -1272,6 +1485,8 @@ class SharedPoolMixin:
                         (receipt_id, task["id"], upload_id, artifact_id, _canonical(manifest)))
             con.execute("UPDATE uploads SET state='committed' WHERE id=?", (upload_id,))
             con.execute("UPDATE tasks SET state='artifacts_ready' WHERE id=?", (task["id"],))
+            self._update_node_execution(con, task["attempt_id"], state="succeeded",
+                                        completed=True, artifact_count=1)
             self._audit(con, scope, "receipt_committed", task_id=task["id"],
                         attempt_id=task["attempt_id"], receipt_id=receipt_id)
             self._release_shared_task(con, task["id"], "artifacts_ready")
@@ -1307,6 +1522,8 @@ class SharedPoolMixin:
             con.execute("INSERT INTO terminal_failures VALUES(?,?,?)",
                         (task["id"], canonical, _canonical(confirmation)))
             con.execute("UPDATE tasks SET state='failed' WHERE id=?", (task["id"],))
+            self._update_node_execution(con, task["attempt_id"], state="failed",
+                                        completed=True, failure_code=payload["evidence"]["reason_code"])
             con.execute("DELETE FROM task_attention WHERE task_id=?", (task["id"],))
             self._audit(con, scope, "terminal_failure_confirmed", task_id=task["id"],
                         attempt_id=task["attempt_id"])
@@ -1341,6 +1558,7 @@ class SharedPoolMixin:
             con.execute("INSERT INTO cancel_completions VALUES(?,?,?)",
                         (task["id"], payload["attempt_id"], _canonical(confirmation)))
             con.execute("UPDATE tasks SET state='canceled' WHERE id=?", (task["id"],))
+            self._update_node_execution(con, task["attempt_id"], state="cancelled", completed=True)
             self._audit(con, scope, "cancel_completed", task_id=task["id"],
                         attempt_id=payload["attempt_id"])
             self._release_shared_task(con, task["id"], "canceled")

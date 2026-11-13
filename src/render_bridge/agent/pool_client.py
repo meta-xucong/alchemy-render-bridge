@@ -29,6 +29,10 @@ class PoolNodeHTTPClient(HttpNodeClient):
             payload["profile_health"] = profile_health
         return self.request("POST", "/heartbeat", json=payload, timeout=5).json()
 
+    def status(self):
+        """Fetch the status projection scoped to this node bearer credential."""
+        return self.request("GET", "/status", timeout=5).json()
+
     def next_task(self):
         assignment = self.request("GET", "/tasks/next", timeout=5).json().get("assignment")
         if not assignment:

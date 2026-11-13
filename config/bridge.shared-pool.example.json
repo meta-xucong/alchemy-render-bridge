@@ -12,6 +12,7 @@
   "dispatch_mode": "node_pull",
   "shared_pool_enabled": true,
   "control_token_env": "BRIDGE_CONTROL_TOKEN",
+  "reward_read_token_env": "BRIDGE_REWARD_READ_TOKEN",
   "store_concurrency": 32,
   "retention_enabled": true,
   "retention_seconds": 86400,

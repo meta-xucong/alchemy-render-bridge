@@ -19,12 +19,14 @@ from .profiles import enabled_profile_ids
 
 
 def create_runtime_app(*, store, source_tokens, node_tokens, dispatch_tokens,
-                       shared_pool_enabled=False, control_token=None, store_concurrency=1):
+                       shared_pool_enabled=False, control_token=None, reward_read_token=None,
+                       store_concurrency=1):
     """Explicit injected fixture/development authority; never generates credentials."""
     return create_app(store=store, source_tokens=source_tokens,
                       node_tokens=node_tokens, dispatch_tokens=dispatch_tokens,
                       shared_pool_enabled=shared_pool_enabled,
-                      control_token=control_token, store_concurrency=store_concurrency)
+                      control_token=control_token, reward_read_token=reward_read_token,
+                      store_concurrency=store_concurrency)
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,7 @@ class RuntimeConfig:
     dispatch_mode: str = 'hatchet'
     shared_pool_enabled: bool = False
     control_token_env: str = 'BRIDGE_CONTROL_TOKEN'
+    reward_read_token_env: str = 'BRIDGE_REWARD_READ_TOKEN'
     store_concurrency: int = 1
 
     @classmethod
@@ -99,7 +102,7 @@ class RuntimeConfig:
         if self.host not in ('127.0.0.1', '::1', 'localhost') and not self.tls_certfile:
             raise ValueError('Non-loopback binding requires explicit TLS certificate and key')
         for value in (self.source_token_env, self.node_token_env, self.dispatch_token_env,
-                      self.control_token_env):
+                      self.control_token_env, self.reward_read_token_env):
             if not isinstance(value, str) or not value or not value.replace('_', '').isalnum():
                 raise ValueError('Invalid credential environment variable name')
 
@@ -119,10 +122,15 @@ class RuntimeConfig:
 
     def build_app(self, environ=None):
         self.validate()
+        env = os.environ if environ is None else environ
         credentials = self.credentials(environ)
         source, node = (None, None) if self.shared_pool_enabled else credentials[:2]
         dispatcher = credentials[2] if not self.shared_pool_enabled and self.dispatch_mode == 'hatchet' else None
         control = credentials[0] if self.shared_pool_enabled else None
+        reward_read = (env.get(self.reward_read_token_env) or None
+                       if self.shared_pool_enabled else None)
+        if reward_read is not None and (not reward_read or reward_read == control):
+            raise ValueError('A configured reward-read credential must be non-empty and distinct')
         store = BridgeStore(self.data_dir / 'bridge.sqlite', self.data_dir / 'artifacts',
                             enabled_profiles=self.enabled_profiles, accepting_new_tasks=self.accepting_new_tasks,
                             max_queued_tasks=self.max_queued_tasks, max_storage_bytes=self.max_storage_bytes,
@@ -132,6 +140,7 @@ class RuntimeConfig:
         if self.shared_pool_enabled:
             app = create_runtime_app(store=store, source_tokens={}, node_tokens=None,
                 dispatch_tokens=None, shared_pool_enabled=True, control_token=control,
+                reward_read_token=reward_read,
                 store_concurrency=self.store_concurrency)
         else:
             app = create_runtime_app(store=store, source_tokens={source: scope},

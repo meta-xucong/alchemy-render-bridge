@@ -31,11 +31,18 @@ class InviteCreate(StrictRequest):
     kind: Literal["workspace", "node"]
     ttl_seconds: Annotated[int, Field(strict=True, ge=60, le=86400)] = 3600
     profiles: list[Literal["fake-image", "codex-image", "midjourney-manual"]] | None = None
+    provider_ref: Annotated[StrictStr, Field(min_length=1, max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")] | None = None
 
 
 class SourceCredentialCreate(StrictRequest):
     source_id: Key
     workspace_id: Key
+
+
+class ProviderRefUpdate(StrictRequest):
+    provider_ref: Annotated[StrictStr, Field(min_length=1, max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")] | None
 
 
 class InviteCodeRequest(StrictRequest):
@@ -72,7 +79,8 @@ def _bearer(request: Request):
     return parts[1]
 
 
-def install_shared_pool_routes(app, store, control_token, call_store, *, max_json_bytes, max_upload_bytes):
+def install_shared_pool_routes(app, store, control_token, call_store, *, max_json_bytes,
+                               max_upload_bytes, reward_read_token=None):
     control_prefix = "/bridge/control/v2"
     source_prefix = "/bridge/source/v2"
     node_prefix = "/bridge/node/v2"
@@ -80,6 +88,13 @@ def install_shared_pool_routes(app, store, control_token, call_store, *, max_jso
     async def operator(request: Request):
         supplied = _bearer(request)
         if not hmac.compare_digest(supplied, control_token):
+            raise _APIError("unauthorized", 401)
+        return True
+
+    async def reward_reader(request: Request):
+        supplied = _bearer(request)
+        if (not isinstance(reward_read_token, str)
+                or not hmac.compare_digest(supplied, reward_read_token)):
             raise _APIError("unauthorized", 401)
         return True
 
@@ -174,6 +189,13 @@ def install_shared_pool_routes(app, store, control_token, call_store, *, max_jso
             "Referrer-Policy": "no-referrer",
         })
 
+    @app.get("/bridge/rewards/v1/nodes")
+    async def reward_node_metrics(limit: Annotated[int, Query(ge=1, le=1000)] = 500,
+                                  _auth=Depends(reward_reader)):
+        return JSONResponse(await call_store(store.shared_node_reward_metrics, limit=limit), headers={
+            "Cache-Control": "no-store", "Vary": "Authorization",
+        })
+
     @app.post(control_prefix + "/pools")
     async def create_pool(request: Request, _auth=Depends(operator)):
         data = await _json_request(request, PoolCreate, max_json_bytes)
@@ -188,7 +210,8 @@ def install_shared_pool_routes(app, store, control_token, call_store, *, max_jso
         data = await _json_request(request, InviteCreate, max_json_bytes)
         return await call_store(store.create_shared_invite, pool_id, data["kind"],
                                 ttl_seconds=data.get("ttl_seconds", 3600),
-                                profiles=data.get("profiles"))
+                                profiles=data.get("profiles"),
+                                provider_ref=data.get("provider_ref"))
 
     @app.post(control_prefix + "/source-credentials")
     async def create_source_credential(request: Request, _auth=Depends(operator)):
@@ -219,6 +242,13 @@ def install_shared_pool_routes(app, store, control_token, call_store, *, max_jso
     @app.post(control_prefix + "/pools/{pool_id}/nodes/{node_id}/{executor}/reactivate")
     async def reactivate_node(pool_id: str, node_id: str, executor: str, _auth=Depends(operator)):
         return await call_store(store.set_shared_node_state, pool_id, node_id, executor, "active")
+
+    @app.put(control_prefix + "/pools/{pool_id}/nodes/{node_id}/{executor}/provider-ref")
+    async def update_node_provider_ref(pool_id: str, node_id: str, executor: str,
+                                       request: Request, _auth=Depends(operator)):
+        data = await _json_request(request, ProviderRefUpdate, max_json_bytes)
+        return await call_store(store.set_shared_node_provider_ref, pool_id, node_id,
+                                executor, data["provider_ref"])
 
     @app.get(control_prefix + "/tasks")
     async def operator_history(
@@ -283,6 +313,12 @@ def install_shared_pool_routes(app, store, control_token, call_store, *, max_jso
     @app.get(node_prefix + "/tasks/next")
     async def next_task(identity: SharedNodeIdentity = Depends(node)):
         return await call_store(store.next_shared_assignment, identity)
+
+    @app.get(node_prefix + "/status")
+    async def node_self_status(identity: SharedNodeIdentity = Depends(node)):
+        return JSONResponse(await call_store(store.shared_node_self_status, identity), headers={
+            "Cache-Control": "no-store", "Vary": "Authorization",
+        })
 
     @app.get(node_prefix + "/assignments/by-task/{task_id}")
     async def assigned_task_by_id(task_id: str, identity: SharedNodeIdentity = Depends(node)):
