@@ -33,9 +33,35 @@ artifacts directory together.
    image; the host system Python remains unchanged.
 
    ```sh
+   set -eu
    cd /opt/alchemy-render-bridge/releases/api-pull-20261102
-   docker build -f deploy/docker/Dockerfile -t alchemy-render-bridge:rb33-20261102 .
+   if test -n "$(git status --porcelain --untracked-files=all)"; then
+     echo "Refusing to build from a dirty release checkout" >&2
+     exit 1
+   fi
+   release_revision="$(git rev-parse --verify HEAD)"
+   image_tag="alchemy-render-bridge:rb-$(printf '%.12s' "$release_revision")"
+   release_archive="$(mktemp)"
+   release_context="$(mktemp -d /tmp/alchemy-render-bridge-context.XXXXXX)"
+   case "$release_context" in /tmp/alchemy-render-bridge-context.*) ;; *) exit 1 ;; esac
+   trap 'rm -rf -- "$release_context"; rm -f -- "$release_archive"' 0
+   git archive --output="$release_archive" "$release_revision"
+   tar -xf "$release_archive" -C "$release_context"
+   docker build \
+     --build-arg RENDER_BRIDGE_BUILD_REVISION="$release_revision" \
+     -f "$release_context/deploy/docker/Dockerfile" \
+     -t "$image_tag" "$release_context"
+   rm -rf -- "$release_context"
+   rm -f -- "$release_archive"
+   trap - 0
+   printf 'Built %s from %s\n' "$image_tag" "$release_revision"
    ```
+
+   The full Git commit is embedded as `RENDER_BRIDGE_BUILD_REVISION`; the
+   short form is only the commit-derived local image tag. The build context is
+   extracted from that commit, excluding all ignored and untracked files.
+   Do not build a release image with the Dockerfile's default `unknown`
+   revision.
 
 2. Create the persistent data/config directories. The data directory must be
    writable by container UID/GID 65532; the credential file is root-owned and
@@ -63,18 +89,51 @@ artifacts directory together.
    `root:root` and mode `0600`. Do not place credentials in the
    runtime JSON, repository, shell history or service command line.
 
-5. Install the unit and start it:
+5. Render the unit from the live unit when updating an existing service, so
+   its current environment file, bind mounts, network mode and data paths are
+   preserved. Use the repository unit only for a fresh install:
 
    ```sh
-   install -o root -g root -m 0644 deploy/systemd/alchemy-render-bridge-api.service /etc/systemd/system/alchemy-render-bridge-api.service
+   set -eu
+   unit_file=/etc/systemd/system/alchemy-render-bridge-api.service
+   rollback_unit="${unit_file}.previous"
+   release_revision="$(git rev-parse --verify HEAD)"
+   image_tag="alchemy-render-bridge:rb-$(printf '%.12s' "$release_revision")"
+   rendered_unit="$(mktemp)"
+   trap 'rm -f "$rendered_unit"' 0
+   if test -f "$unit_file"; then
+     source_unit="$unit_file"
+     test "$(grep -Eo 'alchemy-render-bridge:[^[:space:]]+' "$source_unit" | wc -l)" -eq 2
+     install -o root -g root -m 0644 "$unit_file" "$rollback_unit"
+     find /etc/systemd/system -maxdepth 1 -type f \
+       -name 'alchemy-render-bridge-api.service.pre-*' -delete
+   else
+     source_unit=deploy/systemd/alchemy-render-bridge-api.service
+   fi
+   sed "s#alchemy-render-bridge:[^[:space:]]*#${image_tag}#g" \
+     "$source_unit" > "$rendered_unit"
+   test "$(grep -F "$image_tag" "$rendered_unit" | wc -l)" -eq 2
+   test "$(grep -E '^ExecStartPre=' "$rendered_unit" | wc -l)" -eq 1
+   test "$(grep -E '^ExecStart=' "$rendered_unit" | wc -l)" -eq 1
+   install -o root -g root -m 0644 "$rendered_unit" "$unit_file"
+   rm -f "$rendered_unit"
+   trap - 0
    systemctl daemon-reload
-   systemctl enable --now alchemy-render-bridge-api.service
+   if systemctl is-active --quiet alchemy-render-bridge-api.service; then
+     systemctl restart alchemy-render-bridge-api.service
+   else
+     systemctl enable --now alchemy-render-bridge-api.service
+   fi
    systemctl status --no-pager alchemy-render-bridge-api.service
    ```
 
    The runtime listens only on `127.0.0.1:8787`. Confirm it is active before
-   adding the HTTPS virtual host. Service logs are available with
-   `journalctl -u alchemy-render-bridge-api.service`.
+   adding the HTTPS virtual host. Read the redacted status endpoint at
+   `http://127.0.0.1:8787/bridge/status/v1` and require its `release_revision`
+   to equal the full `release_revision` recorded during the build. `unknown`,
+   a mismatch, or an unavailable status endpoint means the running source is
+   not verified; keep the previous image active or roll back. Service logs are
+   available with `journalctl -u alchemy-render-bridge-api.service`.
 
 6. Configure the Nginx example `config/source-https.nginx.example.conf` with
    the Bridge hostname and its trusted certificate paths. It forwards only
@@ -91,8 +150,15 @@ artifacts directory together.
 ## Updating the code release
 
 Build each new source release as a distinct image tag, update the systemd
-unit's image tag, then restart the unit. Retain the previous image tag for
-rollback. Keep `/var/lib/alchemy/render-bridge` and the configured
+unit from the current live unit using step 5 (which updates both
+`ExecStartPre` and `ExecStart`, checks that exactly two image references
+match, saves the current unit as the single `.previous` rollback unit, and
+removes superseded dated `.pre-*` unit snapshots), then restart
+the already-running service. For an inactive service, step 5 enables and
+starts it. Pass the exact full commit using
+`--build-arg RENDER_BRIDGE_BUILD_REVISION="$(git rev-parse --verify HEAD)"`
+and verify the live status revision after restart. Retain the previous image
+tag for rollback. Keep `/var/lib/alchemy/render-bridge` and the configured
 workspace/node/executor identities unchanged. Do not copy a local Bridge
 database into this directory.
 

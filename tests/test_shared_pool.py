@@ -4,10 +4,12 @@ from datetime import datetime, timedelta, timezone
 import base64
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import httpx
 
@@ -879,6 +881,13 @@ class SharedPoolAPITests(unittest.IsolatedAsyncioTestCase):
             "workspace-secret", "assignment-secret", "internal-secret-profile", "revoked-host",
         ):
             self.assertNotIn(private_value, serialized)
+        with patch.dict(os.environ, {"RENDER_BRIDGE_BUILD_REVISION": "a" * 40}):
+            revision_response = await self.client.get("/bridge/status/v1")
+        self.assertEqual(revision_response.json()["release_revision"], "a" * 40)
+        with patch.dict(os.environ, {"RENDER_BRIDGE_BUILD_REVISION": "not-a-commit-or-secret"}):
+            invalid_revision_response = await self.client.get("/bridge/status/v1")
+        self.assertEqual(invalid_revision_response.json()["release_revision"], "unknown")
+        self.assertNotIn("not-a-commit-or-secret", invalid_revision_response.text)
         self.assertEqual((await self.client.get("/bridge/control/v2/nodes")).status_code, 401)
 
     async def test_operator_history_rejects_oversized_cursor_and_filters(self):
