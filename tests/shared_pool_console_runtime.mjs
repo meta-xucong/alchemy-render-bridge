@@ -24,11 +24,23 @@ class FakeElement {
     this.textContent = "";
     this.onclick = null;
     this.disabled = false;
+    this.href = "";
+    this.download = "";
+  }
+  click() {
+    if (this.tag === "a") downloads.push({ filename: this.download, text: blobObjects.get(this.href)?.text });
   }
   get childNodes() { return this.children; }
   append(...items) { this.children.push(...items); }
   prepend(...items) { this.children.unshift(...items); }
   replaceChildren(...items) { this.children = [...items]; }
+}
+
+class FakeBlob {
+  constructor(parts, options) {
+    this.text = parts.join("");
+    this.type = options?.type;
+  }
 }
 
 const elements = new Map();
@@ -37,6 +49,9 @@ const windowListeners = new Map();
 const timers = new Map();
 const calls = [];
 const heldFetches = [];
+const downloads = [];
+const blobObjects = new Map();
+let nextBlob = 1;
 let nextTimer = 1;
 let holdFetches = false;
 let hidden = false;
@@ -98,7 +113,12 @@ const context = {
   location: { origin: "https://bridge.example" },
   confirm: () => true,
   AbortController,
-  setTimeout(callback, delay) { const id = nextTimer++; timers.set(id, { callback, delay }); return id; },
+  Blob: FakeBlob,
+  URL: {
+    createObjectURL(blob) { const url = `blob:fixture-${nextBlob++}`; blobObjects.set(url, blob); return url; },
+    revokeObjectURL(url) { blobObjects.delete(url); },
+  },
+  setTimeout(callback, delay) { if (delay === 0) { callback(); return 0; } const id = nextTimer++; timers.set(id, { callback, delay }); return id; },
   clearTimeout(id) { timers.delete(id); },
 };
 vm.runInNewContext(script, context, { filename: "shared_pool_console.js" });
@@ -165,6 +185,18 @@ await document.getElementById("createInvite").onclick();
 const inviteCard = document.getElementById("inviteResult").children[0];
 const inviteText = inviteCard.children.map((child) => child.textContent).join(" ");
 assert.ok(inviteText.includes(".\\scripts\\start_shared_pool_node.ps1 -Url 'https://bridge.example' -Profiles 'fake-image'"));
+const downloadButton = inviteCard.children.find((child) => child.tag === "button");
+assert.ok(downloadButton, "node invite provides a one-click package download");
+downloadButton.onclick();
+assert.equal(downloads.length, 1);
+assert.equal(downloads[0].filename, "node-enrollment.json");
+assert.deepEqual(JSON.parse(downloads[0].text), {
+  schema_version: 1,
+  url: "https://bridge.example",
+  invite_code: "invite-demo",
+  profiles: ["fake-image"],
+  accept_shared_data: true,
+});
 
 roleInput.value = "workspace";
 tokenInput.value = "workspace-token";

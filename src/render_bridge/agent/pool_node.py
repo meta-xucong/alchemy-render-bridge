@@ -16,10 +16,12 @@ import uuid
 import httpx
 
 from .client import validated_url
+from .config import AgentConfig
 from .maintenance import maintain_shared_pool_agent
 from .pool_client import PoolNodeHTTPClient
 from .registry import ExecutorRegistry
 from .runner import NodeAgent
+from render_bridge.executors.base import ExecutionRequest
 
 _KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _STATE_FILE = "shared-node.json"
@@ -51,32 +53,93 @@ def _load_enrollment(state_dir: Path):
     if path.is_symlink() or not path.is_file():
         raise ValueError("Shared node enrollment is missing")
     value = json.loads(path.read_text(encoding="utf-8"))
+    allowed = {"fake-image", "codex-image", "midjourney-manual"}
+    profiles = value.get("profiles") if isinstance(value, dict) else None
     if (not isinstance(value, dict) or not isinstance(value.get("node_token"), str)
-            or not value["node_token"] or not isinstance(value.get("url"), str)):
+            or not value["node_token"] or not isinstance(value.get("url"), str)
+            or not isinstance(value.get("node_id"), str) or not _KEY.fullmatch(value["node_id"])
+            or not isinstance(value.get("executor_instance"), str)
+            or not _KEY.fullmatch(value["executor_instance"])
+            or not isinstance(profiles, list) or not profiles
+            or any(not isinstance(item, str) or item not in allowed for item in profiles)
+            or len(set(profiles)) != len(profiles)):
         raise ValueError("Shared node enrollment is invalid")
     return value
 
 
-def enroll(url, state_dir, node_id, executor_instance, profiles):
+def _registry_for_profiles(state_dir, config_path, profiles):
+    registry = ExecutorRegistry.from_config(Path(state_dir).expanduser() / "executors", config_path)
+    selected = list(profiles)
+    missing = sorted(set(selected) - set(registry.executors))
+    if not selected or missing:
+        raise ValueError("Local Agent config does not enable enrolled profiles: " + ", ".join(missing))
+    registry.executors = {name: registry.executors[name] for name in selected}
+    return registry
+
+
+def _load_bootstrap(path: Path):
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("One-click enrollment package is missing or unsafe")
+    if path.stat().st_size > 8192:
+        raise ValueError("One-click enrollment package is too large")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("One-click enrollment package is not valid UTF-8 JSON") from exc
+    expected = {"schema_version", "url", "invite_code", "profiles", "accept_shared_data"}
+    if not isinstance(value, dict) or set(value) != expected:
+        raise ValueError("One-click enrollment package has an unsupported shape")
+    if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+        raise ValueError("One-click enrollment package version is unsupported")
+    if type(value["accept_shared_data"]) is not bool or not value["accept_shared_data"]:
+        raise ValueError("One-click package does not contain node sharing consent")
+    code = value["invite_code"]
+    if not isinstance(code, str) or not 16 <= len(code) <= 256 or any(ord(c) < 33 for c in code):
+        raise ValueError("One-click package invitation is invalid")
+    profiles = value["profiles"]
+    allowed = {"fake-image", "codex-image", "midjourney-manual"}
+    if (not isinstance(profiles, list) or not 1 <= len(profiles) <= 3
+            or any(not isinstance(item, str) for item in profiles)
+            or len(set(profiles)) != len(profiles) or not set(profiles) <= allowed):
+        raise ValueError("One-click package profiles are invalid")
+    endpoint = validated_url(value["url"] if isinstance(value["url"], str) else "")
+    return {"url": endpoint, "invite_code": code, "profiles": profiles}
+
+
+def enroll(url, state_dir, node_id, executor_instance, profiles, *, bootstrap_file=None):
     if not _KEY.fullmatch(node_id) or not _KEY.fullmatch(executor_instance):
         raise ValueError("Node and executor IDs must use letters, digits, '_' or '-'")
     allowed = {"fake-image", "codex-image", "midjourney-manual"}
+    bootstrap_path = Path(bootstrap_file) if bootstrap_file is not None else None
+    if bootstrap_path is not None:
+        bootstrap = _load_bootstrap(bootstrap_path)
+        if url is not None and validated_url(url) != bootstrap["url"]:
+            raise ValueError("One-click package endpoint differs from the requested Bridge")
+        if profiles is not None and list(profiles) != bootstrap["profiles"]:
+            raise ValueError("One-click package profiles differ from the requested profiles")
+        endpoint, code, profiles = bootstrap["url"], bootstrap["invite_code"], bootstrap["profiles"]
+        print("One-click node setup accepted. By launching this package, this machine may receive participating workspaces' prompts and reference images.")
+    else:
+        if not url:
+            raise ValueError("Bridge URL is required without a one-click enrollment package")
+        endpoint = validated_url(url)
+        if not profiles:
+            profiles = ["fake-image"]
+        print("Pool nodes may receive participating workspaces' prompts and reference images.")
+        print("Those inputs may be downloaded to this machine while an assigned task runs.")
+        if input("Accept this data-sharing responsibility? Type YES: ").strip() != "YES":
+            raise ValueError("Sharing consent was not given")
+        code = getpass.getpass("One-use node invitation code: ").strip()
+        if not code:
+            raise ValueError("Invitation code is required")
     if not profiles or len(set(profiles)) != len(profiles) or not set(profiles) <= allowed:
         raise ValueError("Select one or more supported profiles")
-    endpoint = validated_url(url)
     if not endpoint.startswith("https://"):
         # Loopback remains useful for the explicit local integration test.
         from urllib.parse import urlsplit
         host = urlsplit(endpoint).hostname
         if host not in {"127.0.0.1", "localhost", "::1"}:
             raise ValueError("Remote Bridge endpoints require HTTPS")
-    print("Pool nodes may receive participating workspaces' prompts and reference images.")
-    print("Those inputs may be downloaded to this machine while an assigned task runs.")
-    if input("Accept this data-sharing responsibility? Type YES: ").strip() != "YES":
-        raise ValueError("Sharing consent was not given")
-    code = getpass.getpass("One-use node invitation code: ").strip()
-    if not code:
-        raise ValueError("Invitation code is required")
     body = {"invite_code": code, "node_id": node_id,
             "executor_instance": executor_instance, "profiles": profiles,
             "accept_shared_data": True}
@@ -99,10 +162,54 @@ def enroll(url, state_dir, node_id, executor_instance, profiles):
     _save_enrollment(state_dir, {"url": endpoint, "pool_id": result["pool_id"],
                                  "node_id": node_id, "executor_instance": executor_instance,
                                  "profiles": profiles, "node_token": token})
+    if bootstrap_path is not None:
+        try:
+            bootstrap_path.unlink()
+        except OSError:
+            print("Enrollment succeeded; remove the consumed one-use package from the launcher folder.")
     print(json.dumps({"status": "enrolled", "pool_id": result["pool_id"],
                       "node_id": node_id, "executor_instance": executor_instance,
                       "state_dir": str(state_dir.expanduser().resolve()),
                       "token_saved": True}, ensure_ascii=False))
+    return 0
+
+
+def verify_enrollment(state_dir):
+    state = _load_enrollment(state_dir)
+    client = PoolNodeHTTPClient(state["url"], state["node_token"])
+    try:
+        value = client.status()
+    except Exception:
+        raise ValueError("Bridge node login check failed; verify the connection or issue a fresh node invitation") from None
+    finally:
+        client.close()
+    node = value.get("node") if isinstance(value, dict) else None
+    if (not isinstance(node, dict) or node.get("node_id") != state.get("node_id")
+            or node.get("executor_instance") != state.get("executor_instance")):
+        raise ValueError("Bridge node login returned a different node identity")
+    print(json.dumps({"status": "authenticated", "node_id": state["node_id"]}, ensure_ascii=False))
+    return 0
+
+
+def preflight(config_path, state_dir, profiles):
+    config = AgentConfig.load(Path(config_path))
+    selected = list(profiles)
+    if (not selected or len(set(selected)) != len(selected)
+            or not set(selected) <= set(config.enabled_profiles)):
+        missing = sorted(set(selected) - set(config.enabled_profiles))
+        raise ValueError("Local Agent config does not enable invited profiles: " + ", ".join(missing))
+    registry = _registry_for_profiles(state_dir, Path(config_path), selected)
+    request = ExecutionRequest("node-preflight", "node-preflight", "Read-only local readiness check.")
+    for profile in selected:
+        executor = registry.get(profile)
+        if executor is None:
+            raise ValueError("Local executor is unavailable for profile: " + profile)
+        check = getattr(executor, "preflight", None)
+        if callable(check):
+            result = check(request)
+            if result is not None:
+                raise ValueError("Local " + profile + " preflight blocked (" + result.code + ")")
+    print(json.dumps({"status": "ready", "profiles": selected}, ensure_ascii=False))
     return 0
 
 
@@ -122,7 +229,7 @@ def run(url, state_dir, config_path, interval, retention_seconds=86400,
         raise ValueError("Endpoint differs from the enrolled Bridge")
     token = state["node_token"]
     client = PoolNodeHTTPClient(endpoint, token)
-    registry = ExecutorRegistry.from_config(state_dir.expanduser() / "executors", config_path)
+    registry = _registry_for_profiles(state_dir, config_path, state["profiles"])
     node = NodeAgent(client, state_dir.expanduser(), registry=registry)
     node._worker_running = True
     stop = threading.Event()
@@ -217,11 +324,19 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     pair = sub.add_parser("enroll", help="Pair this machine with one shared pool")
-    pair.add_argument("--url", required=True)
+    pair.add_argument("--url")
+    pair.add_argument("--bootstrap-file", type=Path,
+                      help="Consume a one-use package exported by the Bridge operator console")
     pair.add_argument("--state-dir", type=Path, required=True)
     pair.add_argument("--node-id", default="node-" + uuid.uuid4().hex[:12])
     pair.add_argument("--executor-instance", default="exec-" + uuid.uuid4().hex[:12])
-    pair.add_argument("--profiles", default="fake-image")
+    pair.add_argument("--profiles")
+    verify = sub.add_parser("verify", help="Verify the saved node credential without starting work")
+    verify.add_argument("--state-dir", type=Path, required=True)
+    ready = sub.add_parser("preflight", help="Check local profile readiness without login or generation")
+    ready.add_argument("--state-dir", type=Path, required=True)
+    ready.add_argument("--config", type=Path, required=True)
+    ready.add_argument("--profiles", required=True)
     worker = sub.add_parser("run", help="Run the foreground shared-pool node agent")
     worker.add_argument("--url")
     worker.add_argument("--state-dir", type=Path, required=True)
@@ -241,8 +356,15 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.command == "enroll":
+            profiles = ([item.strip() for item in args.profiles.split(",") if item.strip()]
+                        if args.profiles else None)
             return enroll(args.url, args.state_dir, args.node_id, args.executor_instance,
-                          [item.strip() for item in args.profiles.split(",") if item.strip()])
+                          profiles, bootstrap_file=args.bootstrap_file)
+        if args.command == "verify":
+            return verify_enrollment(args.state_dir)
+        if args.command == "preflight":
+            profiles = [item.strip() for item in args.profiles.split(",") if item.strip()]
+            return preflight(args.config, args.state_dir, profiles)
         if args.command == "run":
             return run(args.url, args.state_dir, args.config, args.interval,
                        args.retention_seconds, args.maintenance_interval_seconds,

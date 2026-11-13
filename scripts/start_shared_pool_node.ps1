@@ -48,8 +48,35 @@ try {
     $ConfigPath = [IO.Path]::GetFullPath($ConfigPath)
     $stateFile = Join-Path $statePath 'shared-node.json'
     $needsEnrollment = -not (Test-Path -LiteralPath $stateFile -PathType Leaf)
-    if ($needsEnrollment -and -not $Url) {
-        throw "This machine is not enrolled at '$statePath'. Start once with -Url '<Bridge URL>' -Profiles fake-image, using the command shown in the Bridge console."
+    $bootstrapFile = Join-Path $PSScriptRoot 'node-enrollment.json'
+    $bootstrap = $null
+    $selectedProfiles = @()
+    if ($needsEnrollment -and (Test-Path -LiteralPath $bootstrapFile -PathType Leaf)) {
+        try {
+            $bootstrap = Get-Content -LiteralPath $bootstrapFile -Raw -Encoding utf8 | ConvertFrom-Json
+        } catch {
+            throw 'The one-click node enrollment package is invalid JSON. Download a fresh package from the Bridge operator console.'
+        }
+        if ($bootstrap.schema_version -ne 1 -or $bootstrap.accept_shared_data -ne $true -or
+            -not $bootstrap.url -or -not ($bootstrap.profiles -is [System.Array]) -or $bootstrap.profiles.Count -lt 1) {
+            throw 'The one-click node enrollment package is incomplete. Download a fresh package from the Bridge operator console.'
+        }
+        $selectedProfiles = @($bootstrap.profiles | ForEach-Object { [string]$_ })
+    } elseif ($needsEnrollment) {
+        $selectedProfiles = @($Profiles | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        if (-not $Url) {
+            throw "This machine is not enrolled at '$statePath'. Download node-enrollment.json from the Bridge operator console into '$PSScriptRoot', next to this launcher, then double-click again."
+        }
+    } else {
+        try {
+            $nodeState = Get-Content -LiteralPath $stateFile -Raw -Encoding utf8 | ConvertFrom-Json
+            $selectedProfiles = @($nodeState.profiles | ForEach-Object { [string]$_ })
+        } catch {
+            throw 'The saved node registration is invalid. Create a fresh one-use node package and preserve this state directory for recovery.'
+        }
+    }
+    if (-not $selectedProfiles.Count) {
+        throw 'No node profiles were selected. Create a node invitation with at least one profile.'
     }
 
     $runtimeRoot = [IO.Path]::GetFullPath($runtimeRoot)
@@ -82,13 +109,23 @@ try {
         if (-not (Test-SharedPoolRuntime)) { throw 'The local Python environment is still missing Bridge runtime dependencies.' }
     }
 
+    $profileList = $selectedProfiles -join ','
+    & $python -m render_bridge.agent.pool_node preflight --state-dir $statePath --config $ConfigPath --profiles $profileList
+    if ($LASTEXITCODE -ne 0) { throw 'Local node checks failed; resolve the message above before joining the pool.' }
+
     if ($needsEnrollment) {
-        $profileList = ($Profiles | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ','
-        if (-not $profileList) { throw 'Choose at least one profile for the node invitation.' }
-        Write-Host 'Starting one-time shared-pool enrollment. Review the sharing notice and enter the invite code when prompted.' -ForegroundColor DarkCyan
-        & $python -u -m render_bridge.agent.pool_node enroll --url $Url --state-dir $statePath --profiles $profileList
+        if ($bootstrap) {
+            Write-Host 'Registering this node with its one-use enrollment package.' -ForegroundColor DarkCyan
+            & $python -u -m render_bridge.agent.pool_node enroll --state-dir $statePath --bootstrap-file $bootstrapFile
+        } else {
+            Write-Host 'Starting interactive node enrollment. Review the sharing notice and enter the one-use invitation code.' -ForegroundColor DarkCyan
+            & $python -u -m render_bridge.agent.pool_node enroll --url $Url --state-dir $statePath --profiles $profileList
+        }
         if ($LASTEXITCODE -ne 0) { throw 'Shared-pool enrollment did not complete.' }
     }
+
+    & $python -m render_bridge.agent.pool_node verify --state-dir $statePath
+    if ($LASTEXITCODE -ne 0) { throw 'Node registration was saved, but Bridge login could not be verified. Keep this state directory and retry after checking the connection.' }
 
     $runningAgent = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
         ($_.Name -ieq 'python.exe' -or $_.Name -ieq 'pythonw.exe') -and
@@ -100,6 +137,7 @@ try {
 
     Write-Host 'Starting the shared-pool Node Agent. Keep this window open; press Ctrl+C to stop.' -ForegroundColor Green
     Write-Host "State: $statePath | Config: $ConfigPath | Poll interval: $Interval seconds"
+    Write-Host 'Local status: http://127.0.0.1:8766/' -ForegroundColor DarkCyan
     & $python -u -m render_bridge.agent.pool_node run --state-dir $statePath --config $ConfigPath --interval $Interval
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) { throw "Shared-pool Agent exited with code $exitCode." }
