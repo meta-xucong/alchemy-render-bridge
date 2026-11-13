@@ -71,18 +71,24 @@ traffic; it does not mean image execution runs in the API process.
 | [07 Release and rollback](07_RELEASE_AND_ROLLBACK.md) | GitHub and existing-service replacement procedure |
 | [08 Implementation audit](08_IMPLEMENTATION_AUDIT_AND_CORRECTION_MODEL.md) | Root-cause model, authority boundaries, and regression evidence |
 | [09 Execution ledger and local status](09_NODE_EXECUTION_LEDGER_REWARDS_AND_LOCAL_STATUS.md) | Per-node execution accounting, Alchemy admin projection, and local node self-status |
+| [10 Release readiness gap closure](10_RELEASE_READINESS_GAP_CLOSURE.md) | CI collection, running source revision visibility, release evidence, and explicit product limits |
 
 ## Release evidence boundary
 
-The current released baseline is Render Bridge `origin/main` at
-`5c8ac7f291e8b118a74bda95e0a2a4ae1d584eab`. The last read-only VPS check,
-reported in the task context on 2026-11-11 (no standalone receipt is stored in
-this repository), said the Bridge service was running the image tag
-`alchemy-render-bridge:shared-pool-capability-5c8ac7f`, active and enabled.
-At that check, one shared pool and one joined workspace were reported, with one
-online node, one free slot, no queued tasks, and no active assignments. This
-is a point-in-time service snapshot; it does not claim multiple Bridge replicas,
-high availability, or real-image acceptance.
+The earlier 2026-11-11 VPS note below is historical evidence only. A later
+read-only status observation is recorded in [10 Release readiness gap
+closure](10_RELEASE_READINESS_GAP_CLOSURE.md); the public endpoint did not
+expose an immutable build revision, so the currently running source commit
+was not verifiable from that response. Do not treat an image tag or the old
+snapshot as proof of the current deployed revision. The shared-pool topology
+continues to mean many worker nodes on one SQLite-authoritative Bridge service,
+not multiple Bridge replicas or high availability.
+
+Historical 2026-11-11 snapshot: the Bridge image tag was reported as
+`alchemy-render-bridge:shared-pool-capability-5c8ac7f`, with one shared pool,
+one joined workspace, one online node, one free slot, no queued tasks, and no
+active assignments. This point-in-time report had no standalone receipt and
+does not establish current service health or real-image acceptance.
 
 The current feature worktree adds a dedicated Windows shared-pool Agent
 launcher, Fleet-only browser auto-refresh, and this release-status correction.

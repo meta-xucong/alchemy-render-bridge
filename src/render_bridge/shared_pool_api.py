@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hmac
+import os
+import re
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
@@ -21,6 +23,12 @@ from .shared_pool_dashboard import STATUS_DASHBOARD_HTML
 
 _KEY = Annotated[StrictStr, Field(min_length=1, max_length=128,
                                   pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")]
+_COMMIT_REVISION = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _release_revision() -> str:
+    value = os.environ.get("RENDER_BRIDGE_BUILD_REVISION", "")
+    return value if _COMMIT_REVISION.fullmatch(value) else "unknown"
 
 
 class PoolCreate(StrictRequest):
@@ -170,7 +178,8 @@ def install_shared_pool_routes(app, store, control_token, call_store, *, max_jso
             "nodes_offline": statuses.count("offline"),
             "nodes_unknown": statuses.count("unknown"),
         }
-        return JSONResponse({"summary": summary, "nodes": public_nodes}, headers={
+        return JSONResponse({"release_revision": _release_revision(),
+                             "summary": summary, "nodes": public_nodes}, headers={
             "Cache-Control": "no-store",
         })
 
