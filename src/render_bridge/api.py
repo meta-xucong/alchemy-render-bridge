@@ -130,6 +130,7 @@ def create_app(
     dispatch_tokens=None,
     shared_pool_enabled: bool = False,
     control_token: str | None = None,
+    reward_read_token: str | None = None,
     store_concurrency: int = 1,
 ) -> FastAPI:
     """Create an isolated fixture API with no implicit authority or executor."""
@@ -151,6 +152,10 @@ def create_app(
             raise ValueError("Invalid request size limit.")
     if type(shared_pool_enabled) is not bool:
         raise ValueError("shared_pool_enabled must be boolean")
+    if reward_read_token is not None and (not shared_pool_enabled
+            or not isinstance(reward_read_token, str) or not _TOKEN.fullmatch(reward_read_token)
+            or len(reward_read_token) > 4096 or reward_read_token == control_token):
+        raise ValueError("Reward-read credential must be valid, dedicated, and limited to shared-pool mode")
     if type(store_concurrency) is not int or not 1 <= store_concurrency <= 128:
         raise ValueError("store_concurrency must be an integer from 1 through 128")
     if shared_pool_enabled:
@@ -364,5 +369,6 @@ def create_app(
         from .shared_pool_api import install_shared_pool_routes
         install_shared_pool_routes(app, store, control_token, call_store,
                                    max_json_bytes=max_json_bytes,
-                                   max_upload_bytes=max_upload_bytes)
+                                   max_upload_bytes=max_upload_bytes,
+                                   reward_read_token=reward_read_token)
     return app

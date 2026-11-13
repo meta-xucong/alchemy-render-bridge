@@ -107,13 +107,15 @@ def enroll(url, state_dir, node_id, executor_instance, profiles):
 
 
 def run(url, state_dir, config_path, interval, retention_seconds=86400,
-        maintenance_interval_seconds=900):
+        maintenance_interval_seconds=900, status_port=8766):
     if type(interval) not in (int, float) or not 0.2 <= interval <= 60:
         raise ValueError("Polling interval must be from 0.2 through 60 seconds")
     if type(retention_seconds) is not int or not 60 <= retention_seconds <= 365 * 86400:
         raise ValueError("Retention must be from 60 seconds through one year")
     if type(maintenance_interval_seconds) is not int or not 60 <= maintenance_interval_seconds <= 86400:
         raise ValueError("Maintenance interval must be from 60 through 86400 seconds")
+    if type(status_port) is not int or not 0 <= status_port <= 65535:
+        raise ValueError("Local status port must be between 0 and 65535")
     state = _load_enrollment(state_dir)
     endpoint = validated_url(url or state["url"])
     if endpoint != state["url"]:
@@ -124,6 +126,9 @@ def run(url, state_dir, config_path, interval, retention_seconds=86400,
     node = NodeAgent(client, state_dir.expanduser(), registry=registry)
     node._worker_running = True
     stop = threading.Event()
+    status_server = None
+    status_thread = None
+    status_url = None
 
     def beat():
         delay = 5
@@ -132,11 +137,17 @@ def run(url, state_dir, config_path, interval, retention_seconds=86400,
             delay = 30 if ok else 5
 
     try:
+        from .local_status import start_local_status_server
+        try:
+            status_server, status_thread, status_url = start_local_status_server(client, status_port)
+        except OSError:
+            print(json.dumps({"event": "local_status", "status": "unavailable"}), flush=True)
         ok = node.heartbeat()
         heartbeat_thread = threading.Thread(target=beat, name="shared-pool-heartbeat", daemon=True)
         heartbeat_thread.start()
         print(json.dumps({"status": "online" if ok else "connecting",
-                          "node_id": state["node_id"], "pool_id": state["pool_id"]}), flush=True)
+                          "node_id": state["node_id"], "pool_id": state["pool_id"],
+                          "local_status_url": status_url}), flush=True)
         from .hatchet_sidecar import reconcile_pending_artifacts
         for record in node.journal.poll_recovery_records():
             try:
@@ -177,6 +188,9 @@ def run(url, state_dir, config_path, interval, retention_seconds=86400,
         return 0
     finally:
         stop.set()
+        if status_server is not None:
+            from .local_status import stop_local_status_server
+            stop_local_status_server(status_server, status_thread)
         node._worker_running = False
         node.heartbeat()
         client.close()
@@ -215,6 +229,8 @@ def main(argv=None):
     worker.add_argument("--interval", type=float, default=2)
     worker.add_argument("--retention-seconds", type=int, default=86400)
     worker.add_argument("--maintenance-interval-seconds", type=int, default=900)
+    worker.add_argument("--status-port", type=int, default=8766,
+                        help="Loopback status page port; use 0 for an available ephemeral port")
     manual = sub.add_parser("manual-import", help="Import one explicitly confirmed manual-profile original")
     manual.add_argument("--state-dir", type=Path, required=True)
     manual.add_argument("--config", type=Path)
@@ -229,7 +245,8 @@ def main(argv=None):
                           [item.strip() for item in args.profiles.split(",") if item.strip()])
         if args.command == "run":
             return run(args.url, args.state_dir, args.config, args.interval,
-                       args.retention_seconds, args.maintenance_interval_seconds)
+                       args.retention_seconds, args.maintenance_interval_seconds,
+                       args.status_port)
         return import_manual(args.state_dir, args.config, args.task_id, args.file,
                              args.request_sha256, args.confirm_single_original)
     except (OSError, ValueError, RuntimeError) as exc:

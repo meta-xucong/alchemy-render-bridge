@@ -1359,6 +1359,14 @@ class BridgeStore(SharedPoolMixin, OperationsMixin, AvailabilityMixin):
                             (receipt_id, source, workspace, payload["client_receipt_id"],
                              digest, _canonical(payload)))
                 self._audit(con, scope, "delivery_" + payload["decision"], task_id=row["task_id"], receipt_id=receipt_id)
+            attempt = con.execute("SELECT id FROM attempts WHERE task_id=?", (row["task_id"],)).fetchone()
+            if attempt is not None:
+                ack_at = self.clock()
+                con.execute("""UPDATE node_execution_ledger SET
+                    delivery_ack=COALESCE(delivery_ack,?),
+                    delivery_ack_at=COALESCE(delivery_ack_at,?),updated_at=?
+                    WHERE attempt_key=?""",
+                    (payload["decision"], ack_at, ack_at, self._shared_hash(attempt["id"])))
             return self._receipt_view(con, row)
 
 
