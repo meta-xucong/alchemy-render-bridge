@@ -33,6 +33,11 @@ class PoolNodeHTTPClient(HttpNodeClient):
         """Fetch the status projection scoped to this node bearer credential."""
         return self.request("GET", "/status", timeout=5).json()
 
+    def confirm_reward_claim(self, challenge):
+        """Forward a one-time account challenge through this node's bearer credential."""
+        return self.request("POST", "/reward-claims/confirm",
+                            json={"challenge": challenge}, timeout=10).json()
+
     def next_task(self):
         assignment = self.request("GET", "/tasks/next", timeout=5).json().get("assignment")
         if not assignment:
