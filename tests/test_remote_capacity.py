@@ -99,12 +99,14 @@ class RemoteCapacityTests(unittest.TestCase):
         locations = [value.strip() for value in re.findall(r'location\s+([^\{]+)\{', text)]
         self.assertEqual(locations, ['/bridge/v1/', '/bridge/node/v1/',
             '/bridge/control/v2/', '/bridge/source/v2/', '/bridge/node/v2/',
+            '= /bridge/node/v2/reward-claims/confirm',
+            '= /bridge/rewards/v1/claim-approval',
             '= /bridge/rewards/v1/nodes',
             '= /bridge/console', '= /bridge/operator', '= /bridge/status/v1', '/'])
         self.assertIn('location / { return 404; }', text)
-        self.assertEqual(text.count('proxy_pass '), 9)
+        self.assertEqual(text.count('proxy_pass '), 11)
         self.assertIn('proxy_pass http://127.0.0.1:8787;', text)
-        self.assertEqual(text.count('proxy_next_upstream off;'), 8)
+        self.assertEqual(text.count('proxy_next_upstream off;'), 10)
         source = re.search(r'location /bridge/v1/ \{(.*?)\n    \}', text, re.S).group(1)
         node = re.search(r'location /bridge/node/v1/ \{(.*?)\n    \}', text, re.S).group(1)
         control_v2 = re.search(r'location /bridge/control/v2/ \{(.*?)\n    \}', text, re.S).group(1)
