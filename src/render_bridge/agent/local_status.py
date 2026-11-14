@@ -14,7 +14,7 @@ body{font:15px/1.55 system-ui,sans-serif;max-width:900px;margin:32px auto;paddin
 header,.card{background:white;border:1px solid #dce4ec;border-radius:14px;padding:18px;margin:12px 0}
 h1{font-size:22px;margin:0 0 4px}.muted{color:#627181;font-size:13px}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
 .metric{background:#f7f9fb;border-radius:10px;padding:12px}.metric strong{display:block;font-size:25px}.row{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
-button{border:0;border-radius:8px;background:#1457d9;color:white;padding:9px 14px;font:inherit;cursor:pointer}ul{padding-left:20px}li{margin:8px 0}
+button{border:0;border-radius:8px;background:#1457d9;color:white;padding:9px 14px;font:inherit;cursor:pointer}input{min-width:240px;flex:1;padding:9px 10px;border:1px solid #aebbc9;border-radius:8px;font:inherit}ul{padding-left:20px}li{margin:8px 0}
 </style></head><body><header><div class="row"><div><h1>本机 RenderBridge 节点</h1><div id="node">正在读取节点…</div></div>
 <button id="refresh" type="button">立即刷新</button></div><p class="muted">每 5 秒自动更新。未知和待处理任务单独显示。</p><div id="tracking" class="muted">统计启用时间：读取中</div><div id="updated" class="muted">尚未更新</div></header>
 <section class="card"><h2>当前状态</h2><div id="current">正在读取…</div></section>
@@ -23,6 +23,12 @@ button{border:0;border-radius:8px;background:#1457d9;color:white;padding:9px 14p
 <div class="metric">失败<strong id="failed">—</strong></div><div class="metric">执行中<strong id="progress">—</strong></div>
 <div class="metric">待处理<strong id="waiting">—</strong></div><div class="metric">结果未知<strong id="unknown">—</strong></div>
 <div class="metric">已取消<strong id="canceled">—</strong></div></div><p class="muted">成功按 Bridge 已提交图片回执统计；失败仅统计 Bridge 已确认的终态失败。排队中和开始前取消不会计入总开始数。</p></section>
+<section class="card"><h2>&#x5956;&#x52B1;&#x8D26;&#x6237;&#x7ED1;&#x5B9A;&#x786E;&#x8BA4;</h2>
+<p class="muted">Only confirm a one-time code generated from your expected Alchemy account. Do not enter a code from an account or request you do not recognize.</p>
+<form id="claimForm"><label for="claimCode">&#x4E00;&#x6B21;&#x6027;&#x7ED1;&#x5B9A;&#x7801;</label>
+<div class="row"><input id="claimCode" type="text" maxlength="256" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+<button id="claimSubmit" type="submit">&#x786E;&#x8BA4;</button></div></form>
+<p id="claimResult" class="muted" aria-live="polite"></p></section>
 <section class="card"><h2>最近执行</h2><ul id="recent"><li>尚无记录</li></ul></section>
 <script>
 const labels={active:'正常',draining:'暂停接新任务',revoked:'已撤销',online:'在线',available:'空闲',busy:'忙碌',attention:'需要处理',offline:'离线',assigned:'已分配',claimed:'已领取',running:'执行中',uploading:'上传结果',awaiting_user:'等待本机操作',execution_unknown:'执行结果待确认',succeeded:'成功',failed:'失败',cancelled:'已取消',queued:'排队中',artifacts_ready:'图片已提交'};
@@ -34,6 +40,7 @@ document.getElementById('current').textContent=c?`${label(c.state)} · ${c.profi
 set('total',m.total_started);set('success',m.succeeded);set('failed',m.failed);set('progress',m.in_progress);set('waiting',m.awaiting_user);set('unknown',m.unknown);set('canceled',m.canceled);
 const list=document.getElementById('recent');list.replaceChildren();for(const item of data.recent_executions||[]){const li=document.createElement('li');const reason=item.failure_code?` · ${item.failure_code}`:'';li.textContent=`${label(item.state)} · ${item.profile||'未知工具'} · ${stamp(item.started_at)}${reason}`;list.append(li)}if(!list.children.length){const li=document.createElement('li');li.textContent='尚无记录';list.append(li)}document.getElementById('tracking').textContent=`统计启用时间：${stamp(data.tracking_since)}`;document.getElementById('updated').textContent=`最近更新：${new Date().toLocaleTimeString()}`}
 let busy=false;async function refresh(){if(busy)return;busy=true;try{const r=await fetch('/api/status',{cache:'no-store',credentials:'same-origin'});if(!r.ok)throw Error();render(await r.json())}catch{document.getElementById('current').textContent='状态暂不可用，节点生成进程会继续运行。下方数据为上次成功读取。';document.getElementById('updated').textContent=`读取失败：${new Date().toLocaleTimeString()}`}finally{busy=false}}
+document.getElementById('claimForm').addEventListener('submit',async(event)=>{event.preventDefault();const input=document.getElementById('claimCode');const result=document.getElementById('claimResult');const button=document.getElementById('claimSubmit');let payload;try{payload=JSON.stringify({challenge:input.value.trim()});input.value='';button.disabled=true;result.textContent='';const r=await fetch('/api/reward-claims/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:payload,cache:'no-store',credentials:'same-origin'});payload='';if(!r.ok)throw Error();const value=await r.json();if(value.confirmed!==true)throw Error();result.textContent='\u5df2\u786e\u8ba4\u7ed1\u5b9a';}catch{payload='';input.value='';result.textContent='\u786e\u8ba4\u5931\u8d25\uff0c\u8bf7\u91cd\u65b0\u68c0\u67e5\u7ed1\u5b9a\u7801';}finally{input.value='';button.disabled=false;}});
 document.getElementById('refresh').addEventListener('click',refresh);refresh();setInterval(refresh,5000);
 </script></body></html>"""
 
@@ -97,6 +104,64 @@ def start_local_status_server(node_client, port=8766):
                 self._send(503, body, "application/json; charset=utf-8")
                 return
             self._send(200, body, "application/json; charset=utf-8")
+
+        def do_POST(self):
+            expected_host = f"127.0.0.1:{self.server.server_port}"
+            expected_origin = f"http://127.0.0.1:{self.server.server_port}"
+            host_values = self.headers.get_all("Host", [])
+            origin_values = self.headers.get_all("Origin", [])
+            if host_values != [expected_host] or origin_values != [expected_origin]:
+                self._send(403, b"Forbidden", "text/plain; charset=utf-8")
+                return
+            path = urlsplit(self.path)
+            if path.path != "/api/reward-claims/confirm" or path.query or path.fragment:
+                self._send(404, b"Not found", "text/plain; charset=utf-8")
+                return
+            content_types = self.headers.get_all("Content-Type", [])
+            if (len(content_types) != 1
+                    or content_types[0].split(";", 1)[0].strip().lower() != "application/json"):
+                self._send(415, b"Unsupported media type", "text/plain; charset=utf-8")
+                return
+            lengths = self.headers.get_all("Content-Length", [])
+            if len(lengths) != 1 or not lengths[0].isascii() or not lengths[0].isdigit():
+                self._send(400, b"Invalid request", "text/plain; charset=utf-8")
+                return
+            if len(lengths[0]) > 4:
+                self._send(413, b"Invalid request", "text/plain; charset=utf-8")
+                return
+            length = int(lengths[0])
+            if not 1 <= length <= 4096:
+                self._send(413 if length > 4096 else 400, b"Invalid request", "text/plain; charset=utf-8")
+                return
+            try:
+                raw = self.rfile.read(length)
+                if len(raw) != length:
+                    raise ValueError
+                def unique_object(pairs):
+                    result = {}
+                    for key, value in pairs:
+                        if key in result:
+                            raise ValueError
+                        result[key] = value
+                    return result
+                value = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
+                challenge = value.get("challenge") if isinstance(value, dict) else None
+                if (not isinstance(value, dict) or set(value) != {"challenge"}
+                        or not isinstance(challenge, str) or not 32 <= len(challenge) <= 256
+                        or not challenge.isascii()
+                        or not all(char.isalnum() or char in "_-" for char in challenge)):
+                    raise ValueError
+            except (UnicodeError, ValueError, RecursionError):
+                self._send(400, b"Invalid request", "text/plain; charset=utf-8")
+                return
+            try:
+                confirmed = node_client.confirm_reward_claim(challenge)
+                if not isinstance(confirmed, dict) or confirmed.get("confirmed") is not True:
+                    raise ValueError
+            except Exception:
+                self._send(503, b'{"status":"unavailable"}', "application/json; charset=utf-8")
+                return
+            self._send(200, b'{"confirmed":true}', "application/json; charset=utf-8")
 
     server = _LocalStatusServer(("127.0.0.1", port), Handler)
     server_thread = threading.Thread(target=server.serve_forever,

@@ -76,6 +76,11 @@ class NodeStateRequest(StrictRequest):
     pass
 
 
+class RewardClaimConfirmRequest(StrictRequest):
+    challenge: Annotated[StrictStr, Field(min_length=32, max_length=256,
+        pattern=r"^[A-Za-z0-9_-]{32,256}$")]
+
+
 def _bearer(request: Request):
     values = request.headers.getlist("authorization")
     if len(values) != 1:
@@ -205,6 +210,22 @@ def install_shared_pool_routes(app, store, control_token, call_store, *, max_jso
             "Cache-Control": "no-store", "Vary": "Authorization",
         })
 
+    @app.get("/bridge/rewards/v1/claim-approval")
+    async def reward_claim_approval(request: Request, _auth=Depends(reward_reader)):
+        values = request.headers.getlist("x-reward-claim-digest")
+        if len(values) != 1 or not re.fullmatch(r"[0-9a-f]{64}", values[0]):
+            return JSONResponse({"available": False}, status_code=404, headers={
+                "Cache-Control": "no-store", "Vary": "Authorization, X-Reward-Claim-Digest",
+            })
+        approval = await call_store(store.shared_reward_claim_approval, values[0])
+        if approval is None:
+            return JSONResponse({"available": False}, status_code=404, headers={
+                "Cache-Control": "no-store", "Vary": "Authorization, X-Reward-Claim-Digest",
+            })
+        return JSONResponse(approval, headers={
+            "Cache-Control": "no-store", "Vary": "Authorization, X-Reward-Claim-Digest",
+        })
+
     @app.post(control_prefix + "/pools")
     async def create_pool(request: Request, _auth=Depends(operator)):
         data = await _json_request(request, PoolCreate, max_json_bytes)
@@ -311,6 +332,15 @@ def install_shared_pool_routes(app, store, control_token, call_store, *, max_jso
         return await call_store(store.enroll_shared_node, data["invite_code"],
                                 data["node_id"], data["executor_instance"], data["profiles"],
                                 accept_shared_data=data["accept_shared_data"])
+
+    @app.post(node_prefix + "/reward-claims/confirm")
+    async def confirm_reward_claim(request: Request,
+                                   identity: SharedNodeIdentity = Depends(node)):
+        data = await _json_request(request, RewardClaimConfirmRequest, max_json_bytes)
+        result = await call_store(store.confirm_shared_reward_claim, identity, data["challenge"])
+        return JSONResponse(result, headers={
+            "Cache-Control": "no-store", "Vary": "Authorization",
+        })
 
     @app.post(node_prefix + "/heartbeat")
     async def heartbeat(request: Request, identity: SharedNodeIdentity = Depends(node)):

@@ -18,6 +18,7 @@ ACTIVE_ASSIGNMENT_SQL = "'assigned','claimed','running','execution_unknown','awa
 SLOT_HOLDING_STATES = ("assigned", "claimed", "running", "execution_unknown")
 SLOT_HOLDING_SQL = "'assigned','claimed','running','execution_unknown'"
 POOL_AUDIT_CAPACITY = 10_000
+REWARD_CLAIM_TTL_SECONDS = 600
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,11 @@ class SharedPoolMixin:
             CREATE TABLE IF NOT EXISTS shared_node_credentials (
                 token_hash TEXT PRIMARY KEY, pool_id TEXT NOT NULL, node_id TEXT NOT NULL,
                 executor TEXT NOT NULL, created REAL NOT NULL, revoked REAL);
+            CREATE TABLE IF NOT EXISTS shared_reward_claim_approvals (
+                challenge_digest TEXT PRIMARY KEY, pool_id TEXT NOT NULL, node_id TEXT NOT NULL,
+                executor TEXT NOT NULL, expires REAL NOT NULL);
+            CREATE INDEX IF NOT EXISTS shared_reward_claims_by_node
+                ON shared_reward_claim_approvals(pool_id,node_id,executor);
             CREATE TABLE IF NOT EXISTS shared_node_status (
                 pool_id TEXT NOT NULL, node_id TEXT NOT NULL, executor TEXT NOT NULL,
                 seen REAL NOT NULL, state TEXT NOT NULL, profiles TEXT NOT NULL,
@@ -828,6 +834,72 @@ class SharedPoolMixin:
         return {"tracking": "since_schema_v5_activation", "tracking_since": tracking_since,
                 "truncated": truncated, "nodes": items}
 
+    def confirm_shared_reward_claim(self, identity, challenge):
+        from .domain import _fail
+        if (not isinstance(identity, SharedNodeIdentity)
+                or not isinstance(challenge, str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", challenge)):
+            _fail("invalid_reward_claim")
+        digest = self._shared_hash(challenge)
+        now = self.clock()
+        with self._transaction() as con:
+            node = con.execute(
+                "SELECT state FROM shared_nodes WHERE pool_id=? AND node_id=? AND executor=?",
+                (identity.pool_id, identity.node_id, identity.executor_instance),
+            ).fetchone()
+            if node is None:
+                _fail("node_not_registered", 403)
+            if node["state"] not in {"active", "draining"}:
+                _fail("node_not_active", 403)
+            existing = con.execute(
+                "SELECT pool_id,node_id,executor,expires FROM shared_reward_claim_approvals "
+                "WHERE challenge_digest=?", (digest,),
+            ).fetchone()
+            if existing is not None:
+                if (existing["pool_id"] != identity.pool_id
+                        or existing["node_id"] != identity.node_id
+                        or existing["executor"] != identity.executor_instance):
+                    _fail("reward_claim_conflict", 409)
+                if existing["expires"] <= now:
+                    _fail("reward_claim_expired", 410)
+                return {"confirmed": True}
+            con.execute(
+                "INSERT INTO shared_reward_claim_approvals "
+                "(challenge_digest,pool_id,node_id,executor,expires) VALUES(?,?,?,?,?)",
+                (digest, identity.pool_id, identity.node_id,
+                 identity.executor_instance, now + REWARD_CLAIM_TTL_SECONDS),
+            )
+        return {"confirmed": True}
+
+    def shared_reward_claim_approval(self, challenge_digest):
+        if (not isinstance(challenge_digest, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", challenge_digest)):
+            return None
+        now = self.clock()
+        with self._read_transaction() as con:
+            row = con.execute("""SELECT a.pool_id,a.node_id,a.executor,a.expires,
+                n.state AS node_state,p.name AS pool_name
+                FROM shared_reward_claim_approvals a
+                JOIN shared_nodes n ON n.pool_id=a.pool_id AND n.node_id=a.node_id
+                  AND n.executor=a.executor
+                JOIN shared_pools p ON p.pool_id=a.pool_id
+                WHERE a.challenge_digest=?""", (challenge_digest,)).fetchone()
+            if row is None or row["expires"] <= now or row["node_state"] not in {"active", "draining"}:
+                return None
+            fields = (row["pool_id"], row["node_id"], row["executor"], row["pool_name"])
+            if any(not isinstance(value, str) or not value or len(value) > 128 for value in fields):
+                return None
+            rewardable_images = self._node_execution_counts(
+                con, row["pool_id"], row["node_id"], row["executor"]
+            ).get("rewardable_images")
+            if type(rewardable_images) is not int or rewardable_images < 0:
+                return None
+            return {
+                "pool_id": row["pool_id"], "node_id": row["node_id"],
+                "executor_instance": row["executor"], "node_state": row["node_state"],
+                "rewardable_images": rewardable_images, "pool_name": row["pool_name"],
+            }
+
     def set_shared_node_state(self, pool_id, node_id, executor, state):
         from .domain import _fail
         if state not in {"active", "draining", "revoked"}:
@@ -839,6 +911,10 @@ class SharedPoolMixin:
                 _fail("node_not_registered", 404)
             con.execute("UPDATE shared_nodes SET state=?,revoked=? WHERE pool_id=? AND node_id=? AND executor=?",
                         (state, self.clock() if state == "revoked" else None, pool_id, node_id, executor))
+            if state == "revoked":
+                con.execute("DELETE FROM shared_reward_claim_approvals "
+                            "WHERE pool_id=? AND node_id=? AND executor=?",
+                            (pool_id, node_id, executor))
             active = int(state == "active")
             con.execute("UPDATE node_registry SET active=? WHERE source='_shared_pool' AND workspace=? AND node=? AND executor=?",
                         (active, pool_id, node_id, executor))
