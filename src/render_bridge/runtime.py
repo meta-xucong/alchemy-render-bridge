@@ -155,7 +155,7 @@ class RuntimeConfig:
                                         if account_binding_client else None),
                 store_concurrency=self.store_concurrency)
             if account_binding_client is not None:
-                app.add_event_handler("shutdown", account_binding_client.close)
+                app.router.add_event_handler("shutdown", account_binding_client.close)
         else:
             app = create_runtime_app(store=store, source_tokens={source: scope},
                 node_tokens={node: NodeScope(self.source_id, self.workspace_id, self.node_id, self.executor_instance)},

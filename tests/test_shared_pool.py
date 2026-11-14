@@ -983,5 +983,36 @@ class SharedPoolAPITests(unittest.IsolatedAsyncioTestCase):
                           shared_pool_enabled=True, store_concurrency=1).validate()
 
 
+class SharedRuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_account_binding_client_uses_router_shutdown_lifecycle(self):
+        class StatusClient:
+            closed = False
+
+            def status_for(self, identity):
+                return {"available": False, "bound": False, "account_user_id": None}
+
+            async def close(self):
+                self.closed = True
+
+        client = StatusClient()
+        temp = self.enterContext(tempfile.TemporaryDirectory())
+        config = RuntimeConfig(
+            Path(temp),
+            "source-fixture", "workspace-fixture", "node-fixture", "executor-fixture",
+            enabled_profiles=("fake-image",), dispatch_mode="node_pull",
+            shared_pool_enabled=True, store_concurrency=2,
+        )
+        with patch("render_bridge.account_binding.AlchemyNodeAccountStatusClient",
+                   return_value=client):
+            app = config.build_app({
+                "BRIDGE_CONTROL_TOKEN": "control-fixture",
+                "BRIDGE_REWARD_READ_TOKEN": "reward-fixture",
+            })
+
+        async with app.router.lifespan_context(app):
+            self.assertFalse(client.closed)
+        self.assertTrue(client.closed)
+
+
 if __name__ == "__main__":
     unittest.main()
