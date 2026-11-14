@@ -72,6 +72,7 @@ traffic; it does not mean image execution runs in the API process.
 | [08 Implementation audit](08_IMPLEMENTATION_AUDIT_AND_CORRECTION_MODEL.md) | Root-cause model, authority boundaries, and regression evidence |
 | [09 Execution ledger and local status](09_NODE_EXECUTION_LEDGER_REWARDS_AND_LOCAL_STATUS.md) | Per-node execution accounting, Alchemy admin projection, and local node self-status |
 | [10 Release readiness gap closure](10_RELEASE_READINESS_GAP_CLOSURE.md) | CI collection, running source revision visibility, release evidence, and explicit product limits |
+| [11 Alchemy node account status projection](11_ALCHEMY_NODE_ACCOUNT_STATUS_PROJECTION.md) | Read-only active account display in the authenticated local node self-status page |
 
 ## Release evidence boundary
 

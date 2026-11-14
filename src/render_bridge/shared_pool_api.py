@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hmac
+import inspect
 import os
 import re
 from datetime import datetime, timezone
@@ -93,7 +94,8 @@ def _bearer(request: Request):
 
 
 def install_shared_pool_routes(app, store, control_token, call_store, *, max_json_bytes,
-                               max_upload_bytes, reward_read_token=None):
+                               max_upload_bytes, reward_read_token=None,
+                               account_binding_loader=None):
     control_prefix = "/bridge/control/v2"
     source_prefix = "/bridge/source/v2"
     node_prefix = "/bridge/node/v2"
@@ -355,7 +357,28 @@ def install_shared_pool_routes(app, store, control_token, call_store, *, max_jso
 
     @app.get(node_prefix + "/status")
     async def node_self_status(identity: SharedNodeIdentity = Depends(node)):
-        return JSONResponse(await call_store(store.shared_node_self_status, identity), headers={
+        value = await call_store(store.shared_node_self_status, identity)
+        binding = {"available": False, "bound": False, "account_user_id": None}
+        if account_binding_loader is not None:
+            try:
+                candidate = account_binding_loader(identity)
+                if inspect.isawaitable(candidate):
+                    candidate = await candidate
+                if (isinstance(candidate, dict)
+                        and set(candidate) == {"available", "bound", "account_user_id"}
+                        and candidate.get("available") is True
+                        and type(candidate.get("bound")) is bool
+                        and ((candidate["bound"]
+                              and type(candidate.get("account_user_id")) is int
+                              and candidate["account_user_id"] > 0)
+                             or (not candidate["bound"]
+                                 and candidate.get("account_user_id") is None))):
+                    binding = candidate
+            except Exception:
+                # Account lookup is a read-only enhancement; it cannot block node status.
+                pass
+        value["account_binding"] = binding
+        return JSONResponse(value, headers={
             "Cache-Control": "no-store", "Vary": "Authorization",
         })
 
