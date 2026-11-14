@@ -16,6 +16,11 @@ if (-not $ConfigPath) { $ConfigPath = Join-Path $runtimeRoot 'agent.json' }
 $python = Join-Path $runtimeRoot 'venv\Scripts\python.exe'
 $pushedLocation = $false
 
+function Invoke-PythonCode([string]$Interpreter, [string]$Code) {
+    $encodedCode = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Code))
+    & $Interpreter -c "import base64;exec(base64.b64decode('$encodedCode'))"
+}
+
 function Resolve-Python312 {
     $candidates = @()
     $command = Get-Command python3.12.exe -ErrorAction SilentlyContinue
@@ -30,14 +35,15 @@ function Resolve-Python312 {
     $candidates += (Join-Path $env:USERPROFILE '.local\bin\python3.12.exe')
     foreach ($candidate in ($candidates | Select-Object -Unique)) {
         if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
-        $version = & $candidate -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
+        $version = Invoke-PythonCode -Interpreter $candidate -Code 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
         if ($LASTEXITCODE -eq 0 -and $version.Trim() -eq '3.12') { return $candidate }
     }
     throw 'Python 3.12 is required. Install Python 3.12, then reopen this launcher.'
 }
 
 function Test-SharedPoolRuntime {
-    & $python -c 'import importlib.util, pathlib, sys; spec=importlib.util.find_spec("render_bridge"); root=(pathlib.Path.cwd()/"src").resolve(); package=pathlib.Path(spec.origin).resolve() if spec and spec.origin else None; required=("fastapi", "httpx", "uvicorn", "PIL", "pydantic", "anyio"); sys.exit(0 if package and package.is_relative_to(root) and all(importlib.util.find_spec(name) for name in required) else 1)'
+    $code = 'import importlib.util, pathlib, sys; spec=importlib.util.find_spec("render_bridge"); root=(pathlib.Path.cwd()/"src").resolve(); package=pathlib.Path(spec.origin).resolve() if spec and spec.origin else None; required=("fastapi", "httpx", "uvicorn", "PIL", "pydantic", "anyio"); sys.exit(0 if package and package.is_relative_to(root) and all(importlib.util.find_spec(name) for name in required) else 1)'
+    $null = Invoke-PythonCode -Interpreter $python -Code $code
     return $LASTEXITCODE -eq 0
 }
 
@@ -94,11 +100,11 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the isolated Python environment.' }
     }
 
-    $pythonVersion = & $python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
+    $pythonVersion = Invoke-PythonCode -Interpreter $python -Code 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
     if ($LASTEXITCODE -ne 0 -or $pythonVersion.Trim() -ne '3.12') {
         throw 'The local shared-pool environment must use Python 3.12. Repair or recreate that environment, then run this launcher again.'
     }
-    & $python -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("pip") else 1)'
+    $null = Invoke-PythonCode -Interpreter $python -Code 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("pip") else 1)'
     if ($LASTEXITCODE -ne 0) {
         & $python -m ensurepip --upgrade
         if ($LASTEXITCODE -ne 0) { throw 'Could not restore pip in the local Python environment.' }
