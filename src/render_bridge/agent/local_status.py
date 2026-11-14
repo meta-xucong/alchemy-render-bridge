@@ -18,6 +18,7 @@ button{border:0;border-radius:8px;background:#1457d9;color:white;padding:9px 14p
 </style></head><body><header><div class="row"><div><h1>本机 RenderBridge 节点</h1><div id="node">正在读取节点…</div></div>
 <button id="refresh" type="button">立即刷新</button></div><p class="muted">每 5 秒自动更新。未知和待处理任务单独显示。</p><div id="tracking" class="muted">统计启用时间：读取中</div><div id="updated" class="muted">尚未更新</div></header>
 <section class="card"><h2>当前状态</h2><div id="current">正在读取…</div></section>
+<section class="card"><h2>Alchemy账号绑定</h2><div id="accountBinding" aria-live="polite">正在读取…</div><p class="muted">仅显示当前节点的绑定状态和账号编号。</p></section>
 <section class="card"><h2>累计执行次数</h2><div class="metrics">
 <div class="metric">总开始数<strong id="total">—</strong></div><div class="metric">成功<strong id="success">—</strong></div>
 <div class="metric">失败<strong id="failed">—</strong></div><div class="metric">执行中<strong id="progress">—</strong></div>
@@ -35,7 +36,8 @@ const labels={active:'正常',draining:'暂停接新任务',revoked:'已撤销',
 const label=(v)=>labels[v]||v||'未知'; const set=(id,v)=>{document.getElementById(id).textContent=String(v??0)};
 function stamp(v){if(!v)return '—';const d=new Date(v);return Number.isNaN(d.valueOf())?'—':d.toLocaleString()}
 function elapsed(v){if(!v)return '';const seconds=Math.max(0,Math.floor((Date.now()-new Date(v).valueOf())/1000));return ` · 已运行 ${Math.floor(seconds/60)}分${seconds%60}秒`}
-function render(data){const n=data.node||{},m=data.metrics||{},c=data.current_execution;const heartbeat=Number.isInteger(n.heartbeat_age_seconds)?` · 心跳 ${n.heartbeat_age_seconds} 秒前`:'';document.getElementById('node').textContent=`${n.node_id||'未知节点'} · ${n.executor_instance||''} · ${label(n.state)} / ${label(n.availability)}${heartbeat}`;
+function render(data){const n=data.node||{},m=data.metrics||{},c=data.current_execution;const binding=data.account_binding||{};const heartbeat=Number.isInteger(n.heartbeat_age_seconds)?` · 心跳 ${n.heartbeat_age_seconds} 秒前`:'';document.getElementById('node').textContent=`${n.node_id||'未知节点'} · ${n.executor_instance||''} · ${label(n.state)} / ${label(n.availability)}${heartbeat}`;
+const account=document.getElementById('accountBinding');if(binding.available!==true){account.textContent='Alchemy账号绑定状态暂不可用，节点运行不受影响。'}else if(binding.bound===true&&Number.isSafeInteger(binding.account_user_id)&&binding.account_user_id>0){account.textContent=`已绑定 Alchemy 账号 #${binding.account_user_id}`}else if(binding.bound===false){account.textContent='当前节点未绑定 Alchemy 账号。'}else{account.textContent='Alchemy账号绑定状态暂不可用，节点运行不受影响。'}
 document.getElementById('current').textContent=c?`${label(c.state)} · ${c.profile||'未知工具'} · 开始于 ${stamp(c.started_at)}${elapsed(c.started_at)}${c.counted?'':' · 尚未计入执行次数'}`:'当前没有分配中的任务';
 set('total',m.total_started);set('success',m.succeeded);set('failed',m.failed);set('progress',m.in_progress);set('waiting',m.awaiting_user);set('unknown',m.unknown);set('canceled',m.canceled);
 const list=document.getElementById('recent');list.replaceChildren();for(const item of data.recent_executions||[]){const li=document.createElement('li');const reason=item.failure_code?` · ${item.failure_code}`:'';li.textContent=`${label(item.state)} · ${item.profile||'未知工具'} · ${stamp(item.started_at)}${reason}`;list.append(li)}if(!list.children.length){const li=document.createElement('li');li.textContent='尚无记录';list.append(li)}document.getElementById('tracking').textContent=`统计启用时间：${stamp(data.tracking_since)}`;document.getElementById('updated').textContent=`最近更新：${new Date().toLocaleTimeString()}`}

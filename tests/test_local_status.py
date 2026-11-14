@@ -13,6 +13,8 @@ class FakeNodeClient:
         self.calls += 1
         return {"node": {"node_id": "fixture-node", "executor_instance": "fixture-executor"},
                 "metrics": {"total_started": 2, "succeeded": 1, "failed": 0},
+                "account_binding": {"available": True, "bound": True,
+                                    "account_user_id": 41},
                 "recent_executions": [], "tracking_since": "2026-11-12T00:00:00Z"}
 
 
@@ -37,12 +39,15 @@ def test_loopback_status_page_keeps_node_token_server_side_and_rejects_foreign_h
         assert headers["Cache-Control"] == "no-store"
         assert "127.0.0.1" in url and "localStorage" not in page
         assert "node_token" not in page and "Authorization" not in page
+        assert "Alchemy账号绑定" in page
 
         status, headers, body = get("/api/status")
         value = body.decode("utf-8")
         assert status == 200
         assert 'fixture-node' in value
         assert 'total_started' in value
+        assert '"account_binding":{"available":true,"bound":true,"account_user_id":41}' in value
+        assert "已绑定 Alchemy 账号 #${binding.account_user_id}" in page
         assert "default-src 'none'" in headers["Content-Security-Policy"]
 
         status, _, _ = get("/", {"Host": "example.invalid"})

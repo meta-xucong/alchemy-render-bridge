@@ -20,12 +20,14 @@ from .profiles import enabled_profile_ids
 
 def create_runtime_app(*, store, source_tokens, node_tokens, dispatch_tokens,
                        shared_pool_enabled=False, control_token=None, reward_read_token=None,
+                       account_binding_loader=None,
                        store_concurrency=1):
     """Explicit injected fixture/development authority; never generates credentials."""
     return create_app(store=store, source_tokens=source_tokens,
                       node_tokens=node_tokens, dispatch_tokens=dispatch_tokens,
                       shared_pool_enabled=shared_pool_enabled,
                       control_token=control_token, reward_read_token=reward_read_token,
+                      account_binding_loader=account_binding_loader,
                       store_concurrency=store_concurrency)
 
 
@@ -137,11 +139,23 @@ class RuntimeConfig:
                             dispatch_mode=self.dispatch_mode,
                             shared_pool_enabled=self.shared_pool_enabled)
         scope = SourceScope(self.source_id, self.workspace_id)
+        account_binding_client = None
+        if self.shared_pool_enabled and reward_read:
+            from .account_binding import AlchemyNodeAccountStatusClient
+            # The existing reward-read secret is used only as HMAC key material
+            # for this separate, identity-scoped status projection. It is never
+            # sent to Alchemy as a bearer credential.
+            account_binding_client = AlchemyNodeAccountStatusClient(
+                signing_secret=reward_read)
         if self.shared_pool_enabled:
             app = create_runtime_app(store=store, source_tokens={}, node_tokens=None,
                 dispatch_tokens=None, shared_pool_enabled=True, control_token=control,
                 reward_read_token=reward_read,
+                account_binding_loader=(account_binding_client.status_for
+                                        if account_binding_client else None),
                 store_concurrency=self.store_concurrency)
+            if account_binding_client is not None:
+                app.add_event_handler("shutdown", account_binding_client.close)
         else:
             app = create_runtime_app(store=store, source_tokens={source: scope},
                 node_tokens={node: NodeScope(self.source_id, self.workspace_id, self.node_id, self.executor_instance)},

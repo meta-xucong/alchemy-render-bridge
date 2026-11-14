@@ -131,6 +131,7 @@ def create_app(
     shared_pool_enabled: bool = False,
     control_token: str | None = None,
     reward_read_token: str | None = None,
+    account_binding_loader=None,
     store_concurrency: int = 1,
 ) -> FastAPI:
     """Create an isolated fixture API with no implicit authority or executor."""
@@ -370,5 +371,6 @@ def create_app(
         install_shared_pool_routes(app, store, control_token, call_store,
                                    max_json_bytes=max_json_bytes,
                                    max_upload_bytes=max_upload_bytes,
-                                   reward_read_token=reward_read_token)
+                                   reward_read_token=reward_read_token,
+                                   account_binding_loader=account_binding_loader)
     return app

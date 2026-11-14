@@ -651,8 +651,14 @@ class SharedPoolAPITests(unittest.IsolatedAsyncioTestCase):
                                  enabled_profiles=("fake-image", "midjourney-manual"),
                                  max_queued_tasks=100, shared_pool_enabled=True)
         self.reward_read_token = "reward-read-test-token"
+        self.account_binding_state = {"fail": False}
+        async def account_binding(identity):
+            if self.account_binding_state["fail"]:
+                raise RuntimeError("account service unavailable")
+            return {"available": True, "bound": True, "account_user_id": 41}
         self.app = create_app(store=self.store, source_tokens={}, shared_pool_enabled=True,
                               control_token="operator-test", reward_read_token=self.reward_read_token,
+                              account_binding_loader=account_binding,
                               store_concurrency=16)
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),
                                         base_url="http://127.0.0.1")
@@ -683,7 +689,19 @@ class SharedPoolAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(node_status.status_code, 200, node_status.text)
         self.assertEqual(node_status.json()["node"]["node_id"], "reward-node")
         self.assertEqual(node_status.json()["node"]["provider_ref"], "provider-22")
+        self.assertEqual(node_status.json()["account_binding"], {
+            "available": True, "bound": True, "account_user_id": 41,
+        })
         self.assertEqual(node_status.headers.get("cache-control"), "no-store")
+
+        self.account_binding_state["fail"] = True
+        status_during_account_outage = await self.req(
+            "GET", "/bridge/node/v2/status", token=node_token)
+        self.assertEqual(status_during_account_outage.status_code, 200)
+        self.assertEqual(status_during_account_outage.json()["node"]["node_id"], "reward-node")
+        self.assertEqual(status_during_account_outage.json()["account_binding"], {
+            "available": False, "bound": False, "account_user_id": None,
+        })
 
         reward_path = "/bridge/rewards/v1/nodes"
         self.assertEqual((await self.client.get(reward_path)).status_code, 401)
@@ -699,6 +717,8 @@ class SharedPoolAPITests(unittest.IsolatedAsyncioTestCase):
         public = await self.client.get("/bridge/status/v1")
         self.assertEqual(public.status_code, 200)
         self.assertNotIn("provider_ref", public.text)
+        self.assertNotIn("account_binding", public.text)
+        self.assertNotIn("account_user_id", public.text)
         self.assertNotIn("total_started", public.text)
         self.assertNotIn("reward-executor", public.text)
 
