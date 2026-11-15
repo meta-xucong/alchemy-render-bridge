@@ -397,6 +397,133 @@ class CodexExecutor:
             return ExecutionResult('needs_attention', 'codex_version_not_validated', details=probe)
         return None
 
+    @staticmethod
+    def _is_image_generation_item(item):
+        return (isinstance(item, dict)
+                and (item.get('type') == 'imageGeneration'
+                     or (item.get('type') == 'Extension'
+                         and item.get('kind') == 'image_gen.generation')))
+
+    @classmethod
+    def _has_codex_thread_output(cls, thread_id):
+        """Fail closed if Codex's thread-scoped output directory has any files."""
+        if (not isinstance(thread_id, str) or not thread_id
+                or Path(thread_id).name != thread_id or '/' in thread_id or '\\' in thread_id):
+            return True
+        home = cls._codex_home()
+        generated = home / 'generated_images'
+        thread_root = generated / thread_id
+        try:
+            for candidate in (home, generated, thread_root):
+                if candidate.is_symlink() or (hasattr(candidate, 'is_junction')
+                                               and candidate.is_junction()):
+                    return True
+            if not home.exists() or not generated.exists() or not thread_root.exists():
+                return False
+            resolved_home = home.resolve(strict=True)
+            resolved_generated = generated.resolve(strict=True)
+            resolved_thread = thread_root.resolve(strict=True)
+            if (resolved_generated.parent != resolved_home
+                    or resolved_thread.parent != resolved_generated):
+                return True
+            return next(thread_root.iterdir(), None) is not None
+        except FileNotFoundError:
+            return False
+        except (OSError, RuntimeError):
+            return True
+
+    @staticmethod
+    def _has_unexpected_attempt_output(files):
+        """Fail closed when the attempt workspace contains unclassified output.
+
+        Codex runs with the attempt directory as its writable cwd. A failed
+        image event without ``savedPath`` cannot rule out an image written
+        directly there, so only known lifecycle/input files are ignored.
+        """
+        allowed = {
+            'binding.json', 'started', 'codex-thread.json', 'codex-turn.json',
+            'codex-completion.json', 'codex-terminal-failure.json',
+            'codex-timeout-failure.json', 'codex-execution-diagnostic.json',
+        }
+        try:
+            root = files.path
+            if (root.is_symlink() or (hasattr(root, 'is_junction') and root.is_junction())
+                    or not root.is_dir()):
+                return True
+            for candidate in root.iterdir():
+                if (candidate.is_symlink()
+                        or (hasattr(candidate, 'is_junction') and candidate.is_junction())
+                        or not candidate.is_file()):
+                    return True
+                if candidate.name in allowed:
+                    continue
+                if (len(candidate.name) == len('input-00.original')
+                        and candidate.name.startswith('input-')
+                        and candidate.name[6:8].isdigit()
+                        and candidate.name.endswith('.original')):
+                    continue
+                return True
+            return False
+        except (OSError, RuntimeError):
+            return True
+
+    def _failed_image_generation(self, files, thread_id, turn_id, events, turn,
+                                 cli_version=None):
+        """Accept only a uniquely bound failed image item in a completed turn.
+
+        A failed item with no saved original proves this attempt produced no
+        uploadable image. Ambiguous events, partial outputs, and unfinished turns
+        remain unknown and keep the assignment latched.
+        """
+        if turn.get('status') != 'completed':
+            return None
+        image_items = []
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            params = event.get('params', {})
+            if not isinstance(params, dict):
+                continue
+            if params.get('threadId') != thread_id or params.get('turnId') != turn_id:
+                continue
+            method = event.get('method')
+            if isinstance(method, str) and method.startswith('item/imageGeneration/'):
+                return None
+            item = params.get('item')
+            if self._is_image_generation_item(item):
+                image_items.append(item)
+        if len(image_items) != 1:
+            return None
+        item = image_items[0]
+        if (item.get('status') != 'failed' or not isinstance(item.get('id'), str)
+                or not item['id'] or item.get('savedPath') not in (None, '')):
+            return None
+        if (self._has_codex_thread_output(thread_id)
+                or self._has_unexpected_attempt_output(files)):
+            return None
+        summary_items = turn.get('items')
+        if isinstance(summary_items, list):
+            summary_images = [value for value in summary_items
+                              if self._is_image_generation_item(value)]
+            if summary_images and (len(summary_images) != 1
+                    or summary_images[0].get('id') != item['id']
+                    or summary_images[0].get('status') != 'failed'
+                    or summary_images[0].get('savedPath') not in (None, '')):
+                return None
+        raw = json.dumps({'thread_id': thread_id, 'turn_id': turn_id, 'events': events},
+                         sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+        path = files.path / 'codex-terminal-failure.json'
+        try:
+            files.write_exclusive(path, raw)
+        except FileExistsError:
+            if path.read_bytes() != raw:
+                raise ValueError('Terminal evidence changed')
+        return ExecutionResult('terminal_failure', 'codex_image_generation_failed', details={
+            'terminal_failure': {'schema_version': '1', 'thread_id': thread_id,
+                'turn_id': turn_id, 'reason_code': 'codex_image_generation_failed',
+                'completion_sha256': hashlib.sha256(raw).hexdigest()},
+            **({'cli_version': cli_version} if cli_version in SUPPORTED_CLI_VERSIONS else {})})
+
     def _terminal_failure(self, request, files, thread_id, turn_id, events, cli_version=None):
         # Only known pre-generation account failures with a complete bound turn
         # and no image tool activity establish physical completion. A transport
@@ -410,19 +537,22 @@ class CodexExecutor:
         if len(matched) != 1:
             return None
         turn = matched[0]
+        image_failure = self._failed_image_generation(
+            files, thread_id, turn_id, events, turn, cli_version)
+        if image_failure is not None:
+            return image_failure
         error = turn.get('error')
         items = turn.get('items')
         if (turn.get('status') != 'failed' or not isinstance(error, dict)
                 or error.get('codexErrorInfo') not in ('unauthorized', 'usageLimitExceeded')
                 or not isinstance(items, list) or any(not isinstance(item, dict) for item in items)):
             return None
-        if any(item.get('type') == 'imageGeneration' for item in items):
+        if any(self._is_image_generation_item(item) for item in items):
             return None
         for event in events:
             params = event.get('params', {})
             if (params.get('threadId') == thread_id and params.get('turnId') == turn_id
-                    and ((isinstance(params.get('item'), dict)
-                          and params['item'].get('type') == 'imageGeneration')
+                    and (self._is_image_generation_item(params.get('item'))
                          or event.get('method', '').startswith('item/imageGeneration/'))):
                 return None
         raw = json.dumps({'thread_id': thread_id, 'turn_id': turn_id, 'events': events},
@@ -964,9 +1094,7 @@ class CodexExecutor:
             if event.get('method') != 'item/completed' or params.get('turnId') != turn_id:
                 continue
             item = params.get('item', {})
-            native_image = (item.get('type') == 'imageGeneration'
-                            or (item.get('type') == 'Extension'
-                                and item.get('kind') == 'image_gen.generation'))
+            native_image = self._is_image_generation_item(item)
             if native_image and item.get('status') == 'completed':
                 identity = item.get('id')
                 if not isinstance(identity, str) or not identity:
