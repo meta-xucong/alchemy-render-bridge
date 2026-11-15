@@ -149,6 +149,31 @@ class SharedPoolStoreTests(unittest.TestCase):
         self.assertEqual(self.store.shared_node_reward_metrics()["nodes"][0]["metrics"],
                          status["metrics"])
 
+    def test_terminal_image_failure_releases_same_shared_assignment_without_reward(self):
+        identity, _ = self.add_node(1, profiles=("codex-image",))
+        scope, _ = self.add_workspace(1)
+        task = self.store.create_task(
+            scope, task_payload("codex-image-failure", self.now, profile_id="codex-image"))[
+                "remote_task_id"]
+        assignment = self.store.next_shared_assignment(identity)["assignment"]
+        claim = self.store.claim_shared_assignment(identity, assignment["assignment_id"])
+        grant = self.store.start_shared_execution(
+            identity, assignment["assignment_id"], claim["claim_id"])
+        evidence = {"schema_version": "1", "thread_id": "thread-fixture",
+                    "turn_id": "turn-fixture", "reason_code": "codex_image_generation_failed",
+                    "completion_sha256": "a" * 64}
+
+        confirmation = self.store.confirm_shared_terminal_failure(identity,
+            assignment["assignment_id"], {"attempt_id": grant["attempt_id"], "evidence": evidence})
+
+        self.assertEqual((confirmation["status"], confirmation["evidence"]), ("failed", evidence))
+        remote = self.store.get_assigned_task_for_task(identity, task)
+        self.assertEqual((remote["state"], remote["assignment_state"], remote["delivery_ack"]),
+                         ("failed", "failed", "pending"))
+        status = self.store.shared_node_self_status(identity)
+        self.assertEqual((status["metrics"]["failed"], status["metrics"]["rewardable_images"]), (1, 0))
+        self.assertIsNone(self.store.next_shared_assignment(identity)["assignment"])
+
     def test_manual_ready_counts_once_and_stays_awaiting_user(self):
         identity, _ = self.add_node(1, ("midjourney-manual",))
         scope, _ = self.add_workspace(1)

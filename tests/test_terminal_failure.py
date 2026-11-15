@@ -1,4 +1,5 @@
 """Bound terminal account failure recovery; synthetic events, no real CLI/account."""
+import json
 import unittest
 from unittest.mock import patch
 
@@ -21,6 +22,17 @@ def events(info='unauthorized'):
     return [{'method': 'turn/completed', 'params': {'threadId': 'thread',
         'turn': {'id': 'turn', 'status': 'failed', 'items': [],
                  'error': {'codexErrorInfo': info, 'message': 'PRIVATE ERROR'}}}}]
+
+
+def failed_image_events():
+    image = {'type': 'imageGeneration', 'id': 'failed-image', 'status': 'failed',
+             'result': '', 'failure': None}
+    return [
+        {'method': 'item/completed', 'params': {
+            'threadId': 'thread', 'turnId': 'turn', 'item': image}},
+        {'method': 'turn/completed', 'params': {
+            'threadId': 'thread', 'turn': {'id': 'turn', 'status': 'completed'}}},
+    ]
 
 
 class TerminalFailureTests(unittest.TestCase):
@@ -61,6 +73,42 @@ class TerminalFailureTests(unittest.TestCase):
         with self.assertRaises(DomainError):
             self.store.withdraw_before_start(self.scope,task,dict(schema_version='1',withdrawal_key='no',
                 origin_key=task_value['origin_key'],attempt_id=task_value['attempt_id'],task_digest=task_value['task_digest']))
+
+    def test_failed_image_event_reconciles_same_task_without_retry_or_artifact(self):
+        agent,executor=self.configured();task=self.create('codex-image')
+        with patch.object(executor,'_has_codex_thread_output',return_value=False):
+            result=self.execute_failure(agent,executor,task,failed_image_events())
+        self.assertEqual('terminal_failed',result['outcome'])
+        remote=self.store.get_task(self.scope,task)
+        self.assertEqual('failed',remote['state'])
+        self.assertIsNone(remote['receipt_id'])
+        self.assertFalse(agent.journal.occupied_by_other('next'))
+        record=agent.journal.get(task)
+        self.assertEqual('terminal_failed',record['state'])
+        self.assertEqual('codex_image_generation_failed',record['terminal_failure']['reason_code'])
+        with self.store._connection() as con:
+            failure=con.execute('SELECT payload FROM terminal_failures WHERE task_id=?',(task,)).fetchone()
+        self.assertEqual('codex_image_generation_failed',
+                         json.loads(failure['payload'])['evidence']['reason_code'])
+        self.assertFalse((agent.journal.root/'attempts'/task/record['attempt_id']/'result.original').exists())
+        self.assertIsNone(agent.journal.health_fault('codex-image'))
+        with patch.object(executor,'execute',side_effect=AssertionError('failed attempt must not rerun')):
+            self.assertEqual('terminal_failed',agent.execute_task(task)['outcome'])
+
+    def test_failed_image_event_recovers_after_agent_restart_from_same_completion(self):
+        agent,executor=self.configured();task=self.create('codex-image')
+        with patch.object(agent,'_save_terminal_failure',side_effect=SystemExit('crash')):
+            with patch.object(executor,'_has_codex_thread_output',return_value=False):
+                with self.assertRaises(SystemExit):
+                    self.execute_failure(agent,executor,task,failed_image_events())
+        self.assertEqual('start_requested',agent.journal.get(task)['state'])
+        resumed,resumed_executor=self.configured()
+        with patch.object(resumed_executor,'_has_codex_thread_output',return_value=False), \
+             patch('subprocess.Popen',side_effect=AssertionError('must not relaunch Codex')):
+            resumed.heartbeat()
+        self.assertEqual('terminal_failed',resumed.journal.get(task)['state'])
+        self.assertEqual('failed',self.store.get_task(self.scope,task)['state'])
+        self.assertFalse(resumed.journal.occupied_by_other('next'))
 
     def test_terminal_failure_recovery_then_new_local_execution_and_old_no_replay(self):
         agent, executor=self.configured(); task=self.create('codex-image')

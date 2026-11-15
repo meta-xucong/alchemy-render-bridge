@@ -266,6 +266,101 @@ for line in sys.stdin:
             self.assertIsNone(result.artifact)
             self.assertFalse((root / 'executor/task/attempt/artifact.original').exists())
 
+    def test_failed_image_event_is_terminal_only_with_one_bound_completed_turn(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            request = ExecutionRequest('task', 'attempt', 'frozen prompt',
+                                       {'codex_adapter': 'codex_cli_imagegen_v1'})
+            image = {'type': 'imageGeneration', 'id': 'image-failed',
+                     'status': 'failed', 'result': '', 'failure': None}
+            events = [
+                {'method': 'item/completed', 'params': {
+                    'threadId': 'thread', 'turnId': 'turn', 'item': image}},
+                {'method': 'turn/completed', 'params': {
+                    'threadId': 'thread', 'turn': {'id': 'turn', 'status': 'completed'}}},
+            ]
+            executor = CodexExecutor(root / 'executor')
+            with patch.object(executor, '_has_codex_thread_output', return_value=False):
+                result = executor.collect_completed(
+                    request, thread_id='thread', turn_id='turn', events=events)
+            self.assertEqual((result.status, result.code),
+                             ('terminal_failure', 'codex_image_generation_failed'))
+            evidence = result.details['terminal_failure']
+            self.assertEqual(evidence['reason_code'], 'codex_image_generation_failed')
+            self.assertEqual((evidence['thread_id'], evidence['turn_id']), ('thread', 'turn'))
+            self.assertEqual(len(evidence['completion_sha256']), 64)
+            attempt = root / 'executor/task/attempt'
+            self.assertTrue((attempt / 'codex-terminal-failure.json').is_file())
+            self.assertFalse((attempt / 'artifact.original').exists())
+            with patch.object(executor, '_has_codex_thread_output', return_value=False):
+                recovered = executor.recover_terminal_failure(request)
+            self.assertEqual(recovered.status, 'terminal_failure')
+            self.assertEqual(recovered.details['terminal_failure'], evidence)
+
+    def test_failed_image_event_without_unambiguous_terminal_proof_stays_unresolved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            request = ExecutionRequest('task', 'attempt', 'frozen prompt',
+                                       {'codex_adapter': 'codex_cli_imagegen_v1'})
+            image = {'type': 'imageGeneration', 'id': 'image-failed',
+                     'status': 'failed', 'result': '', 'failure': None}
+            image_event = {'method': 'item/completed', 'params': {
+                'threadId': 'thread', 'turnId': 'turn', 'item': image}}
+            turn_event = {'method': 'turn/completed', 'params': {
+                'threadId': 'thread', 'turn': {'id': 'turn', 'status': 'completed'}}}
+            executor = CodexExecutor(root / 'executor')
+            cases = (
+                ([image_event], 'execution_unknown', 'codex_turn_not_confirmed_complete'),
+                ([image_event, {**turn_event, 'params': {
+                    'threadId': 'other-thread', 'turn': {'id': 'other-turn', 'status': 'completed'}}}],
+                 'execution_unknown', 'codex_turn_not_confirmed_complete'),
+                ([{**image_event, 'params': {**image_event['params'],
+                    'item': {**image, 'savedPath': str(root / 'unverified.png')}}}, turn_event],
+                 'needs_attention', 'codex_single_image_event_required'),
+                ([image_event, {**image_event, 'params': {**image_event['params'],
+                    'item': {**image, 'id': 'image-failed-2'}}}, turn_event],
+                 'needs_attention', 'codex_single_image_event_required'),
+            )
+            for events, expected_status, expected_code in cases:
+                with self.subTest(expected_status=expected_status, expected_code=expected_code):
+                    with patch.object(executor, '_has_codex_thread_output', return_value=False):
+                        result = executor.collect_completed(
+                            request, thread_id='thread', turn_id='turn', events=events)
+                    self.assertEqual((result.status, result.code), (expected_status, expected_code))
+                    self.assertIsNone(result.artifact)
+            with patch.object(executor, '_has_codex_thread_output', return_value=True):
+                result = executor.collect_completed(
+                    request, thread_id='thread', turn_id='turn', events=[image_event, turn_event])
+            self.assertEqual((result.status, result.code),
+                             ('needs_attention', 'codex_single_image_event_required'))
+            self.assertFalse((root / 'executor/task/attempt/codex-terminal-failure.json').exists())
+            self.assertFalse((root / 'executor/task/attempt/artifact.original').exists())
+
+    def test_failed_image_with_unreferenced_attempt_workspace_file_stays_unresolved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            request = ExecutionRequest('task', 'attempt', 'frozen prompt',
+                                       {'codex_adapter': 'codex_cli_imagegen_v1'})
+            image = {'type': 'imageGeneration', 'id': 'image-failed',
+                     'status': 'failed', 'result': '', 'failure': None}
+            events = [
+                {'method': 'item/completed', 'params': {
+                    'threadId': 'thread', 'turnId': 'turn', 'item': image}},
+                {'method': 'turn/completed', 'params': {
+                    'threadId': 'thread', 'turn': {'id': 'turn', 'status': 'completed'}}},
+            ]
+            attempt = root / 'executor/task/attempt'
+            attempt.mkdir(parents=True)
+            (attempt / 'unreported-image.png').write_bytes(b'possible image output')
+            executor = CodexExecutor(root / 'executor')
+            with patch.object(executor, '_has_codex_thread_output', return_value=False):
+                result = executor.collect_completed(
+                    request, thread_id='thread', turn_id='turn', events=events)
+            self.assertEqual((result.status, result.code),
+                             ('needs_attention', 'codex_single_image_event_required'))
+            self.assertFalse((attempt / 'codex-terminal-failure.json').exists())
+            self.assertFalse((attempt / 'artifact.original').exists())
+
     def test_default_codex_home_output_is_collected_without_environment_configuration(self):
         self.run_fixture(True, generated_under_codex_home=True)
 
