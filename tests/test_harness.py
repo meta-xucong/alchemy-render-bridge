@@ -49,6 +49,13 @@ def result(outcome='succeeded', liveness='stopped_confirmed'):
     return value
 
 
+def pre_prompt_abort():
+    return {'outcome': 'failed', 'liveness': 'stopped_confirmed', 'code': 'PRE_PROMPT_ABORTED',
+            'output_blocks': [], 'usage': {'state': 'unknown'},
+            'pre_prompt_abort': {'prompt_intent_issued': False, 'owned_cleanup_confirmed': True,
+                                 'session_new_intent_issued': False, 'session_close_acknowledged': False}}
+
+
 class HarnessTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -93,6 +100,36 @@ class HarnessTests(unittest.TestCase):
         self.assert_error('harness_disabled', lambda: disabled.create_task(SOURCE, envelope()))
         with self.assertRaises(ValueError):
             BridgeStore(self.root/'other.db', self.root/'other-objects', harness=config())
+
+    def test_pre_prompt_abort_requires_frozen_workbuddy_binding(self):
+        task, claim, grant = self.begin()
+        self.assert_error('pre_prompt_abort_workbuddy_required',
+                          lambda: self.finish(task, claim, grant, pre_prompt_abort()))
+        self.assertEqual(self.store.capabilities(SOURCE)['queue']['active_tasks'], 1)
+
+    def test_pre_prompt_abort_requires_proof_and_no_native_events(self):
+        binding = HarnessBinding(binding_id='workbuddy-fixture', revision=1,
+                                 model_alias='workbuddy-test', native_model='native-fixture')
+        self.store = self.new_store(bindings=(binding,), execution_mode='harness_local_trial')
+        self.store.report_harness_heartbeat(SOURCE, 'node', 'executor',
+            {'state': 'available', 'binding_digests': [digest(binding.wire())]})
+        request = envelope()
+        request['request']['binding'] = binding.wire()
+        request['request']['client_request']['model'] = binding.model_alias
+        request['request_digest'] = digest(request['request']['client_request'])
+        task, claim, grant = self.begin(self.store.create_task(SOURCE, request))
+        for field, value in (('prompt_intent_issued', True), ('owned_cleanup_confirmed', 1),
+                             ('session_new_intent_issued', True)):
+            with self.subTest(field=field):
+                rejected = pre_prompt_abort()
+                rejected['pre_prompt_abort'][field] = value
+                self.assert_error('invalid_harness_result', lambda: self.finish(task, claim, grant, rejected))
+        self.store.report_harness_event(SOURCE, task['remote_task_id'], 'node', 'executor',
+            {'claim_id': claim['claim_id'], 'start_grant_id': grant['start_grant_id'], 'event_seq': 1,
+             'event': {'type': 'native_status', 'state': 'running'}})
+        self.assert_error('pre_prompt_abort_conflicts_with_native_events',
+                          lambda: self.finish(task, claim, grant, pre_prompt_abort()))
+        self.assertEqual(self.store.capabilities(SOURCE)['queue']['active_tasks'], 1)
 
     def test_same_physical_ledger_tables_and_no_dispatch(self):
         task = self.create()

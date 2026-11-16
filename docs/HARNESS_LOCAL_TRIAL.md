@@ -4,6 +4,8 @@
 
 仍为专用 Harness ledger/node/executor，不能与 image runner 混用。新任务仅一条 user 文本；多轮消息在写任务之前拒绝。该检查位于已有任务回放之后，不阻断原任务结果查询。单槽、心跳、冻结 binding、claim/start intent、未知执行保守占槽均未改变。
 
+WorkBuddy 本地试验绑定可使用既有 `harness-result` 提交 `PRE_PROMPT_ABORTED`。回执是 `failed/stopped_confirmed`，正文为空，用量为 unknown，并携带严格布尔 `pre_prompt_abort` 证明。必须为无提示词发送意图、受管进程清理确认，以及会话未申请或已收到关闭回执。Bridge 验证原 claim/grant/消费者，以及原账本无原生活动事件，再提交终态并释放槽位。
+
 示意（不是实际模型配置）：
 
 ```json
