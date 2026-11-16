@@ -144,9 +144,14 @@ try {
     Write-Host 'Starting the shared-pool Node Agent. Keep this window open; press Ctrl+C to stop.' -ForegroundColor Green
     Write-Host "State: $statePath | Config: $ConfigPath | Poll interval: $Interval seconds"
     Write-Host 'Local status: http://127.0.0.1:8766/' -ForegroundColor DarkCyan
-    & $python -u -m render_bridge.agent.pool_node run --state-dir $statePath --config $ConfigPath --interval $Interval
-    $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0) { throw "Shared-pool Agent exited with code $exitCode." }
+    while ($true) {
+        & $python -u -m render_bridge.agent.pool_node run --state-dir $statePath --config $ConfigPath --interval $Interval
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -eq 0) { break }
+
+        Write-Host "Shared-pool Agent exited with code $exitCode. Restarting in 5 seconds; press Ctrl+C to stop." -ForegroundColor Yellow
+        Start-Sleep -Seconds 5
+    }
 } catch {
     Write-Host "Shared-pool Node Agent error: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
