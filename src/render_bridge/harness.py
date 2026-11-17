@@ -178,10 +178,33 @@ class HarnessResult(Strict):
         return self
 
 
+class PrePromptAbortEvidence(Strict):
+    prompt_intent_issued: StrictBool
+    owned_cleanup_confirmed: StrictBool
+    session_new_intent_issued: StrictBool
+    session_close_acknowledged: StrictBool
+
+    @model_validator(mode='after')
+    def confirmed_stop(self):
+        if (self.prompt_intent_issued or not self.owned_cleanup_confirmed
+                or self.session_new_intent_issued != self.session_close_acknowledged):
+            raise ValueError('Pre-prompt abort requires confirmed owned cleanup and settled session')
+        return self
+
+
+class PrePromptAbortResult(Strict):
+    outcome: Literal['failed']
+    liveness: Literal['stopped_confirmed']
+    code: Literal['PRE_PROMPT_ABORTED']
+    output_blocks: Annotated[list[Block], Field(max_length=0)]
+    usage: UnknownUsage
+    pre_prompt_abort: PrePromptAbortEvidence
+
+
 class ResultSubmission(Strict):
     claim_id: ID
     start_grant_id: ID
-    result: HarnessResult
+    result: HarnessResult | PrePromptAbortResult
 
 
 @dataclass(frozen=True)
@@ -461,6 +484,15 @@ class HarnessMixin(HarnessEventsMixin):
             _fail('invalid_harness_result', 422)
         with self._transaction() as con:
             task = self._authorize_harness_receipt(con, scope, task_id, node, executor, value.claim_id, value.start_grant_id)
+            binding = json.loads(task['payload'])['request']['binding']
+            if isinstance(value.result, PrePromptAbortResult):
+                # Receipt recovery follows the frozen binding even after route removal.
+                if not binding['model_alias'].startswith('workbuddy-'):
+                    _fail('pre_prompt_abort_workbuddy_required', 409)
+                events = con.execute('SELECT native_count FROM harness_event_state WHERE task_id=?',
+                                     (task_id,)).fetchone()
+                if events is None or events['native_count'] != 0:
+                    _fail('pre_prompt_abort_conflicts_with_native_events', 409)
             meta = con.execute('SELECT * FROM harness_tasks WHERE task_id=?', (task_id,)).fetchone()
             result_digest = digest(result)
             if meta['result_digest']:
@@ -469,7 +501,7 @@ class HarnessMixin(HarnessEventsMixin):
                 return self._harness_view(con, task)
             if meta['outcome'] != 'pending':
                 _fail('harness_terminal_conflict', 409)
-            expected = json.loads(task['payload'])['request']['binding']['native_model']
+            expected = binding['native_model']
             if value.result.outcome == 'succeeded' and (value.result.model_evidence.selected != expected
                                                        or value.result.model_evidence.reported != expected):
                 _fail('harness_model_mismatch', 409)
