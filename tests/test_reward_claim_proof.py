@@ -50,16 +50,16 @@ class Fixture:
         return {"Authorization": f"Bearer {REWARD_TOKEN}",
                 "X-Reward-Claim-Digest": claim_digest}
 
-    def add_count(self, name, count):
+    def add_count(self, name, count, *, ack="accepted"):
         identity, _ = self.nodes[name]
         with self.store._transaction() as con:
             con.execute(
                 "INSERT INTO node_execution_ledger "
                 "(attempt_key,pool_id,node_id,executor,profile,state,started_at,updated_at,"
-                "completed_at,artifact_count) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (hashlib.sha256(f"attempt-{name}".encode()).hexdigest(), identity.pool_id,
+                "completed_at,artifact_count,delivery_ack) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (hashlib.sha256(f"attempt-{name}-{ack}".encode()).hexdigest(), identity.pool_id,
                  identity.node_id, identity.executor_instance, "codex-image", "succeeded",
-                 self.now - 2, self.now - 1, self.now - 1, count),
+                 self.now - 2, self.now - 1, self.now - 1, count, ack),
             )
 
 
@@ -140,6 +140,8 @@ async def _test_lookup_is_read_only_snapshot_with_real_rewardable_count_and_unav
     fixture = Fixture(tmp_path)
     identity, token = fixture.nodes["one"]
     fixture.add_count("one", 3)
+    fixture.add_count("one", 2, ack=None)
+    fixture.add_count("one", 5, ack="rejected")
     claim_digest = challenge_digest("A" * 43)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=fixture.app),
